@@ -41,8 +41,12 @@ type Event struct {
 
 // Store wraps the controller's SQLite database.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	dir string
 }
+
+// Dir returns the state directory holding the database.
+func (s *Store) Dir() string { return s.dir }
 
 const schema = `
 CREATE TABLE IF NOT EXISTS hosts (
@@ -90,7 +94,7 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, dir: dir}, nil
 }
 
 // Close closes the database.
@@ -178,7 +182,7 @@ func (s *Store) TouchHeartbeat(name string, at time.Time, spoolSeq uint64, spool
 	if n, _ := res.RowsAffected(); n == 0 {
 		return sql.ErrNoRows
 	}
-	if spoolSeq > 0 {
+	if spoolSeq > 0 && spoolHash != "" {
 		_, _ = s.db.Exec(`UPDATE hosts SET chain_seq = ?, chain_hash = ?
 			WHERE name = ? AND chain_seq < ?`, spoolSeq, spoolHash, name, spoolSeq)
 	}
@@ -292,6 +296,19 @@ func (s *Store) ConsumeToken(token string) (string, error) {
 		return "", err
 	}
 	return host, nil
+}
+
+// TokenInfo returns a token's host, expiry and use state without burning
+// it (bootstrap downloads validate repeatedly; enrollment consumes once).
+func (s *Store) TokenInfo(token string) (host string, expires time.Time, used int, err error) {
+	var exp string
+	err = s.db.QueryRow(`SELECT host, expires_at, used FROM tokens WHERE token = ?`, token).
+		Scan(&host, &exp, &used)
+	if err != nil {
+		return "", time.Time{}, 0, err
+	}
+	expires, err = time.Parse(time.RFC3339Nano, exp)
+	return host, expires, used, err
 }
 
 // MarkDark flips a host's status to dark (or back to enrolled when it

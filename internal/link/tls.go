@@ -17,11 +17,9 @@ import (
 const (
 	ALPNAgent    = "phylax/agent"
 	ALPNRelay    = "phylax/relay"
-	ALPNRelayCtl = "phylax/relayctl"
+	ALPNSplice   = "phylax/splice" // one device-proxy or bootstrap stream
 	ALPNPatch    = "phylax/patch"
 )
-
-// Pin is the base64 SHA-256 of a certificate's SPKI.
 type Pin string
 
 // PinKey computes the pin for an ed25519 public key (marshaled form).

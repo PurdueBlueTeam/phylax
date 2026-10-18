@@ -134,17 +134,25 @@ func (s *Store) load() error {
 	return nil
 }
 
-// hashRecord computes the chain hash for r given its predecessor's hash.
-func hashRecord(prevHex string, r fileRecord) string {
+// HashRecord computes the chain hash for a record's fields, given the
+// predecessor's hash. The agent spool and the controller's mirror use the
+// same function, so a resent chain can be re-verified exactly.
+func HashRecord(prevHex string, seq uint64, ts, typ, dataB64 string) string {
 	h := sha256.New()
 	h.Write([]byte(prevHex))
 	binarySeq := make([]byte, 8)
-	putU64(binarySeq, r.Seq)
+	for i := range 8 {
+		binarySeq[i] = byte(seq >> (8 * uint(i)))
+	}
 	h.Write(binarySeq)
-	h.Write([]byte(r.TS))
-	h.Write([]byte(r.Type))
-	h.Write([]byte(r.Data))
+	h.Write([]byte(ts))
+	h.Write([]byte(typ))
+	h.Write([]byte(dataB64))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func hashRecord(prevHex string, r fileRecord) string {
+	return HashRecord(prevHex, r.Seq, r.TS, r.Type, r.Data)
 }
 
 func putU64(b []byte, v uint64) {
