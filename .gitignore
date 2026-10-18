@@ -4,3 +4,4 @@ dist/
 .state/
 tmp/
 vendor/
+*-identity/

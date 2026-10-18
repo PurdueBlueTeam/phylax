@@ -271,9 +271,11 @@ func TestBootstrapDownload(t *testing.T) {
 	pinned := func(pin link.Pin) *http.Client {
 		_, priv, _ := link.NewKeyPair()
 		cert, _ := link.SelfSignedCert(priv, "console")
+		cfg := link.ClientConfig(priv, cert, pin, nil)
+		cfg.Certificates = nil // a bootstrap console presents no client cert
 		return &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: link.ClientConfig(priv, cert, pin, nil),
+				TLSClientConfig: cfg,
 			},
 			Timeout: 10 * time.Second,
 		}

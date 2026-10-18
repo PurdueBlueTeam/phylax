@@ -103,11 +103,20 @@ func ClientConfig(priv ed25519.PrivateKey, cert *x509.Certificate, pin Pin, alpn
 // certificate (nil when the client sent none) and may reject. Dates are
 // always ignored: pinning is the identity mechanism.
 func ServerConfig(priv ed25519.PrivateKey, cert *x509.Certificate, alpn []string, verify func(peer *x509.Certificate) error) *tls.Config {
+	// The controller's one listener serves both plain-HTTPS bootstrap
+	// clients (curl, PowerShell: no ALPN) and the pinned phylax streams,
+	// so it always advertises the phylax ALPNs (nil/empty alpn means
+	// "all phylax streams"). A no-ALPN client can never be an agent or
+	// relay, so the split is unambiguous.
+	protos := alpn
+	if len(protos) == 0 {
+		protos = []string{ALPNAgent, ALPNRelay, ALPNSplice, ALPNPatch}
+	}
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS12,
 		MaxVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{{Certificate: [][]byte{cert.Raw}, PrivateKey: priv}},
-		NextProtos:   alpn,
+		NextProtos:   protos,
 		ClientAuth:   tls.RequestClientCert,
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			var peer *x509.Certificate

@@ -13,10 +13,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
 
@@ -32,6 +34,21 @@ type Controller struct {
 	advertise string
 	darkAfter time.Duration
 	stopped atomic.Bool
+
+	// plan execution (M2)
+	ctx      context.Context
+	ctxStop  context.CancelFunc
+	planKey  ed25519.PrivateKey
+	planKeyPub string
+	plansMu  sync.Mutex
+	plans    map[string]*plan.Exec
+	planName map[string]string // host -> active plan name
+	seqMu    sync.Mutex
+	seq      uint64
+	safeMu   sync.Mutex
+	safeModes map[string]bool
+	connsMu  sync.Mutex
+	conns    map[string]*agentConn
 }
 
 // New opens (or creates) the controller state under dir.
@@ -46,8 +63,19 @@ func New(dir string, logf *log.Logger) (*Controller, error) {
 	if logf == nil {
 		logf = log.New(os.Stderr, "serve: ", log.LstdFlags)
 	}
-	c := &Controller{st: st, log: logf, darkAfter: 15 * time.Second}
+	c := &Controller{
+		st: st, log: logf, darkAfter: 15 * time.Second,
+		plans:     map[string]*plan.Exec{},
+		planName:  map[string]string{},
+		safeModes: map[string]bool{},
+		conns:     map[string]*agentConn{},
+	}
+	c.ctx, c.ctxStop = context.WithCancel(context.Background())
 	if err := c.loadOrCreateIdentity(); err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err := c.loadOrCreatePlanKey(); err != nil {
 		st.Close()
 		return nil, err
 	}
@@ -122,9 +150,12 @@ func (c *Controller) Run(addr string) error {
 	if err != nil {
 		return err
 	}
-	tlsCfg := link.ServerConfig(c.key, c.cert, []string{
-		link.ALPNAgent, link.ALPNRelay, link.ALPNSplice, link.ALPNPatch,
-	}, nil)
+	// The listener serves every connection type on one port. Phylax
+	// streams negotiate their ALPN (phylax/agent, ...); plain-HTTPS
+	// bootstrap clients (curl, PowerShell) offer none. Accept any ALPN
+	// and dispatch on what was negotiated.
+	tlsCfg := link.ServerConfig(c.key, c.cert, nil, nil)
+	tlsCfg.NextProtos = nil
 	tlsLn := tls.NewListener(ln, tlsCfg)
 	c.stopped.Store(false)
 	c.ln = tlsLn
@@ -152,7 +183,6 @@ func (c *Controller) Run(addr string) error {
 		go c.dispatch(tc)
 	}
 }
-
 // Stop closes the listener.
 func (c *Controller) Stop() {
 	c.stopped.Store(true)
@@ -162,15 +192,22 @@ func (c *Controller) Stop() {
 	}
 }
 func (c *Controller) dispatch(conn *tls.Conn) {
-	switch conn.ConnectionState().NegotiatedProtocol {
-	case link.ALPNAgent:
-		c.handleAgent(conn)
+	cs := conn.ConnectionState()
+	// Plain-HTTPS bootstrap clients (curl, PowerShell) send no client
+	// certificate; every phylax stream presents its enrollment identity.
+	// The split is on the certificate, not ALPN, so a no-ALPN client can
+	// never be mistaken for an agent.
+	if len(cs.PeerCertificates) == 0 {
+		c.handleBootstrap(conn)
+		return
+	}
+	switch cs.NegotiatedProtocol {
 	case link.ALPNRelay:
 		c.handleRelay(conn)
 	case link.ALPNSplice:
 		c.handleSplice(conn)
-	default:
-		c.handleBootstrap(conn)
+	default: // phylax/agent (or an ALPN-less agent stream)
+		c.handleAgent(conn)
 	}
 }
 

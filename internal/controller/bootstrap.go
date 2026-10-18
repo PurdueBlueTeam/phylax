@@ -21,6 +21,7 @@ type BootstrapConfig struct {
 	Token      string   `json:"token"`
 	Roles      []string `json:"roles"`
 	BinarySHA  string   `json:"binary_sha256"`
+	PlanKey    string   `json:"plan_key,omitempty"` // base64 ed25519 public key
 }
 
 // handleBootstrap serves plain-HTTPS connections (no phylax ALPN): the
@@ -60,6 +61,9 @@ func (c *Controller) bootstrapMux() http.Handler {
 	mux.HandleFunc("/bootstrap.json", c.handleBootstrapJSON)
 	mux.HandleFunc("/platform", c.handlePlatform)
 	mux.HandleFunc("/token", c.handleToken)
+	mux.HandleFunc("/plan/run", c.handlePlanRun)
+	mux.HandleFunc("/plan/status", c.handlePlanStatus)
+	mux.HandleFunc("/plan/dag", c.handlePlanDAG)
 	return mux
 }
 
@@ -101,6 +105,7 @@ func (c *Controller) handleBootstrapJSON(w http.ResponseWriter, r *http.Request)
 		Token:      token,
 		Roles:      roles,
 		BinarySHA:  c.BinarySHA256Hex(),
+		PlanKey:    c.PlanKeyPub(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cfg)

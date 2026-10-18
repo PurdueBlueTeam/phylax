@@ -20,6 +20,8 @@ func main() {
 		cmdInit(os.Args[2:])
 	case "set-controller":
 		cmdSetController(os.Args[2:])
+	case "plan":
+		cmdPlan(os.Args[2:])
 	case "version":
 		fmt.Println("phylax " + version)
 	case "help", "-h", "--help":

@@ -36,6 +36,17 @@ func (c *Controller) handleAgent(conn *tls.Conn) {
 	}
 	ac := &agentConn{c: c, lc: link.NewConn(conn, conn.RemoteAddr().String()), helloDone: make(chan error, 1)}
 	defer ac.lc.Close()
+	defer func() {
+		// If this was the host's registered connection, the link is down.
+		c.connsMu.Lock()
+		if c.conns[ac.host] == ac {
+			delete(c.conns, ac.host)
+			c.connsMu.Unlock()
+			c.hostGone(ac.host)
+		} else {
+			c.connsMu.Unlock()
+		}
+	}()
 
 	ac.lc.On(link.TypHello, func(ctx context.Context, lc *link.Conn, m *link.Message) error {
 		return ac.handleHello(peerCert, m)
@@ -135,7 +146,22 @@ func (ac *agentConn) handleHello(peerCert *x509.Certificate, m *link.Message) er
 	if err := ac.sendConfig(); err != nil {
 		return ac.finishHello(err)
 	}
+	// Register this connection as the host's live path and tell any
+	// blocked plan the link is back.
+	ac.c.connsMu.Lock()
+	ac.c.conns[ac.host] = ac
+	ac.c.connsMu.Unlock()
+	ac.c.hostBack(ac.host)
 	return ac.finishHello(nil)
+}
+
+// sendStep enqueues a signed plan step at step priority.
+func (ac *agentConn) sendStep(st *link.Step) error {
+	b, err := link.EncodeJSON(st)
+	if err != nil {
+		return err
+	}
+	return ac.lc.Enqueue(link.PrioSteps, &link.Message{Type: link.TypStep, Payload: b})
 }
 
 func (ac *agentConn) finishHello(err error) error {
@@ -185,6 +211,7 @@ func (ac *agentConn) handleHeartbeat(_ context.Context, _ *link.Conn, m *link.Me
 			ac.nextHash = h
 		}
 	}
+	ac.c.setHostSafeMode(ac.host, hb.SafeMode)
 	return ac.c.st.TouchHeartbeat(ac.host, time.Now().UTC(), hb.Seq, "")
 }
 
@@ -243,6 +270,9 @@ func (ac *agentConn) handleStepResult(_ context.Context, _ *link.Conn, m *link.M
 		return err
 	}
 	ac.c.log.Printf("host %s: step %s/%s %s ok=%v %s", ac.host, sr.Plan, sr.Node, sr.Phase, sr.OK, sr.Detail)
+	if ac.host != "" {
+		ac.c.StepResultIn(ac.host, sr)
+	}
 	return nil
 }
 

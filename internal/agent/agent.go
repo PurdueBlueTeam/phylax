@@ -16,8 +16,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/action"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
@@ -29,15 +32,23 @@ type Bundle struct {
 	Host       string   `json:"host"`
 	Token      string   `json:"token"`
 	Roles      []string `json:"roles"`
+	PlanKey    string   `json:"plan_key,omitempty"` // base64 ed25519 public key
 }
 
 // Agent is one host's link state.
 type Agent struct {
 	bundle Bundle
+	dir    string
 	sp     *spool.Store
 	key    ed25519.PrivateKey
 	cert   *x509.Certificate
 	log    *log.Logger
+	reg    *action.Registry
+
+	// locks: resource -> lock name held while a step runs (docs: actions
+	// declare the resources they lock).
+	locksMu sync.Mutex
+	locks   map[string]string
 
 	version string
 	// module status reported in heartbeats; collectors register here.
@@ -68,10 +79,17 @@ func New(dir string, bundle Bundle, logf *log.Logger) (*Agent, error) {
 	}
 	a := &Agent{
 		bundle:  bundle,
+		dir:     dir,
 		sp:      sp,
 		log:     logf,
 		version: "0.1.0",
 		modules: map[string]string{"link": "ok"},
+		locks:   map[string]string{},
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "safe_mode")); err == nil &&
+		strings.TrimSpace(string(b)) == "1" {
+		a.safeMode = true
+		logf.Printf("safe mode ON (flag file)")
 	}
 	if err := a.loadOrCreateIdentity(); err != nil {
 		sp.Close()
@@ -81,7 +99,7 @@ func New(dir string, bundle Bundle, logf *log.Logger) (*Agent, error) {
 }
 
 func (a *Agent) loadOrCreateIdentity() error {
-	keyPath := filepath.Join(a.bundle.Host+"-identity", "key")
+	keyPath := filepath.Join(a.dir, a.bundle.Host+"-identity", "key")
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		return err
 	}
@@ -184,7 +202,10 @@ func (a *Agent) runOnce(ctx context.Context) error {
 		a.log.Printf("config received (epoch/sig: M1 placeholder)")
 		return nil
 	})
-	// M2: step, fetch, control handlers.
+	lc.On(link.TypStep, a.handleStep)
+	lc.On(link.TypControl, a.handleControl)
+	// M3+: fetch (control plane chunks for file payloads) is deferred; the
+	// step's params carry inline content for now.
 
 	// Hello: token on first contact, bare afterwards.
 	hello := link.Hello{

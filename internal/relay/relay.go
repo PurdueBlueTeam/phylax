@@ -33,6 +33,7 @@ type Parent struct {
 // Relay is one relay's state.
 type Relay struct {
 	parent      Parent
+	dir         string
 	key         ed25519.PrivateKey
 	cert        *x509.Certificate
 	log         *log.Logger
@@ -61,7 +62,7 @@ func New(dir string, parent Parent, allowCIDRs, deviceTargets []string, logf *lo
 	if logf == nil {
 		logf = log.New(os.Stderr, "relay: ", log.LstdFlags)
 	}
-	r := &Relay{parent: parent, log: logf, deviceAllow: deviceTargets}
+	r := &Relay{parent: parent, dir: dir, log: logf, deviceAllow: deviceTargets}
 	for _, c := range allowCIDRs {
 		_, ipnet, err := net.ParseCIDR(c)
 		if err != nil {
@@ -76,7 +77,7 @@ func New(dir string, parent Parent, allowCIDRs, deviceTargets []string, logf *lo
 }
 
 func (r *Relay) loadOrCreateIdentity() error {
-	keyPath := filepath.Join(r.parent.Host+"-identity", "key")
+	keyPath := filepath.Join(r.dir, r.parent.Host+"-identity", "key")
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		return err
 	}
@@ -260,7 +261,7 @@ func (r *Relay) controlOnce(ctx context.Context) error {
 	select {
 	case <-conf:
 		r.enrolled = true
-		_ = os.WriteFile(filepath.Join(r.parent.Host+"-identity", "enrolled"), []byte("1"), 0o600)
+		_ = os.WriteFile(filepath.Join(r.dir, r.parent.Host+"-identity", "enrolled"), []byte("1"), 0o600)
 	case <-lc.Done():
 		return fmt.Errorf("control rejected by parent")
 	case <-time.After(5 * time.Second):

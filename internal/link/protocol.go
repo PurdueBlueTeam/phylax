@@ -54,17 +54,34 @@ type Config struct {
 	Sig   string `json:"sig"`
 }
 
-// StepResult reports one plan step's outcome, agent to controller.
+// StepResult reports one plan step's phase outcome, agent to controller.
 type StepResult struct {
-	Plan      string `json:"plan"`
-	Node      string `json:"node"`
-	Epoch     int    `json:"epoch"`
-	Seq       uint64 `json:"seq"`
-	Phase     string `json:"phase"` // check | apply | verify
-	OK        bool   `json:"ok"`
-	Detail    string `json:"detail,omitempty"`
-	Before    string `json:"before,omitempty"` // base64
-	After     string `json:"after,omitempty"`  // base64
+	Plan   string `json:"plan"`
+	Node   string `json:"node"`
+	Epoch  int    `json:"epoch"`
+	Seq    uint64 `json:"seq"`
+	Phase  string `json:"phase"` // check | apply | verify | rollback
+	OK     bool   `json:"ok"`
+	Done   bool   `json:"done,omitempty"` // check found nothing to do
+	Detail string `json:"detail,omitempty"`
+	Before []byte `json:"before,omitempty"` // rollback snapshot
+	After  string `json:"after,omitempty"`  // base64
+}
+
+// Step is a signed plan step, controller to agent.
+type Step struct {
+	Plan    string         `json:"plan"`
+	Node    string         `json:"node"`
+	Epoch   int            `json:"epoch"`
+	Seq     uint64         `json:"seq"`
+	Op      string         `json:"op"` // run | rollback
+	Phase   string         `json:"phase,omitempty"` // check | apply | verify | rollback
+	Action  string         `json:"action"`
+	Params  map[string]any `json:"params"`
+	Secrets map[string]any `json:"secrets,omitempty"` // this host only
+	Before  []byte         `json:"before,omitempty"` // rollback target snapshot
+	Deadman int            `json:"deadman,omitempty"` // seconds
+	Sig     string         `json:"sig"` // ed25519 over plan|node|epoch|seq|op|action|params
 }
 
 // Chunk is one bulk-transfer piece (either direction).
