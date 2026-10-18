@@ -1,0 +1,17 @@
+# D14: network device tampering — a config commit we didn't make, an
+# unknown admin login, diff against the last known-good (Palo/VyOS).
+id: D14.device-tamper
+when:
+  event: device_config
+  any:
+    - all:
+        - change: [diff, commit]
+        - not: {tag: {re: ".+"}}
+    - all:
+        - login: {re: ".+"}
+        - 
+severity: critical
+tier: 1
+collect: [content_changes]
+attack: [T1562.008, T1542.001]
+test: D14

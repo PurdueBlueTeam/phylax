@@ -1,0 +1,13 @@
+# D7: account files changed outside our plans.
+id: D7.account-change
+when:
+  event: file_change
+  all:
+    - path: {in: [/etc/passwd, /etc/shadow, /etc/group, /etc/gshadow]}
+    - op: [created, modified, moved_to]
+    - not: {tag: {re: ".+"}}
+severity: high
+tier: 1
+collect: [process_tree]
+attack: [T1136.001, T1136.003, T1098]
+test: D7

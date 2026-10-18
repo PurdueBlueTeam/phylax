@@ -1,0 +1,14 @@
+# D4: established outbound connection from a service process to a peer
+# outside loopback (declared dependencies are loopback or known peers).
+id: D4.unexpected-outbound
+when:
+  event: connection_new
+  all:
+    - state: ESTABLISHED
+    - service: {re: ".+"}
+    - not: {raddr: [127.0.0.1, "::1", "0000:0000:0000:0000:0000:0000:0000:0001"]}
+severity: medium
+tier: 1
+collect: [process_tree, transactions_window_10m]
+attack: [T1071]
+test: D4

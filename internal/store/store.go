@@ -208,6 +208,27 @@ func (s *Store) EventCount(host string) (int64, error) {
 	return n, err
 }
 
+// QueryEvents returns recent events of one type for a host, newest first.
+func (s *Store) QueryEvents(host, typ string, limit int) ([]Event, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT seq, ts, type, data, hash FROM events
+		WHERE host = ? AND type = ? ORDER BY seq DESC LIMIT ?`, host, typ, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var ev Event
+		if err := rows.Scan(&ev.Seq, &ev.TS, &ev.Type, &ev.Data, &ev.Hash); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
 // ChainAt returns the recorded chain hash at a host's seq, if mirrored.
 func (s *Store) ChainAt(host string, seq uint64) (string, bool) {
 	var h string

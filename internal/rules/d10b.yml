@@ -1,0 +1,12 @@
+# D10b: the host firewall was changed or disabled (from the egress/fw
+# watcher or a failed policy apply).
+id: D10b.firewall-tamper
+when:
+  event: firewall_change
+  all:
+    - not: {tag: {re: ".+"}}
+severity: critical
+tier: 0
+collect: [process_tree, content_changes]
+attack: [T1562.004, T0890]
+test: D10b

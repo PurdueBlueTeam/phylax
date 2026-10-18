@@ -126,3 +126,27 @@ implementation run (2026-10-18). Format: question / options / decision / rationa
   real workflow (competition constraint: public GitHub releases). For this run
   I sign locally and keep signed artifacts under `dist/` but they are build
   output, not hand-made.
+
+### D-run-10: M3 T02 local equivalent uses the respond engine, not live nftables
+- Question: T02 (timer disables the host firewall → restored ≤10 s, trigger
+  identified via loop detection) needs a live nftables restore to verify the
+  "restored" half on a real kernel path.
+- Options: (a) implement the full nftables install/restore now (google/nftables
+  netlink client + docker NET_ADMIN test); (b) verify the detection→response
+  machinery (restore decision, 10-s bound, loop→incident) with a scripted
+  restorer and defer the netlink install to the M4 egress/sinkhole work,
+  which already owns the nftables path (docker NET_ADMIN, D-run-02).
+- Decision: (b). The respond module's guards (rate limit, breaker, loop,
+  shared lock) are the T02-critical machinery and are verified E2E
+  (internal/agent/e2e_test.go TestT02EndToEnd + respond_test.go). The
+  scripted `restore.firewall` recipe records the restore decision; the real
+  nftables re-apply lands with M4.
+
+### D-run-11: detect engine bug found and fixed during M3
+- Finding: the rule engine's `condList` silently dropped nested `Cond`
+  elements, so any rule with a nested `all:`/`any:` list matched on event
+  type alone (conditions ignored). The `{not: {…}}` field spec was also
+  never implemented in `fieldMatch`.
+- Fix: both fixed in internal/detect/detect.go, with regression tests
+  (TestNotIn, TestNotSpec, D8/D9/D14 rule tests). Before the fix, the
+  pre-M3 rules that used nested combinators had their conditions inert.

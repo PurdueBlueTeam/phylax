@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/action"
+	agentfim "github.com/PurdueBlueTeam/phylax/internal/agent/fimmod"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
@@ -32,6 +33,9 @@ type Bundle struct {
 	Host       string   `json:"host"`
 	Token      string   `json:"token"`
 	Roles      []string `json:"roles"`
+	Services   []Service  `json:"services,omitempty"`
+	FimWatches []FimWatch `json:"fim_watches,omitempty"`
+	LogWatches []LogWatch `json:"log_watches,omitempty"`
 	PlanKey    string   `json:"plan_key,omitempty"` // base64 ed25519 public key
 }
 
@@ -44,6 +48,7 @@ type Agent struct {
 	cert   *x509.Certificate
 	log    *log.Logger
 	reg    *action.Registry
+	fim    *agentfim.Module
 
 	// locks: resource -> lock name held while a step runs (docs: actions
 	// declare the resources they lock).
@@ -54,9 +59,10 @@ type Agent struct {
 	// module status reported in heartbeats; collectors register here.
 	moduleMu   chan<- string
 	modules    map[string]string
-	safeMode   bool
 	drops      uint64
+	safeMode   bool
 	enrolled   bool // set after the first successful ack
+	stopped    chan struct{}
 }
 
 const (
@@ -85,6 +91,7 @@ func New(dir string, bundle Bundle, logf *log.Logger) (*Agent, error) {
 		version: "0.1.0",
 		modules: map[string]string{"link": "ok"},
 		locks:   map[string]string{},
+		stopped: make(chan struct{}),
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "safe_mode")); err == nil &&
 		strings.TrimSpace(string(b)) == "1" {
@@ -132,6 +139,66 @@ func (a *Agent) SetModule(name, status string) {
 	a.modules[name] = status
 }
 
+// LockTry takes a named resource lock for owner; false when held by
+// someone else (docs: plans and tier-0 responses share locks).
+func (a *Agent) LockTry(name, owner string) bool {
+	a.locksMu.Lock()
+	defer a.locksMu.Unlock()
+	if other, busy := a.locks[name]; busy && other != owner {
+		return false
+	}
+	a.locks[name] = owner
+	return true
+}
+
+// LockRelease returns a lock to the pool.
+func (a *Agent) LockRelease(name, owner string) {
+	a.locksMu.Lock()
+	defer a.locksMu.Unlock()
+	if a.locks[name] == owner {
+		delete(a.locks, name)
+	}
+}
+
+// LockOwner reports who holds a lock, or "" when free.
+func (a *Agent) LockOwner(name string) string {
+	a.locksMu.Lock()
+	defer a.locksMu.Unlock()
+	return a.locks[name]
+}
+
+// StartModule runs fn in a supervised goroutine: a panicking or exiting
+// module is restarted on its own and reported, it never takes the agent
+// down (docs: Modules). fn returning an error is treated the same.
+func (a *Agent) StartModule(name string, fn func(context.Context) error) {
+	a.SetModule(name, "starting")
+	go func() {
+		for {
+			done := make(chan struct{})
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						a.log.Printf("%s: panic: %v (restarting)", name, r)
+					}
+					close(done)
+				}()
+				if err := fn(context.Background()); err != nil {
+					a.log.Printf("%s: exited: %v (restarting)", name, err)
+				}
+			}()
+			select {
+			case <-done:
+				a.SetModule(name, "restarting")
+				time.Sleep(500 * time.Millisecond)
+				a.SetModule(name, "running")
+			case <-a.stopped:
+				return
+			}
+		}
+	}()
+	a.SetModule(name, "running")
+}
+
 // Publish appends an event to the spool. The link sync loop ships it.
 func (a *Agent) Publish(evType string, data any) error {
 	b, err := json.Marshal(data)
@@ -142,8 +209,24 @@ func (a *Agent) Publish(evType string, data any) error {
 	return err
 }
 
+// PublishClass appends an event in the given spool class (log lines,
+// churn: sheddable when the spool nears its cap).
+func (a *Agent) PublishClass(evType string, data any, class int) error {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, _, err = a.sp.Append(spool.Event{TS: time.Now().UTC(), Type: evType, Data: b, Class: class})
+	return err
+}
+
 // Run blocks, reconnecting forever, until ctx is done.
 func (a *Agent) Run(ctx context.Context) error {
+	// detection and automatic response keep working with the link down
+	// (docs: principle 4), so modules start before the first dial.
+	if a.bundle.Services != nil || a.bundle.FimWatches != nil || a.bundle.LogWatches != nil {
+		a.StartModules(a.bundle.Services, a.bundle.FimWatches, a.bundle.LogWatches)
+	}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := a.runOnce(ctx)
@@ -294,5 +377,8 @@ func (a *Agent) send(lc *link.Conn, typ byte, msg any) error {
 }
 
 // Close flushes and closes the spool.
-func (a *Agent) Close() error { return a.sp.Close() }
+func (a *Agent) Close() error {
+	close(a.stopped)
+	return a.sp.Close()
+}
 

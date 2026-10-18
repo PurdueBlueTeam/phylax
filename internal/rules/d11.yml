@@ -1,0 +1,35 @@
+# D11: rootkit indicators — hidden PIDs, LD_PRELOAD injection, kernel
+# taint change, BPF change.
+id: D11.rootkit
+when:
+  event: hidden_pid
+  all:
+    - pid: {gt: 0}
+severity: critical
+tier: 1
+collect: [process_tree]
+attack: [T1014, T1070]
+test: D11
+---
+id: D11.ld-preload
+when:
+  event: ld_preload
+  all:
+    - pid: {gt: 0}
+    - preload: {re: ".+"}
+severity: critical
+tier: 1
+collect: [process_tree]
+attack: [T1014, T1574.006]
+test: D11
+---
+id: D11.kernel-taint
+when:
+  event: kernel_taint
+  all:
+    - new: {re: ".+"}
+severity: critical
+tier: 1
+collect: [content_changes]
+attack: [T1014, T1562.008]
+test: D11

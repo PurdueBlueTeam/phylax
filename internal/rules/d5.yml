@@ -1,0 +1,11 @@
+# D5: fileless or hidden execution: deleted/memfd executables, LD_PRELOAD.
+id: D5.hidden-exec
+when:
+  event: hidden_exec
+  all:
+    - exe: {re: ".+"}
+severity: high
+tier: 1
+collect: [process_tree]
+attack: [T1620, T1574.006, T1574.009]
+test: D5

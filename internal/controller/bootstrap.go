@@ -64,6 +64,8 @@ func (c *Controller) bootstrapMux() http.Handler {
 	mux.HandleFunc("/plan/run", c.handlePlanRun)
 	mux.HandleFunc("/plan/status", c.handlePlanStatus)
 	mux.HandleFunc("/plan/dag", c.handlePlanDAG)
+	mux.HandleFunc("/alerts", c.handleAlerts)
+	mux.HandleFunc("/alerts/respond", c.handleRespond)
 	return mux
 }
 

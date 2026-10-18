@@ -1,0 +1,14 @@
+# D6: untagged write to a persistence location. Tier 0: disable (never
+# delete) the entry.
+id: D6.persistence-created
+when:
+  event: file_change
+  all:
+    - kind: persistence
+    - op: [created, modified, moved_to]
+    - not: {tag: {re: ".+"}}
+severity: high
+tier: 0
+collect: [process_tree, content_changes]
+attack: [T1543, T1053, T1037, T1053.003, T1053.005, T1546.003]
+test: D6

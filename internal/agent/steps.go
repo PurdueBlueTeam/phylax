@@ -120,6 +120,9 @@ func (a *Agent) handleStep(_ context.Context, lc *link.Conn, m *link.Message) er
 		switch st.Phase {
 		case "apply":
 			cr, err := act.Apply(params)
+			if err == nil {
+				a.tagPlanWrites(st.Plan, st.Action, params)
+			}
 			a.stepResult(lc, st, "apply", err == nil, false, cr.Diff, cr.Before)
 		case "verify":
 			cr, err := act.Verify(params)
@@ -140,6 +143,19 @@ func (a *Agent) handleStep(_ context.Context, lc *link.Conn, m *link.Message) er
 		a.stepResult(lc, st, st.Phase, false, false, "unknown op "+st.Op, nil)
 	}
 	return nil
+}
+
+// tagPlanWrites marks paths a plan just wrote so fim events for them
+// carry the plan id (docs: "untagged change" is the detection input).
+func (a *Agent) tagPlanWrites(plan, actionName string, params action.Params) {
+	if a.fim == nil {
+		return
+	}
+	for _, key := range []string{"path", "unit", "cron_file"} {
+		if p, ok := params[key].(string); ok && p != "" {
+			a.fim.Tag(p, plan)
+		}
+	}
 }
 
 // canonicalStep is the signing string (must match plan.Canonical on the

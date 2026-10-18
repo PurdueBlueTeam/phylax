@@ -1,0 +1,17 @@
+# D2: untagged change in a content root or service config; a webshell
+# signature in a new webroot script escalates to tier 0 (quarantine).
+id: D2.content-tamper
+when:
+  event: file_change
+  all:
+    - kind: [content, config]
+    - op: [created, modified, moved_to]
+    - not: {tag: {re: ".+"}}
+  any:
+    - path: {re: "\\.(php|aspx?|jsp|js|sh|py|pl)$"}
+    - op: modified
+severity: high
+tier: 1
+collect: [content_changes, process_tree, transactions_window_10m]
+attack: [T1505.003, T1105]
+test: D2

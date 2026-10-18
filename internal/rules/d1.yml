@@ -1,0 +1,13 @@
+# D1: a scored service's process tree spawns a shell or download tool.
+id: D1.service-spawns-shell
+when:
+  event: process_start
+  all:
+    - pservice: {re: ".+"}
+  any:
+    - comm: [sh, bash, dash, zsh, python3, python, perl, nc, ncat, socat, curl, wget, busybox, base64, whoami, id, env]
+severity: high
+tier: 1
+collect: [process_tree, content_changes, transactions_window_10m, freeze_ring]
+attack: [T1505.003, T1059]
+test: D1
