@@ -1,0 +1,36 @@
+tiers:
+  tier0_actions:
+    - restore_host_firewall
+    - reinstall_sysmon
+    - restore_audit_rules
+    - disable_untagged_persistence
+    - quarantine_webshell
+
+protected_process:
+  - systemd
+  - init
+  - systemd-journald
+  - phylax
+  - sshd
+
+retention:
+  events: indefinite
+  evidence: indefinite
+
+limits:
+  spool_max_mb: 200
+  packet_ring_max_mb: 2048
+  packet_ring_pct_free: 10
+  tier0_per_host_per_min: 3
+  agent_msg_rate_per_sec: 50
+  agent_bytes_per_min: 51200
+
+patch_window:
+  duration_sec: 900
+  allowlist:
+    - archive.ubuntu.com
+    - security.ubuntu.com
+    - updates.fedoraproject.org
+    - oraclelinux.osuosl.org
+    - download.microsoft.com
+    - update.microsoft.com

@@ -1,0 +1,18 @@
+decoys:
+  ubuntu-ecom:
+    listeners:
+      - { kind: ssh_shell, port: 22, exposure: both }
+      - { kind: mysql, port: 3306, exposure: inside }
+    files:
+      - { path: /root/backup_db.sql, kind: honey_file }
+      - { path: /root/.env, kind: honey_file }
+    tokens: [ssh_key, env_db_creds, bash_history]
+  fedora-webmail:
+    listeners:
+      - { kind: telnet, port: 23, exposure: inside }
+    files:
+      - { path: /root/.my.cnf, kind: honey_file }
+    tokens: [bash_history]
+  server-ad-dns:
+    ad: [honey_spn_account, asrep_account, admin_lookalike]
+    tokens: [lsass_decoy_session]

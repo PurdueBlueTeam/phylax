@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phylax/manifest/services.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["services"],
+  "properties": {
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["host", "kind"],
+        "properties": {
+          "host": { "type": "string" },
+          "kind": {
+            "enum": ["http", "https", "smtp", "pop3", "imap", "ftp", "dns",
+                     "kerberos", "ldap", "ntp", "tftp", "ssh", "mysql",
+                     "splunk", "winrm", "rdp", "other"]
+          },
+          "scored": { "type": "boolean" },
+          "state": { "enum": ["enabled", "disabled"] },
+          "listen": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["proto", "port"],
+              "properties": {
+                "proto": { "enum": ["tcp", "udp"] },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+              }
+            }
+          },
+          "process": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "unit": { "type": "string" } }
+          },
+          "content": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["roots"],
+            "properties": {
+              "roots": { "type": "array", "items": { "type": "string" } },
+              "upload_dirs": { "type": "array", "items": { "type": "string" } },
+              "normalize": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {
+                "kind": { "enum": ["mysql", "dir"] },
+                "database": { "type": "string" },
+                "path": { "type": "string" }
+              }
+            }
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "service": { "type": "string" },
+                "egress": {
+                  "enum": ["http", "https", "smtp", "pop3", "imap", "ftp", "dns",
+                           "kerberos", "ldap", "ntp", "tftp", "ssh", "mysql",
+                           "splunk", "winrm", "rdp", "other"]
+                },
+                "to": { "type": "string" },
+                "ports": {
+                  "type": "array",
+                  "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                }
+              },
+              "oneOf": [
+                { "required": ["service"], "not": { "anyOf": [{ "required": ["egress"] }, { "required": ["to"] }] } },
+                { "required": ["egress", "to"], "not": { "required": ["service"] } }
+              ]
+            }
+          },
+          "health": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "maxProperties": 1,
+              "properties": {
+                "http_get": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "expect_status"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "expect_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+                    "track_content": { "type": "boolean" }
+                  }
+                },
+                "https_get": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "expect_status"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "expect_status": { "type": "integer", "minimum": 100, "maximum": 599 },
+                    "track_content": { "type": "boolean" }
+                  }
+                },
+                "pop3_login": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["account", "expect"],
+                  "properties": {
+                    "account": { "type": "string" },
+                    "expect": { "type": "string" }
+                  }
+                },
+                "tcp_banner": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["port"],
+                  "properties": {
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "matches": { "type": "string" }
+                  }
+                },
+                "dns_query": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "expect"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "expect": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "ftp_list": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path"],
+                  "properties": {
+                    "path": { "type": "string" },
+                    "file": { "type": "string" }
+                  }
+                },
+                "tftp_get": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["file"],
+                  "properties": { "file": { "type": "string" } }
+                },
+                "ntp_query": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

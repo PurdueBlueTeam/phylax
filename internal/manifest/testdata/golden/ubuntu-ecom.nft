@@ -1,0 +1,27 @@
+# phylax firewall policy for ubuntu-ecom (mode: enforce)
+# Generated from the manifest; do not hand-edit.
+table inet phylax {
+    chain in {
+        type filter hook input priority 0; policy drop;
+        iif "lo" accept comment "phylax:lo"
+        ct state established,related accept comment "phylax:conntrack"
+        meta l4proto tcp tcp dport 21 accept comment "phylax:svc:ecom-ftp"
+        meta l4proto tcp tcp dport 80 accept comment "phylax:svc:ecom-http"
+        meta l4proto tcp tcp dport 3306 accept comment "phylax:svc:ecom-mysql"
+        meta l4proto udp udp dport 123 accept comment "phylax:svc:ecom-ntp"
+        meta l4proto tcp tcp dport 22 accept comment "phylax:svc:ecom-ssh"
+        meta l4proto udp udp dport 69 accept comment "phylax:svc:ecom-tftp"
+        meta l4proto tcp tcp dport 22 accept comment "phylax:decoy:ssh_shell"
+        meta l4proto tcp tcp dport 3306 accept comment "phylax:decoy:mysql"
+    }
+    chain out {
+        type filter hook output priority 0; policy drop;
+        oif "lo" accept comment "phylax:lo"
+        ct state established,related accept comment "phylax:conntrack"
+        ip daddr 172.20.242.10 meta l4proto tcp tcp dport 7443 accept comment "phylax:agent"
+        ip daddr 172.20.242.30 meta l4proto tcp tcp dport 3306 accept comment "phylax:dep:ecom-http"
+        ip daddr 172.20.240.20 meta l4proto udp udp dport 53 accept comment "phylax:dep:ecom-http"
+        meta l4proto tcp log group 1 prefix "phylax-sinkhole: " redirect to 127.0.0.1:47443 comment "phylax:sinkhole"
+        log group 1 prefix "phylax-denied: " drop comment "phylax:default-deny"
+    }
+}

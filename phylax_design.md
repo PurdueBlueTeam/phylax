@@ -26,9 +26,9 @@ Simplicity is a hard requirement. Every place this design adds complexity is mar
 
 ### Goals
 
-1. Harden every host within 20 minutes of drop flag at 20% packet loss, losing no action to a dropped connection.
-2. Have an agent heartbeating within 30 seconds of first contact on a link inside its segment, and within 3 minutes on a degraded 1 Mbit/s link.
-3. Discover which checks the scorer is running and keep our active checks in step: propose a new check within one round of the scorer starting it, and flag checks it has stopped using. Operators can add, edit or remove active checks at any time.
+1. Rotate credentials and enforce host firewalls on every host within 25 minutes of drop flag, and finish service hardening by T+40, losing no action to a dropped connection.
+2. Have an agent heartbeating within 30 seconds of first contact.
+3. Discover which checks the scorer is running and keep our active checks in step: learn its initial set within 3 rounds, propose a new check within one round of the scorer starting it, and flag checks it has stopped using. Operators can add, edit or remove active checks at any time.
 4. Label every connection to a scored service as scorer, us or other, and flag attack-like traffic within "other".
 5. Detect any change to a service's content, configuration or behavior within 60 seconds, and build the trace-back timeline automatically.
 6. Catch C2 attempts through denied egress and the sinkhole, attributed to a process and a binary hash.
@@ -51,12 +51,12 @@ Simplicity is a hard requirement. Every place this design adds complexity is mar
 
 | Metric | Target | Measured by |
 | --- | --- | --- |
-| Cold-start hardening of all servers | 20 min or less at 20% loss | Lab dry run |
+| Cold-start hardening of all servers | Credentials and firewalls in 25 min or less; services by T+40 | Lab dry run |
 | Actions lost to disconnects | 0 | Agent checkpoint logs |
-| First contact to heartbeat | 30 s or less inside a segment; 3 min or less on a degraded 1 Mbit/s link | Lab test T21 |
-| Scorer checks discovered (simulator ground truth) | 100% within 3 rounds | Scorer simulator |
-| False checks invented from noise | 0 after one hour | Orange-team simulator |
-| New scorer check proposed | Within one round | Simulator adds a check |
+| First contact to heartbeat | 30 s or less | Lab test T21 |
+| Scorer checks discovered at drop flag (simulator ground truth) | 100% within 3 rounds | Scorer simulator (T15) |
+| False checks invented from noise | 0 over 2 hours | Orange-team simulator (T15) |
+| New scorer check proposed | Within one round | Simulator adds a check (T14) |
 | Service change detected | 60 s or less | Lab defacement and config tamper tests |
 | Trace-back reaches the source IP for webshell-driven changes | 90% or more | Lab red-team campaigns |
 | Denied callback attributed to a process | 60 s or less | Lab implants |
@@ -85,7 +85,7 @@ The competition rules shape this design more than any technology choice does. Th
 | VM resets restore the initial state. | Systems 11 | Re-enrollment is part of the feature set. Plans are re-runnable from zero. |
 | Teams own any scoring breakage their defenses cause. | Play 11 | Every automatic action is followed by a health check. There's a global safe mode. |
 | IR reports need IPs, timelines, cracked passwords, impact and remediation, and are judged on exploitation. | Scoring 5–6 | Trace-back timelines and decoy sightings feed the IR drafter. |
-| Inject responses are PDFs. NISE times are CST. | NISE | Drafters render PDF. Everything stores UTC and displays CST. |
+| Inject responses are PDFs. NISE times are US Central. | NISE | Drafters render PDF. Everything stores UTC and displays America/Chicago time (CST or CDT, whichever is in effect). |
 
 ### Assumptions about the infra
 
@@ -203,7 +203,7 @@ Each rule uses the address as it appears at that point, before or after translat
 
 - **Separate, tagged groups.** Management rules (agent, relay and device-proxy links) live in their own group: an nftables table, a Windows Firewall rule group, a Palo tag. Restore and drift detection treat them separately from service rules, decoy rules and inject changes.
 - **Bring-up order:**
-  1. Network firewall rules for the relay links.
+  1. Network firewall rules for the relay links and the controller's static NAT, entered by hand on the device consoles by the Network role. The adapters can't do this step: a device in another segment is only reachable through that segment's relay, which needs these rules first, so both Palos are done the same way. `phylax` renders the exact rules from the manifest onto Network's printed checklist, so nothing is composed on the day. The adapters take over once the relays are up.
   2. First contact installs the agents.
   3. Host firewalls get the management allows first, then default-deny outbound, under the dead-man switch (§ Execution).
 - **Controller address.** The design assumes ubuntu-wkst keeps its address for the whole competition. If it changes, the controller's static NAT rule is updated by hand and every agent is pointed at the new address with a local command (§ Enrollment). There's no automatic address-update mechanism.
@@ -248,7 +248,7 @@ The red team can:
 **Signed commands, separate from the transport.**
 
 - Every plan step sent to an agent is signed with a plan-signing key held only in controller memory, unlocked by passphrase.
-- Agents verify the signature, the expected plan id, and a monotonic sequence number. A hostile relay or network can't inject or replay commands.
+- Agents verify the signature, the expected plan id, and an epoch plus a monotonic sequence number. The epoch rises only when the controller is restored from a snapshot (§ Controller recovery). A hostile relay or network can't inject or replay commands.
 - The transport key and the plan-signing key are different, so leaking one doesn't give you the other.
 
 **Bounded agent power.** The agent runs as root or SYSTEM because it has to, but it only executes typed actions from the catalog. `host.exec` needs an explicit approval and is labeled in the UI. This won't stop a compromised controller, but it limits the damage from bugs and from any forged step that somehow passes verification.
@@ -298,7 +298,7 @@ The agent is the agent mode of the single static Phylax binary, running as a sup
 | Measure | Target | Enforced by |
 | --- | --- | --- |
 | Binary size | Measured in M1. Target: 40 MB or less, 15 MB or less compressed for transfer. If first contact is too slow, a build flag produces an agent-only variant. | CI fails the build above it |
-| First contact to heartbeat | 30 s or less on a link inside a segment; 3 min or less at 1 Mbit/s and 20% loss | Lab test T21 |
+| First contact to heartbeat | 30 s or less | Lab test T21 |
 | Memory | 80 MB RSS or less steady, excluding the packet ring | Self-limit; alert above it |
 | CPU | 3% average; a 5 s burst of one core at most | Self-throttles sampling; capture drops packets before slowing the host |
 | Disk | Spool 200 MB cap; packet ring the smaller of 2 GB or 10% of free disk | Oldest low-priority data dropped first; alerts and evidence never dropped |
@@ -331,7 +331,7 @@ Each module has its own config block and on/off switch. A module that panics is 
 - **Allowed by default:** calling the OS's own interfaces from Go. That means syscalls, netlink, `/proc` and `/sys`, D-Bus for systemd, Win32 APIs, COM and WMI, the event log API, LDAP, and database drivers.
 - **Escape hatch:** `host.exec`, which runs a binary on the host. It's allowed, needs approval in the UI, and is labeled "runs a host binary" everywhere it appears.
 - **Expected `host.exec` uses:**
-  - Package managers (apt, dnf, Windows Update) during patch windows
+  - Package managers (apt, dnf) during patch windows
   - Sysmon's installer
   - Odd service CLIs with no API, such as `dnscmd`
   - GPO edits
@@ -341,9 +341,9 @@ Each module has its own config block and on/off switch. A module that panics is 
 
 - **Linux.**
   - Process events come from the netlink proc connector, which needs nothing installed. The agent reads `/proc/<pid>` immediately on each exec event, to beat processes that exit quickly.
-  - The agent also owns the kernel audit subsystem: it talks to it directly over netlink (`go-libaudit`), installs our rules, and stops auditd if it's running. That's one consumer, and no auditd binary to trust.
+  - The agent also reads the kernel audit subsystem directly over netlink (`go-libaudit`) and installs our rules itself, so it trusts no auditd binary. It joins the read-only multicast group (kernel 3.16 and newer), which leaves auditd running. That matters because RHEL-family systems refuse to stop auditd by hand (`RefuseManualStop=yes`), and anything reading `audit.log`, such as Splunk, keeps working. On older kernels, where there can only be one reader, the agent takes that role and stops auditd. Restarting auditd can flush our rules; the ruleset-hash check (D10) catches that and reinstalls them.
 - **Windows.**
-  - Sysmon is installed by the agent from its own bundle using `host.exec` (no reboot needed), with our config. The agent reads its channel through `EvtSubscribe`.
+  - Sysmon is installed by the agent using `host.exec` (no reboot needed), with our config. The Sysinternals license doesn't let us redistribute it, so `phylax init` fetches it from Microsoft through the competition proxy and checks it against a hash pinned in our release. The controller then ships it to agents like any other payload. If the fetch fails, Windows hosts run on the Security 4688 fallback below. The agent reads its channel through `EvtSubscribe`.
   - If Sysmon is removed or reconfigured, the agent reinstalls it as a tier-0 action. Meanwhile it falls back to Security 4688 with command-line auditing, which it enables natively.
 
 ### Local detection rules
@@ -399,7 +399,7 @@ Each agent holds one long-lived TLS 1.3 connection to the controller, with both 
 
 ### TLS and pinning
 
-- TLS 1.3 only, Go's standard library.
+- TLS 1.3 only, Go's standard library, for every connection type except bootstrap. Bootstrap also accepts TLS 1.2, because Windows 10, Server 2016 and Server 2019 can't do TLS 1.3, and the console one-liner uses the host's own TLS stack.
 - Self-signed certificates. Verification is replaced by a check of the peer's public-key hash against the pinned value, with dates ignored.
 - The controller pins each agent's key at enrollment. Agents and relays pin the controller's key from their bootstrap config.
 - One listener on the controller, `agent_port`, serves every connection type. The ALPN value picks the handler:
@@ -410,7 +410,7 @@ Each agent holds one long-lived TLS 1.3 connection to the controller, with both 
 | `phylax/relay` | Relay | The relay's control connection |
 | `phylax/splice` | Relay | One device-proxy or bootstrap stream |
 | `phylax/patch` | Agent | One proxied HTTP connection during a patch window |
-| `phylax/bootstrap` | A host being bootstrapped from the console | Download of the agent binary and bootstrap config with a one-time token |
+| None, or `http/1.1` | A host being bootstrapped from the console | Download of the agent binary and bootstrap config with a one-time token. Stock tools (curl, PowerShell) can't send a custom ALPN value, so any connection without a `phylax/*` value goes to the bootstrap handler, which serves only these downloads. |
 
 **Complexity flag:** five connection types on one port. It's still one listener and one firewall rule, and each handler is small. That's simpler than five ports.
 
@@ -429,7 +429,7 @@ Each agent holds one long-lived TLS 1.3 connection to the controller, with both 
 | Agent → controller | `events` | Batch of telemetry, alerts, transactions and flows, each with its sequence number |
 | Agent → controller | `step_result` | Per-action check, apply, verify outcome with before and after state |
 | Agent → controller | `chunk` | Evidence, pcap slices, collected files |
-| Controller → agent | `ack` | Highest contiguous sequence stored, so the agent can trim its spool |
+| Controller → agent | `ack` | Highest contiguous sequence stored. The agent keeps acknowledged events until it needs the space, so a restored controller can ask for them again. |
 | Controller → agent | `step` | A signed plan step |
 | Controller → agent | `config` | A signed config and rules update |
 | Controller → agent | `fetch` | Request for a pcap slice, a file or raw telemetry for a time window |
@@ -447,11 +447,11 @@ The sender drains its queues in strict order:
 5. Other telemetry
 6. Bulk transfers (pcap slices, files, binaries)
 
-On a thin link, an alert never waits behind a pcap.
+A queued bulk transfer never delays an alert.
 
 ### Reliability
 
-- **Spool and acknowledge.** Every event has a per-host sequence number. The agent resends from the last acknowledged sequence after every reconnect, and the controller discards duplicates by host and sequence. Neither a controller restart nor a link drop loses or duplicates data.
+- **Spool and acknowledge.** Every event has a per-host sequence number. The agent resends from the last acknowledged sequence after every reconnect, and the controller discards duplicates by host and sequence. Neither a controller restart nor a link drop loses or duplicates data. Restoring the controller from a snapshot is different (§ Controller recovery).
 - **Reconnect** with jittered backoff from 1 s to 30 s.
 - **Chunked transfers resume.** The receiver reports which chunks it already has.
 - **Limits** per agent: message rate, total bytes per minute, and concurrent fetches. An agent over its limit is throttled, never allowed to starve the others.
@@ -460,11 +460,11 @@ On a thin link, an alert never waits behind a pcap.
 
 - Shipped continuously: alerts, heartbeats, process starts, connection changes (not every sample), file changes on watched paths, selected log lines, flows, protocol transactions on scored ports, denied-egress attempts, sinkhole captures, decoy sightings.
 - Kept on the host until fetched: the packet ring, raw sampler output, full log files.
-- When the spool nears its cap, it sheds in this order: raw log lines, connection churn, flows on unscored ports. Alerts, evidence, heartbeats and step results are never shed.
+- When the spool nears its cap, it first drops events the controller has already acknowledged, oldest first. Then it sheds unacknowledged data in this order: raw log lines, connection churn, flows on unscored ports. Unacknowledged alerts, evidence, heartbeats and step results are never shed.
 
 ### Performance envelope
 
-Design for 1 Mbit/s, 300 ms round trip, 20% loss and outages of up to 60 s on any link. Latency from event to controller is 10 s or less while the link is up.
+Design for outages of up to 60 s on any link. Latency from event to controller is 10 s or less while the link is up.
 
 ## Enrollment, bootstrap and recovery
 
@@ -472,22 +472,23 @@ The controller gets its binaries from a signed release. It installs agents over 
 
 ### Getting binaries into the environment
 
-1. **CI builds and signs** a release: static binaries for linux/amd64 and windows/amd64, the Sysmon package where its license allows redistribution, YARA rules, and reference baselines. The release is signed with an ed25519 key that never enters the competition environment.
-2. **`phylax init`** on ubuntu-wkst downloads the release through the competition proxy and verifies the signature against the public key compiled into `phylax`.
-3. **Fallbacks,** in order:
+1. **CI builds and signs** a release: static binaries for linux/amd64 and windows/amd64, YARA rules, reference baselines, and the pinned hash of the Sysmon release we tested (Sysmon itself can't be redistributed; § The agent). The release is signed with an ed25519 key that never enters the competition environment.
+2. **The first binary.** The platform driver downloads the `phylax` binary for ubuntu-wkst through the competition proxy (browser or `curl`) and verifies it with `ssh-keygen -Y verify`, which every stock Ubuntu install has. Each release also carries an OpenSSH-format signature from the same ed25519 key. The public key to verify against is printed on the driver's checklist, not taken from the repo or the download, since either could be tampered with.
+3. **`phylax init`** on ubuntu-wkst then downloads the rest of the release through the competition proxy and verifies the signature against the public key compiled into `phylax`.
+4. **Fallbacks,** in order (the first binary is verified the same way):
    - The same signed artifacts committed under `dist/` in the repo (check that the Nextcloud copy keeps binaries)
    - A build from vendored source with a Go toolchain
-4. **`phylax init` reports which channel worked,** which also tells you early what the proxy allows.
+5. **`phylax init` reports which channel worked,** which also tells you early what the proxy allows.
 
 ### First contact
 
 | Method | When | How |
 | --- | --- | --- |
 | SSH (preferred) | Host has SSH and known default credentials, and the controller can reach it | `phylax` uses its built-in Go SSH client with the manifest's default credentials. It uploads the agent binary and bootstrap config, installs the service, and starts it. |
-| WinRM | Windows host with no SSH | `phylax` uses a built-in Go WinRM client, same steps |
-| Console one-liner | Anything the controller can't reach, the relay host first in another segment, or break-glass | The operator generates a one-time token in the UI and types a short command on the NETLAB console. It downloads the binary and bootstrap config from the controller over the `phylax/bootstrap` connection type, checks its hash, and installs. |
+| WinRM | Windows host with no SSH where WinRM is enabled (the default on Server 2012 and newer, not on Windows 10 or 11) | `phylax` uses a built-in Go WinRM client, same steps. The client must do NTLM with message encryption: WinRM over HTTP refuses unencrypted traffic by default, and we don't weaken that. Basic auth and `AllowUnencrypted` are never used. |
+| Console one-liner | Anything the controller can't reach, the relay host first in another segment, or break-glass | The operator generates a one-time token in the UI and types a short command on the NETLAB console. It downloads the binary and bootstrap config from the controller over the bootstrap connection type (TLS 1.2 or 1.3, no custom ALPN), checks its hash, and installs. |
 
-The console one-liner uses the host's own download tool (`curl`, or PowerShell's web client), so it counts as `host.exec` by nature. That's acceptable for break-glass. The download is pinned by a hash that's part of the typed command, so a tampered download fails.
+The console one-liner uses the host's own download tool (`curl`, or PowerShell's web client), so it counts as `host.exec` by nature. That's acceptable for break-glass. The typed command carries two pins. The controller's public key (curl's `--pinnedpubkey`, or a certificate-validation callback in PowerShell, which also turns on TLS 1.2 for older builds) means the token is never sent to an impostor. The download's hash means a tampered download fails. The UI generates the full command for each host, so nobody composes it under pressure.
 
 **Bootstrap config contents:** the controller's address and port (or the relay's), the controller's public-key pin, the host's manifest identity, a one-time enrollment token that expires after 10 minutes, and the initial roles.
 
@@ -513,6 +514,8 @@ SSH and WinRM are treated like any other service. If the manifest doesn't declar
 - An operator clicks **Re-enroll** for that host. That revokes the old key, issues a fresh token, and runs first contact again with the default credentials, since the reset restored them.
 - The host's hardening plan then re-runs from zero. Every action is idempotent, so this is just another run.
 - There's no automatic re-enrollment: a new key claiming to be an existing host is always an alert until an operator approves it.
+- **A reset undoes credentials too.** It restores the host's default credentials, so the vault marks that host's rotated credentials as reverted, and the hardening plan rotates them again.
+- **A DC reset is a domain-wide event.** It rolls back every domain account, group, GPO and ACL change, the krbtgt resets, and the honey AD accounts. The UI marks every domain credential in the vault as reverted, re-runs the domain rotation, AD hardening and honey-account plans, and re-raises the support tickets for scored domain accounts.
 
 ### Changing the controller address
 
@@ -520,17 +523,22 @@ If the controller's address changes, run `phylax set-controller <address:port>` 
 
 ### Controller recovery
 
-**State snapshot.** Every 15 minutes, `phylax` writes an encrypted snapshot to every host the manifest lists as a backup target (for example, the relay host). The snapshot contains:
+**State snapshot.** Every 15 minutes, and after every enrollment, plan completion and vault change, `phylax` writes an encrypted snapshot to every host the manifest lists as a backup target (for example, the relay host). It holds state, not event data, so it stays small (target: under 10 MB) and quick to ship:
 
 - the controller's private keys (TLS and plan-signing)
-- the enrolled agent keys
+- the enrolled agent keys, with each agent's last acknowledged sequence number and chain hash
 - the manifest and overrides
 - the secrets vault
-- the SQLite database
+- plans and their node status, active checks, and the honeytoken registry
+- incidents and alerts, without bulk evidence
 
-It's encrypted with a key derived from the operator passphrase, so the target host holds an opaque blob.
+It's encrypted with a key derived from the operator passphrase (`age` in scrypt mode), so the target host holds an opaque blob.
 
-**Restore.** Install `phylax` on the replacement machine, fetch the latest snapshot, unlock it with the passphrase, and start. Because the snapshot includes the controller's keys, every agent still trusts it. If the address changed, use `set-controller` as above.
+**Restore starts a new epoch.** Install `phylax` on the replacement machine, fetch the latest snapshot, unlock it with the passphrase, and start. Because the snapshot includes the controller's keys, every agent still trusts it. A snapshot can be up to 15 minutes old, so the restored controller doesn't pretend to continue where the lost one stopped:
+
+- **Commands.** Plan steps carry an epoch number as well as a sequence number. A restore raises the epoch, and agents accept any sequence in a higher epoch, so steps the lost controller sent after the snapshot can't block the restored one. Raising the epoch takes the plan-signing key, so a hostile relay or network still can't replay old steps.
+- **Events.** Agents don't delete acknowledged events right away; they keep them until the spool needs the space. After a restore, the controller asks each agent to resend everything it still holds. It checks that the resent chain passes through the sequence number and hash the snapshot recorded for that agent, so a compromised agent can't rewrite history from before the snapshot. Anything no spool still holds is marked on timelines as a gap, with the reason "controller restored".
+- **Address.** If the address changed, use `set-controller` as above.
 
 **Restart safety.**
 
@@ -538,7 +546,7 @@ It's encrypted with a key derived from the operator passphrase, so the target ho
 - Plan signing and secret access stay locked until an operator enters the passphrase in the UI.
 - Agents resend from their last acknowledgment, and duplicates are discarded.
 
-Packet captures and evidence files on the controller's disk are not in the snapshot, because of their size. They're encrypted at rest (§ Controller) and would be lost along with the machine.
+Packet captures, evidence files and older telemetry are not in the snapshot, because of their size. They're encrypted at rest (§ Controller) and would be lost along with the machine, apart from what agent spools can resend. Golden service backups are the exception: each is also copied once to the backup targets, because restores depend on them.
 
 ## Execution: actions, plans and the DAG
 
@@ -553,7 +561,7 @@ An action is Go code in the agent (or a device adapter in `phylax`) with four pa
 | Area | Actions | Linux implementation | Windows implementation |
 | --- | --- | --- | --- |
 | Files | `file.write`, `file.template`, `file.perms`, `file.quarantine`, `file.restore`, `file.hash`, `dir.snapshot` | Native | Native |
-| Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys` | Edit `/etc/shadow`, `/etc/passwd` and `/etc/group` directly with locking; SHA-512 crypt hashes | `NetUserSetInfo`, `NetLocalGroup*` APIs |
+| Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys` | Edit `/etc/shadow`, `/etc/passwd` and `/etc/group` directly with locking, keeping their SELinux labels; SHA-512 crypt hashes | `NetUserSetInfo`, `NetLocalGroup*` APIs |
 | Domain | `ad.set_password`, `ad.user`, `ad.group_members`, `ad.spn`, `ad.delegation_clear`, `ldap.modify` | — | Run by the DC's agent through the domain-aware user APIs and LDAP |
 | Services | `service.state` (start, stop, enable, disable, mask), `service.config` | systemd over D-Bus | Service control manager APIs |
 | Firewall | `fw.apply` (declared groups), `fw.snapshot`, `fw.restore` | nftables over netlink | Windows Firewall through COM, in our own rule group |
@@ -564,11 +572,13 @@ An action is Go code in the agent (or a device adapter in `phylax`) with four pa
 | Logging | `audit.rules`, `auditpol.set`, `eventlog.size`, `sysmon.install`, `sysmon.config` | Kernel audit over netlink | Native audit-policy API; `sysmon.install` uses `host.exec` |
 | Databases | `mysql.exec`, `mysql.set_password`, `mysql.dump` | Go MySQL driver; dump written natively in Go | — |
 | Services' config | Templates for Apache, PHP, Postfix, Dovecot, IIS, FTP | `file.template` + `service.state` | Native XML edit of `applicationHost.config` |
-| Packages | `pkg.install`, `pkg.upgrade` | `host.exec` of apt or dnf inside a patch window | `host.exec` of Windows Update inside a patch window |
+| Packages | `pkg.install`, `pkg.upgrade` | `host.exec` of apt or dnf inside a patch window | Windows Update Agent COM API inside a patch window, with the WinHTTP proxy pointed at the loopback proxy |
 | Collection | `collect.files`, `collect.inventory`, `hunt.baseline_diff`, `hunt.persistence`, `yara.scan` | Native, except `yara.scan` | Same |
 | Agent | `agent.replace_binary`, `agent.config`, `agent.set_controller`, `agent.safe_mode` | Native | Native |
 | Devices (in `phylax`) | `palo.apply`, `palo.commit`, `palo.snapshot`, `palo.revert`, `vyos.apply`, `device.rotate_admin` | XML API, SSH | — |
 | Escape hatch | `host.exec` | Approval required; labeled everywhere | Same |
+
+**SELinux.** Fedora and Oracle run SELinux in enforcing mode. File actions write a temporary file and rename it into place, so the new file would get its directory's default label. That's wrong for files such as `/etc/shadow` (`shadow_t`) and `/etc/passwd` (`passwd_file_t`), and can break logins. File actions copy the original file's label onto the replacement before the rename, use the policy default for new files, and check the label in verify. Unit tests run against SELinux-enforcing images.
 
 **Complexity flag:** `yara.scan` has no pure-Go engine. It ships the YARA binary as a `host.exec` tool and runs only on demand, never continuously.
 
@@ -599,6 +609,8 @@ on_failure: stop_dependents     # or: continue | rollback_plan
 
 The UI draws plans like this, coloring each node as it runs. The credential, database and PHP branches run in parallel; enforcement waits for a human; the health check runs only once everything it depends on is done.
 
+**Shadow mode.** `fw.apply` with `mode: shadow` shows what a policy would drop without dropping it. On Linux it installs the policy with a log rule in place of each drop. Windows Firewall rules can only allow or block, so on Windows shadow mode installs nothing. Instead the agent evaluates the proposed policy against its connection table (`net`, every 2 s) and its capture flows, and reports the connections the policy would have dropped. Very short connections can slip between samples, so shadow windows on Windows should run for a few minutes.
+
 ### Plan, approve, apply
 
 1. **Plan.** `phylax` expands the template and sends every node's **check** to its agent. Each check reports what it would change.
@@ -614,12 +626,13 @@ For any node marked `deadman` (default for `lockout`-class actions):
 1. Before applying, the agent snapshots the affected state and arms a timer (default 90 s).
 2. After applying, it opens a fresh connection to its controller or relay and completes a handshake.
 3. If that works, the controller confirms and the timer is cancelled. If not, the agent rolls back on its own when the timer fires and reports the rollback once reconnected.
+4. **Hosts that carry other links.** On the relay host and the controller host, a change can cut off every agent behind it while the host's own link stays up. For a `deadman` node there, the controller also asks agents that depend on the host to open fresh connections: one agent behind the relay, or one agent in each segment for the controller. It confirms only if those succeed before the timer fires. Otherwise it withholds confirmation and the host rolls back.
 
 There's no SSH involved, so the dead-man covers the agent's own link, which is the link that matters.
 
 ### Locks
 
-Each host has named resource locks: `firewall`, `accounts`, `sshd`, `packages`, `audit`, and one per service. Plan nodes and tier-0 responses take the same locks. While a plan holds `firewall` on a host, automatic firewall restores on that host wait until it's released.
+Each host has named resource locks: `firewall`, `accounts`, `sshd`, `packages`, `audit`, and one per service. Plan nodes and tier-0 responses take the same locks. While a plan node holds `firewall` on a host, automatic firewall restores on that host wait until it's released. A node holds its locks only while it runs, not while the plan waits at an approval gate. Each successful node updates the host's declared state, so a tier-0 restore during a gate restores what the plan has applied so far (for example, the shadow-mode policy), never the state from before the plan.
 
 ### Safe mode
 
@@ -819,12 +832,12 @@ Two independent systems watch the services. **Capture** is passive: every host r
 - **Scans are aggregated.** One "source X touched N ports" record, not thousands of flows.
 - **No feedback loop.** The agent's own traffic to the controller is excluded.
 - **Freeze on alert.** Any alert freezes the ring from 5 minutes before to 10 minutes after for the hosts involved, so rotation can't overwrite the evidence. The controller pulls that slice automatically, filtered to the IPs involved.
-- **Source-address check at drop flag.** Host capture can only fingerprint the scorer by source if the Palo preserves source addresses on inbound NAT. The controller compares captured sources with the Palo's traffic logs in the first minutes, and warns loudly if every inbound connection appears to come from the firewall.
+- **Source-address check at drop flag.** Host capture can only fingerprint the scorer by source if the Palo preserves source addresses on inbound NAT. The controller compares captured sources with the Palo's traffic logs in the first minutes, and warns loudly if every inbound connection appears to come from the firewall. In that case it switches to recovering sources from the Palo's traffic logs (§ Risks).
 
 ### What full packets add
 
 - **Unknown protocols:** raw reverse shells, custom implant protocols, anything without a parser. You can read what the attacker typed and what came back.
-- **Asking questions later:** run a parser written mid-competition over the last hour of packets.
+- **Asking questions later:** pull the last hour of packets for a host to the controller and open them in Wireshark there, for protocols nothing parses yet. Wireshark is a host tool on the trusted controller, like Typst.
 - **Turning real requests into checks:** the exact request the scorer sent, ready to base an active check on.
 - **Recovering dropped tools** from plaintext transfers, and hashing them.
 - **Debugging our own failures:** resets, handshake errors, malformed responses.
@@ -940,8 +953,11 @@ Triggered automatically by any untagged change, red health check, or high-severi
 
 1. **The change.** For example, `index.php` modified at 14:03:12.
 2. **The writer.** The file event gives the writing process (fanotify or audit on Linux, Sysmon 11 on Windows).
-3. **Its lineage.** For example, `sh` ← `php-fpm` worker ← `php-fpm` master, from the agent's process records.
-4. **The request.** The agent's socket records map that worker process to the connection it was serving at that moment, and the transaction log gives the parsed request (for example, the webshell POST).
+3. **Its lineage.** For example, `sh` ← `apache2` worker (running mod\_php) ← `apache2` parent, from the agent's process records.
+4. **The request.** The agent maps the worker to the client connection it was serving at that moment, and the transaction log gives the parsed request (for example, the webshell POST). How the mapping works depends on the stack:
+   - **The worker owns the client socket** (Apache prefork with mod\_php, most simple daemons): the agent's socket records give the connection directly.
+   - **php-fpm behind Apache or nginx:** the worker holds only the FastCGI socket. The agent follows it to the front-end process. If that process serves one connection at a time, the match is exact. If it serves many (Apache's event MPM, nginx), the match is by time and script path in the transaction log, marked lower confidence.
+   - **IIS:** http.sys in the kernel accepts every connection, so socket tables and Sysmon 3 show PID 4, not `w3wp`. Hardening adds the client port (`REMOTE_PORT`) to the IIS log fields. The agent maps `w3wp` to its site through its application pool, matches the request by time and path in that site's log, and the client address and port then give the exact connection.
 5. **The source.** That connection's source address and its label.
 6. **Everything else from that source:** earlier transactions, scans, login attempts and decoy hits, across every host. This usually reveals first contact and the foothold.
 7. **Evidence.** The packet ring around the window is frozen and pulled, and files involved are hashed and collected.
@@ -955,7 +971,7 @@ When the chain breaks, the timeline says which link is missing instead of guessi
 - **Encrypted traffic:** HTTPS request details come from server logs only.
 - **In-memory changes** with no file write are visible as behavior changes, but there's no writer to trace from.
 - **Agent gaps:** periods when the agent was down are marked on the timeline.
-- **Short-lived processes and quick requests:** the link from worker process to connection depends on sampling being fast enough. On Linux the agent queries sockets at the moment of the exec or file event, not only on the 2 s timer. On Windows, Sysmon 3 carries the process id directly.
+- **Short-lived processes and quick requests:** the link from worker process to connection depends on sampling being fast enough. On Linux the agent queries sockets at the moment of the exec or file event, not only on the 2 s timer. On IIS, the log match above doesn't depend on sampling, but it's only as precise as the log timestamps (one second).
 
 **Complexity flag:** the request link (step 4) is the hardest part of the feature. It has a dedicated lab test with quick webshell requests. If it misses too often, the fallback is time-window correlation (requests to that service from `other` sources in the seconds before the change), marked as lower confidence.
 
@@ -1036,7 +1052,7 @@ A token's origin tells you which host was looted and roughly when.
 - **Isolated.** All decoy listeners and the fake shell run in the agent's unprivileged decoy process (§ The agent).
 - **Record only.** Nothing received is ever executed. Decoys never connect back, and never touch red-team infrastructure.
 - **Never on scored ports,** and never change any content the scorer fetches.
-- **Generated at competition time.** Token values, banners, honey paths and fake data are generated by `phylax` when the plan runs, from pools in the repo. Reading our public repo doesn't reveal which credentials are fake or how a given decoy will look.
+- **Generated at competition time.** Token values, banners, honey paths and fake data are generated by `phylax` when the plan runs. The pools and the fake shell's code are in the public repo, so a red teamer who studies it can recognize some decoys, for example a honey filename taken from `pools/`. What the repo can't reveal is the per-host values: which credentials, keys and unguessable paths are planted where. Pools stay large and realistic so that matching against them is slow and inconclusive, and the deception design assumes a careful attacker spots some decoys.
 - **Severity follows depth.**
   - **Info:** connecting.
   - **High:** logging in or running commands.
@@ -1056,8 +1072,6 @@ Every token is unique to its host and recorded in the controller's token registr
 | Honey OpenCart admin with a unique password | ecom database | That login attempted on the admin page |
 | Honey DNS record that nothing uses | DNS zone | Any query for it, meaning the zone was enumerated. Zone transfer attempts are logged too. |
 
-**Timing trap:** the packet says POP3 checks use AD usernames. If the scorer picks from all directory users, a honey account could be chosen and fail. Honey AD accounts are only created after check discovery has observed the scorer's POP3 user set.
-
 **Complexity flag:** the LSASS decoy session needs the agent to keep a logon session alive on each Windows server. It's worth it, because it's one of the few ways to tell that LSASS was dumped. If Defender or a reboot kills it, the agent recreates it.
 
 ### Decoy services
@@ -1066,8 +1080,10 @@ Every token is unique to its host and recorded in the controller's token registr
 | --- | --- |
 | SSH on 22 (where real SSH is disabled) | Full fake shell: accepts a login after a few attempts (or any honey key), presents a believable filesystem and command set, records every keystroke and command, never executes anything. Banner and host details randomized per host. |
 | MySQL, Redis, Telnet on hosts that don't run them | Protocol-correct handshake and login prompts; credentials recorded |
-| WinRM (5985), RDP (3389), SMB | Connect and negotiate only; credentials recorded where the protocol offers them |
+| WinRM (5985) and RDP (3389), on hosts where those services are off | Connect and negotiate only; credentials recorded where the protocol offers them |
 | Fake admin web panel on an unused port | Login page that records every credential tried |
+
+There's no SMB decoy: Windows holds port 445 on every host, and the DC needs it.
 
 **Complexity flag:** the full fake shell is the largest decoy by far. It's isolated in the unprivileged process, has no real filesystem or command execution behind it, and has its own fuzz tests in CI.
 
@@ -1290,7 +1306,7 @@ For each relay: connections spliced, bytes and errors. For the controller: CPU, 
 
 ### Backing up the controller
 
-Encrypted state snapshots every 15 minutes go to the backup targets declared in the manifest, and restore needs only the passphrase (§ Enrollment).
+Encrypted state snapshots (keys, vault, manifest, enrollments, plans and incidents, but no event data) go to the backup targets declared in the manifest every 15 minutes and after every key or vault change. Restore needs only the passphrase and starts a new epoch (§ Enrollment).
 
 ## Service backups, IR drafter and inject kit
 
@@ -1322,9 +1338,9 @@ Service data is backed up by agent actions and pulled to the controller, so rest
 
 | Section | Filled from |
 | --- | --- |
-| Header: team number only, incident id, times in CST | Manifest, incident |
+| Header: team number only, incident id, times in Central time | Manifest, incident |
 | Summary | Recipe template sentence, edited by hand |
-| Timeline | Incident events with clock offsets applied, CST with UTC alongside |
+| Timeline | Incident events with clock offsets applied, Central time with UTC alongside |
 | Source and destination | Addresses, ports and protocols from flows and transactions; hostnames from the manifest |
 | Accounts and credentials | Accounts used or created; credentials stolen or cracked (D8, honeytoken sightings); what was rotated after |
 | Affected systems and services | Hosts and services, and whether scoring was affected (health and scorer history) |
@@ -1363,7 +1379,7 @@ Service data is backed up by agent actions and pulled to the controller, so rest
   - firewall policy summary
   - backup schedule with restore times
   - logging coverage matrix
-- **Inject tracker** in the UI: received and due times (CST), owner, deliverable, linked manifest change, status, submitted time.
+- **Inject tracker** in the UI: received and due times (Central), owner, deliverable, linked manifest change, status, submitted time.
 
 **Complexity flag:** Typst is a host binary on the controller. It's acceptable because the controller is the trusted host; it isn't shipped to any agent.
 
@@ -1398,9 +1414,9 @@ The web UI is only reachable on ubuntu-wkst itself. Whoever can see that VM's co
 | Time | Who | What |
 | --- | --- | --- |
 | T+0–2 | Captain | Read NISE. Confirm the team number in the manifest. |
-| T+0–5 | Network | Rotate Palo and VyOS admin on the consoles. |
+| T+0–8 | Network | Rotate Palo and VyOS admin on the consoles. Enter the relay-link rules and the controller's static NAT from the printed checklist. |
 | T+0–5 | Platform driver | `phylax init`: fetch and verify the release, set the passphrase, check the controller address, start the UI. |
-| T+0–8 | Windows lead | Relay host first contact via the console one-liner. Create the static NAT for the relay link. |
+| T+0–10 | Windows lead | Relay host first contact via the console one-liner, once Network confirms the relay-link rules. |
 | T+2–12 | Platform driver | First-contact plans for every host: SSH where possible, WinRM where needed, through the relay for other segments. Agents enroll. |
 | T+5–10 | Automatic | As-found backups; capture and check discovery start; source-address check against the Palo |
 | T+5–15 | SOC + leads | Hunt plan (baseline diff, package verification, AD checks). Review the queue. |
@@ -1408,7 +1424,7 @@ The web UI is only reachable on ubuntu-wkst itself. Whoever can see that VM's co
 | T+10–25 | Platform driver + Network | Firewall plans: shadow mode, review would-be drops, enforce, with health checks |
 | T+15–40 | Platform driver | Service hardening plans with health checks. Golden backups as each passes. |
 | T+20–45 | SOC | Approve hunt remediations. Confirm Sysmon and all agent modules on every host (Platform page). |
-| T+30–60 | Floater | Decoys and honeytokens deployed. Honey AD accounts only after the scorer's POP3 user set is known. |
+| T+30–60 | Floater | Decoys and honeytokens deployed, including honey AD accounts. |
 | T+45–90 | Captain + driver | Review discovered checks: accept, edit or reject proposals |
 | Ongoing | All | Incidents, injects, patch windows as needed, periodic backups, drift adoption |
 
@@ -1427,7 +1443,7 @@ The web UI is only reachable on ubuntu-wkst itself. Whoever can see that VM's co
 
 ## Testing and the lab
 
-With AI-assisted development, writing code is rarely the bottleneck. Proving it under realistic conditions is. Every capability is demonstrated in a replica lab, under injected packet loss, against a scripted red team, a scorer simulator and an orange-team noise generator, before it goes on the competition checklist. Each milestone spends at least as long in the lab as in the editor.
+With AI-assisted development, writing code is rarely the bottleneck. Proving it under realistic conditions is. Every capability is demonstrated in a replica lab, with injected link drops, against a scripted red team, a scorer simulator and an orange-team noise generator, before it goes on the competition checklist. Each milestone spends at least as long in the lab as in the editor.
 
 ### Replica lab
 
@@ -1438,11 +1454,9 @@ With AI-assisted development, writing code is rarely the bottleneck. Proving it 
   - three chained segments
   - one segment that allows no outbound at all (to confirm the documented limitation)
 - **Hosts** from the reference templates, then contaminated with prebaked implants.
-- **Firewalls:** PAN-OS VMs if lab licenses can be obtained, otherwise nftables routers as stand-ins. VyOS as in the competition.
+- **Firewalls:** PAN-OS VMs if lab licenses can be obtained, otherwise nftables routers as stand-ins for topology tests only. The Palo adapter needs a real PAN-OS (§ Risks). VyOS as in the competition.
 - **Proxy:** Squid with an allowlist, to rehearse release delivery and patch windows.
 - **Fault injection** on every router link:
-  - `netem` loss 20% and delay 150 ms ± 50 ms
-  - 1 Mbit/s cap
   - random link drops of 5–60 s
   - a forced DHCP change on the controller
 
@@ -1499,16 +1513,17 @@ With AI-assisted development, writing code is rarely the bottleneck. Proving it 
 | T14 | Scorer adds an HTTP path and a DNS name mid-run | D16 and a check proposal within one round |
 | T15 | Check discovery accuracy over 2 hours | 100% of the simulator's checks proposed; 0 false proposals; dropped checks flagged stale within 5 rounds |
 | T16 | A hardening plan breaks a scored page | Health check red in 60 s or less; one-click rollback works |
-| T17 | Link drops during an SSH-disable and firewall-enforce plan | Dead-man behaves correctly; no lockout; no lost node |
+| T17 | Link drops during an SSH-disable and firewall-enforce plan; a relay-host firewall change that blocks its segment's agents | Dead-man behaves correctly, including rolling back the relay change; no lockout; no lost node |
 | T18 | Controller restart mid-plan | No lost or duplicated events; plan resumes after unlock |
 | T19 | VM reset mid-run | Re-enrollment flow; host back to hardened in 10 min or less |
 | T20 | Orange-team noise for 60 min | 5 or fewer false-positive alerts per hour |
-| T21 | First contact at 1 Mbit/s and 20% loss; agent then killed and disabled | Heartbeat in 30 s or less inside a segment and 3 min or less at 1 Mbit/s; silence detected in 15 s or less |
+| T21 | First contact; agent then killed and disabled | Heartbeat in 30 s or less; silence detected in 15 s or less |
 | T22 | Relay host killed | Segment marked dark; local detection continues; console restore works |
-| T23 | Controller lost; restore from snapshot on another machine | Agents reconnect after `set-controller`; no re-enrollment needed |
+| T23 | Controller lost mid-plan; restore on another machine from a snapshot older than the last steps sent | Agents reconnect after `set-controller`; no re-enrollment; the restored controller's steps are accepted under the new epoch; spooled events are resent and chain-checked; any remaining gap is marked |
 | T24 | Defender on, current definitions | Agent, decoys and the LSASS decoy run without quarantine (or with the single exclusion) |
 | T25 | Crafted strings (script tags, terminal escapes) in process names, paths, HTTP paths and decoy-shell input | Nothing executes or renders as markup in the UI |
 | T26 | Windows raw-socket capture under load | Measured inbound and outbound coverage; drop counts reported |
+| T27 | Console bootstrap on Windows 10, Server 2016 and Linux | Agent enrolls; a wrong controller key aborts before the token is sent; a tampered binary is never run |
 
 ### CI
 
@@ -1538,9 +1553,9 @@ The link and execution work (M1, M2) comes first because every other feature rid
 
 | Milestone | Weeks | Delivers | Gate |
 | --- | --- | --- | --- |
-| M0 Foundations | 1–2 | Repo layout, manifest schema v0, written protocol spec, lab replica with fault injection and proxy, CI skeleton, scorer simulator v0 | Lab reproduces the 2026 topology; manifest renders a correct firewall policy for it |
-| M1 Link and enrollment | 3–6 | Agent link, spool and heartbeat; `phylax serve` with SQLite; TLS pinning and connection types; enrollment; SSH and WinRM first contact; console bootstrap; relay splicing; Platform page | T18, T21, T22 |
-| M2 Execution | 5–9 | Core action catalog (files, accounts, services, firewall, registry, persistence cleanup, logging); plans; dry-run diff; DAG in the UI; dead-man; locks; safe mode; Palo and VyOS adapters (apply, snapshot, drift) | Cold-start hardening of all servers in 20 min or less at 20% loss; T16, T17 |
+| M0 Foundations | 1–2 | Repo layout, manifest schema v0, written protocol spec, lab replica with fault injection and proxy, PAN-OS lab license request, CI skeleton, scorer simulator v0 | Lab reproduces the 2026 topology; manifest renders a correct firewall policy for it |
+| M1 Link and enrollment | 3–6 | Agent link, spool and heartbeat; `phylax serve` with SQLite; TLS pinning and connection types; enrollment; SSH and WinRM first contact; console bootstrap; relay splicing; Platform page | T18, T21, T22, T27 |
+| M2 Execution | 5–9 | Core action catalog (files, accounts, services, firewall, registry, persistence cleanup, logging); plans; dry-run diff; DAG in the UI; dead-man; locks; safe mode; Palo and VyOS adapters (apply, snapshot, drift) | Cold-start hardening of all servers (credentials and firewalls in 25 min or less, services by T+40); T16, T17 |
 | M3 Telemetry and detection | 7–11 | `proc`, `net`, `fim`, `logs`; Sysmon management; audit ownership; rule engine; tier-0 and tier-1 responses; denied-egress logging; reference builds; hunt plan | T01, T02, T07, T11, T12, T13 |
 | M4 Capture and checks | 9–13 | Packet ring (Linux and Windows); flows; phase-1 parsers; active checks; check discovery; traffic labels; change detection; trace-back | T03, T04, T14, T15, T26 |
 | M5 Deception, C2 and reporting | 11–14 | Decoys including the fake shell; honeytokens and registry; sinkhole; patch windows; service backups; IR drafter; inject kit | T05, T06, T08, T09, T10, T24, T25 |
@@ -1555,6 +1570,7 @@ After the first competition, or earlier if time allows: phase-2 and phase-3 pars
 3. Windows raw-socket capture, falling back to logs for Windows transactions.
 4. Check discovery for protocols other than HTTP and DNS. Add those checks by hand.
 5. Decoy services other than SSH.
+6. Precise request linking in trace-back; keep the time-window fallback.
 
 **Never cut:**
 
@@ -1563,7 +1579,7 @@ After the first competition, or earlier if time allows: phase-2 and phase-3 pars
 - firewall and egress policy
 - D1, D2 and D17
 - active checks
-- trace-back
+- trace-back, at least with the time-window fallback
 - the IR drafter
 
 ## Complexity register
@@ -1579,7 +1595,7 @@ Every place this design adds complexity is listed here, with why it earns its pl
 | Five connection types on one port | Keeps one listener and one firewall rule | Small handler per type, selected by ALPN | Wire protocol |
 | Patch-window proxy | Hosts patch without any outbound rule | Loopback only; time-boxed; controller allowlist; one connection per stream | Egress |
 | Go-native Windows actions through COM and WMI | Avoids trusting host binaries | Largest test effort; `host.exec` fallback per action if a COM interface fights back, recorded here | The agent |
-| Owning the Linux audit subsystem | No auditd binary to trust; one consumer | Agent stops auditd and installs rules itself | The agent |
+| Reading the Linux audit subsystem directly | No auditd binary to trust | Read-only multicast reader beside auditd; installs and re-checks its own rules; stops auditd only on kernels older than 3.16 | The agent |
 | Separate decoy process | Decoys face attackers; bugs must not give root | Same binary, unprivileged, supervised | The agent |
 | Full fake shell | Records what the red team actually does | No real filesystem or execution; fuzz-tested | Deception |
 | LSASS decoy session | One of the few ways to know LSASS was dumped | Recreated by the agent if killed; first on the cut list | Deception |
@@ -1635,12 +1651,12 @@ The largest risks are the controller as the single root of trust, rulings we hav
 | Platform driver becomes the bottleneck (one screen) | Medium | Medium | Dry runs measure it; a narrow SSH tunnel to the UI is the documented next step |
 | Go-native Windows work (COM, WMI, raw sockets) takes longer than planned | High | Medium | `host.exec` fallback per action; raw capture falls back to logs; tracked in the register |
 | Defender flags the agent | Medium | High | Lab test per release; one tightly scoped exclusion |
-| Palo rewrites source addresses on inbound NAT, blinding check discovery on hosts | Medium | High | Detected at drop flag; discover from the Palo's traffic logs instead (pre-NAT view) |
+| Palo rewrites source addresses on inbound NAT, blinding check discovery on hosts | Medium | High | Detected at drop flag. The Palo's traffic logs record the real source and the translated source port, so the controller rejoins each host transaction to its real source by port and time. Labeling and discovery keep working, with the 30 s log-pull delay added. |
 | A relay host dies | Medium | Medium | Segment keeps working locally; console restore; consider a static backup only if the lab says so |
 | Controller address changes mid-competition | Low | High | Console `set-controller`; ask officials about a DHCP reservation |
 | Trace-back can't link requests to processes reliably | Medium | Medium | Time-window fallback marked lower confidence; dedicated lab test |
-| Honey AD account picked by the scorer | Low | Medium | Create honey accounts only after the scorer's POP3 users are known |
 | Red team reads the repo and tunes around detections | High | Medium | Behavioral and allowlist detections; values generated at competition time |
+| No PAN-OS VMs in the lab (licenses) | Medium | High | Request evaluation licenses in M0. Without them, M2's gate isn't passed until the Palo adapter's apply, drift and commit ordering have been tested on a borrowed or trial device. |
 | Scope is too large for the team | High | High | Milestone gates, cut list, never-cut list; complexity register |
 | ubuntu-wkst disk too small for indefinite retention | Medium | Medium | Disk alerts; compress old transaction bodies; pcaps only on demand |
 
@@ -1652,9 +1668,10 @@ The largest risks are the controller as the single root of trust, rulings we hav
 4. Are decoy services on our public addresses acceptable (fake SSH and others on non-scored ports)?
 5. Can several team members view the same VM console in NETLAB at once?
 6. Is NISE (or Nextcloud) reachable from inside the competition VMs, for PDF upload?
-7. Does the proxy allow GitHub release assets, distro mirrors and Microsoft Update for patch windows?
+7. Does the proxy allow GitHub release assets, the Sysinternals download site, distro mirrors and Microsoft Update for patch windows?
 8. Which of our repos are copied into Nextcloud, and are binaries preserved?
 9. Which hosts serve the HTTPS, TFTP and NTP checks, if scored?
+10. May we add a static NAT on a free address in our public pool, so a relay in another segment can reach the controller?
 
 ### Internal questions to settle in the lab
 
@@ -1664,7 +1681,6 @@ The largest risks are the controller as the single root of trust, rulings we hav
 - Whether AD-backed POP3 and domain FTP survive a krbtgt double reset.
 - Defender's reaction to the agent, decoys and the LSASS decoy session.
 - Exact free disk, CPU and memory on ubuntu-wkst in the competition image.
-- Whether Sysmon's license allows redistribution in our release, or whether it's fetched at competition time.
 - Whether a native DNS zone export path exists, so `dnscmd` can be dropped.
 
 ## Appendices

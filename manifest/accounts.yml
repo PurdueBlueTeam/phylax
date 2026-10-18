@@ -1,0 +1,72 @@
+# Managed accounts. Values live in the vault, never here.
+accounts:
+  defaults.ubuntu-wkst:
+    scope: local
+    host: ubuntu-wkst
+    scored: false
+    rotation: unscored-rotation
+  defaults.ubuntu-ecom:
+    scope: local
+    host: ubuntu-ecom
+    scored: false
+    rotation: unscored-rotation
+  defaults.fedora-webmail:
+    scope: local
+    host: fedora-webmail
+    scored: false
+    rotation: unscored-rotation
+  defaults.oracle-splunk:
+    scope: local
+    host: oracle-splunk
+    scored: false
+    rotation: unscored-rotation
+  defaults.win11-wkst:
+    scope: local
+    host: win11-wkst
+    scored: false
+    rotation: unscored-rotation
+  defaults.server-ad-dns:
+    scope: local
+    host: server-ad-dns
+    scored: false
+    rotation: unscored-rotation
+  ecom.root:
+    scope: local
+    host: ubuntu-ecom
+    scored: false
+    rotation: unscored-rotation
+  ecom.db:
+    scope: app
+    host: ubuntu-ecom
+    scored: false
+    rotation: unscored-rotation
+    embeds_in: [/var/www/html/admin/configure.php]
+  ecom.admin:
+    scope: app
+    host: ubuntu-ecom
+    scored: false
+    rotation: unscored-rotation
+    embeds_in: [/var/www/html/admin/configure.php]
+  health.pop3:
+    scope: local
+    host: fedora-webmail
+    scored: false
+    rotation: none
+  splunk.admin:
+    scope: app
+    host: oracle-splunk
+    scored: false
+    rotation: unscored-rotation
+  dc.admin:
+    scope: domain
+    host: server-ad-dns
+    scored: false
+    rotation: ticket
+  palo.admin:
+    scope: device
+    scored: false
+    rotation: none
+  vyos.admin:
+    scope: device
+    scored: false
+    rotation: none

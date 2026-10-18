@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phylax/manifest/accounts.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["accounts"],
+  "properties": {
+    "accounts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "rotation"],
+        "properties": {
+          "scope": { "enum": ["local", "domain", "app", "device"] },
+          "host": { "type": "string" },
+          "scored": { "type": "boolean", "default": false },
+          "rotation": { "enum": ["none", "unscored-rotation", "ticket"] },
+          "embeds_in": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

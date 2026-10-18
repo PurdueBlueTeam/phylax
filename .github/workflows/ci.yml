@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mise-actions/setup-mise@v3
+      - name: Static build (linux)
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/phylax ./cmd/phylax
+      - name: Static build (windows)
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/phylax-windows-amd64.exe ./cmd/phylax
+      - name: Size gate (40 MB / 15 MB gz)
+        run: make size
+      - name: Vet
+        run: go vet ./...
+      - name: Tests
+        run: go test ./...
