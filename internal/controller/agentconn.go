@@ -245,6 +245,7 @@ func (ac *agentConn) handleEvents(_ context.Context, _ *link.Conn, m *link.Messa
 		if _, err := ac.c.st.RecordEvent(ac.host, store.Event{Seq: ev.Seq, TS: ev.TS, Type: ev.Type, Data: data, Hash: ev.Hash}); err != nil {
 			return err
 		}
+		ac.c.observeEvent(ac.host, store.Event{Seq: ev.Seq, TS: ev.TS, Type: ev.Type, Data: data, Hash: ev.Hash})
 		ac.nextSeq++
 		ac.nextHash = ev.Hash
 	}

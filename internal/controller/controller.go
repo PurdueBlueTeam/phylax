@@ -17,9 +17,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/discovery"
+	"github.com/PurdueBlueTeam/phylax/internal/labels"
+	checks "github.com/PurdueBlueTeam/phylax/internal/checks"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
+	"github.com/PurdueBlueTeam/phylax/internal/traceback"
 )
 
 // Controller is the `phylax serve` state.
@@ -49,6 +53,24 @@ type Controller struct {
 	safeModes map[string]bool
 	connsMu  sync.Mutex
 	conns    map[string]*agentConn
+
+	// service monitoring (M4): active checks, check discovery,
+	// traffic labels and trace-back
+	chkMu      sync.Mutex
+	chk        *checks.Checker
+	disc       *discovery.Module
+	trace      *traceback.Builder
+	labs       *labels.Module
+	svcMu      sync.Mutex
+	services   map[string]ServiceInfo
+	resMu      sync.Mutex
+	results    map[string]map[string]any // "checkID|vantage" -> latest result
+	timelines  map[string]*traceback.Timeline // service -> latest trace-back
+	scoredAccounts map[string]bool
+	scoredList   []map[string]any
+	alertMu  sync.Mutex
+	alertSeq uint64
+	modStop  context.CancelFunc
 }
 
 // New opens (or creates) the controller state under dir.
@@ -69,6 +91,10 @@ func New(dir string, logf *log.Logger) (*Controller, error) {
 		planName:  map[string]string{},
 		safeModes: map[string]bool{},
 		conns:     map[string]*agentConn{},
+		services:   map[string]ServiceInfo{},
+		results:    map[string]map[string]any{},
+		timelines:  map[string]*traceback.Timeline{},
+		scoredAccounts: map[string]bool{},
 	}
 	c.ctx, c.ctxStop = context.WithCancel(context.Background())
 	if err := c.loadOrCreateIdentity(); err != nil {
@@ -159,6 +185,12 @@ func (c *Controller) Run(addr string) error {
 	tlsLn := tls.NewListener(ln, tlsCfg)
 	c.stopped.Store(false)
 	c.ln = tlsLn
+	// service-monitoring modules: the active checker (controller
+	// vantage) and check discovery run for the listener's lifetime
+	modCtx, cancel := context.WithCancel(context.Background())
+	c.modStop = cancel
+	go c.RunChecks(modCtx)
+	c.RunCorrelation(modCtx)
 	c.log.Printf("listening on %s", addr)
 	for {
 		conn, err := tlsLn.Accept()
@@ -189,6 +221,9 @@ func (c *Controller) Stop() {
 	if c.ln != nil {
 		c.ln.Close()
 		c.ln = nil
+	}
+	if c.modStop != nil {
+		c.modStop()
 	}
 }
 func (c *Controller) dispatch(conn *tls.Conn) {

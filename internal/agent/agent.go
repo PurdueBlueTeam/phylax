@@ -22,6 +22,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/action"
 	agentfim "github.com/PurdueBlueTeam/phylax/internal/agent/fimmod"
+	"github.com/PurdueBlueTeam/phylax/internal/checks"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
@@ -37,6 +38,25 @@ type Bundle struct {
 	FimWatches []FimWatch `json:"fim_watches,omitempty"`
 	LogWatches []LogWatch `json:"log_watches,omitempty"`
 	PlanKey    string   `json:"plan_key,omitempty"` // base64 ed25519 public key
+
+	// Segment names the segment this host sits in (the check_runner's
+	// vantage is "segment:<segment>").
+	Segment string `json:"segment,omitempty"`
+	// Capture configures the capture role (docs: agent roles).
+	Capture *CaptureCfg `json:"capture,omitempty"`
+	// Checks is the active-check list the check_runner role runs from
+	// inside its segment (docs: Active checks — two vantage points).
+	Checks []checks.Check `json:"checks,omitempty"`
+}
+
+// CaptureCfg is the capture module's configuration: which interfaces to
+// read, the ports captured full-length (scored, decoy, sinkhole) and the
+// declared service ports mapped to their protocol for the phase-1 parsers.
+type CaptureCfg struct {
+	Ifaces    []string       `json:"ifaces,omitempty"`
+	Full      []int          `json:"full,omitempty"`
+	PortProto map[int]string `json:"port_proto,omitempty"`
+	RingBytes int64          `json:"ring_bytes,omitempty"` // 0 = default 64 MiB
 }
 
 // Agent is one host's link state.
@@ -227,6 +247,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.bundle.Services != nil || a.bundle.FimWatches != nil || a.bundle.LogWatches != nil {
 		a.StartModules(a.bundle.Services, a.bundle.FimWatches, a.bundle.LogWatches)
 	}
+	a.startCapture(ctx)
+	a.startChecks(ctx)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := a.runOnce(ctx)

@@ -115,6 +115,26 @@ implementation run (2026-10-18). Format: question / options / decision / rationa
 - U-08: NISE upload path (no NISE access) — PDFs are produced locally.
 - U-09: GitHub Actions CI execution (workflow file committed; running it
   requires pushing to the remote, which is outside the run boundary).
+- U-10: Live AF_PACKET frame delivery on this dev VM. Extensively
+  characterized (M4): inside docker containers on this host (kernel
+  7.0.0-34), a Go process's AF_PACKET socket (SOCK_RAW or SOCK_DGRAM,
+  bound to lo or eth0, tpacket2 ring or plain reads) receives no frames
+  at all, while a C process in the same netns on the same interface
+  receives everything (10/10 polls). Ruled out: syscall sequence
+  differences (C child process doing the identical sequence works),
+  signal masks, thread count (GOMAXPROCS=1), netpoll (GODEBUG=netpoll=0),
+  static-vs-dynamic linking, startup timing (7 s delay), a transient
+  mystery AF_PACKET socket that appears in every new netns for ~2 s
+  (harmless; reproduced and decoy-tested). Diagnosing further needs
+  root-level kernel tracing (kprobes/dmesg), which is outside the run
+  boundary. Consequence: capture module logic (ring, flows, parsers,
+  scan aggregation, freeze) is tested by driving the module's frame
+  entry point with synthetic frames (deterministic, full coverage); the
+  AF_PACKET syscall layer is smoke-tested (socket/bind/ring/mmap/Read
+  all succeed: TestLiveAFPacket); frame delivery must be verified on a
+  real lab host with CAP_NET_RAW. The competition agent runs directly on
+  lab hosts, not in containers, so this is expected not to affect the
+  deployment — but it is flagged because it is unexplained.
 
 ## Open questions for the user (nothing blocked on these)
 
@@ -142,6 +162,32 @@ implementation run (2026-10-18). Format: question / options / decision / rationa
   scripted `restore.firewall` recipe records the restore decision; the real
   nftables re-apply lands with M4.
 
+### D-run-12: T15 local equivalent stands in the service-side request log for capture
+- Question: T15 requires discovery to be tested against the scorer
+  simulator's ground truth. In the lab, the capture module (AF_PACKET)
+  observes the scorer's traffic on the service hosts. On this host,
+  AF_PACKET does not deliver frames in docker containers (U-10) and the
+  host kernel path is unverified.
+- Options: (a) test discovery only with synthetic events; (b) run the
+  real simulator against real in-test services and feed the services'
+  request log to discovery in the exact shape the capture parsers emit.
+- Decision: (b). The service servers see the same bytes capture would
+  see on loopback; the request log is converted to http/exchange/dns
+  events (tftp/ntp excluded: not decoded by the phase-1 parsers). The
+  round boundaries come from the simulator's RoundDone callback; the
+  fake clock advances one round per simulator round, so the 5-round
+  stale window is exact. The 2-hour lab window is scaled to 9 one-minute
+  rounds (same mechanics, less wall clock).
+
+### D-run-13: stale flag requires the check to be active
+- Question: T15 says "dropped checks flagged stale within 5 rounds". The
+  design's stale definition is "an active check with no scorer
+  counterpart for 5 rounds" — with an empty active list nothing can be
+  stale.
+- Decision: the E2E accepts the round-1-3 proposals into the active
+  list after round 3 (as the controller does when the operator accepts a
+  proposal), then the scorer drops ftp in round 4. Flagged stale at the
+  round-8 tick: exactly 5 rounds without a counterpart.
 ### D-run-11: detect engine bug found and fixed during M3
 - Finding: the rule engine's `condList` silently dropped nested `Cond`
   elements, so any rule with a nested `all:`/`any:` list matched on event

@@ -43,9 +43,11 @@ func (c *Controller) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	out := []AlertView{}
 	hosts := []string{host}
 	if host == "" {
+		// controller-side alerts (check red, D16, D17) live under the
+		// virtual "controller" host
+		hosts = append(hosts, "controller")
 		hs, err := c.st.ListHosts()
 		if err == nil {
-			hosts = nil
 			for _, h := range hs {
 				hosts = append(hosts, h.Name)
 			}
