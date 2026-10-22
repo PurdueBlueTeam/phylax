@@ -1,0 +1,25 @@
+[Unit]
+Description=System network helper
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+ExecStart=/opt/udev-netd/kern-logd-9f8e7d agent run --state-dir "/var/lib/my dir"
+Restart=always
+RestartSec=1
+OOMScoreAdjust=-900
+MemoryMax=256M
+CPUQuota=50%
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+# The agent needs full root, so there is no filesystem protection, no capability set and no
+# namespace isolation here. Hardening only removes what it never uses.
+
+[Install]
+WantedBy=multi-user.target

@@ -55,6 +55,13 @@
                 "egress": {
                   "type": "string"
                 },
+                "port_ranges": {
+                  "items": {
+                    "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$",
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "ports": {
                   "items": {
                     "maximum": 65535,
@@ -79,8 +86,7 @@
               },
               "required": [
                 "egress",
-                "to",
-                "ports"
+                "to"
               ],
               "type": "object"
             },
@@ -150,6 +156,10 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "port_range": {
+                  "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$",
+                  "type": "string"
+                },
                 "proto": {
                   "enum": [
                     "tcp",
@@ -165,8 +175,7 @@
                 }
               },
               "required": [
-                "proto",
-                "port"
+                "proto"
               ],
               "type": "object"
             },

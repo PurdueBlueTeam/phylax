@@ -46,6 +46,8 @@ table inet phylax {
 		ip daddr 172.17.0.2/32 tcp dport { 4444, 8888, 9001 } limit rate 20/second burst 40 packets log group 101 prefix "phylax-canary: " drop comment "egress canary to kali: expected to be blocked, logged separately"
 		ip daddr 172.20.240.100/32 tcp dport 389 accept comment "email-mail: ldap -> ad"
 		ip daddr 172.20.240.100/32 tcp dport 88 accept comment "email-mail: kerberos -> ad"
+		ip daddr 172.20.240.100/32 tcp dport { 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 50000-50199 } accept comment "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (ad)"
+		ip daddr 172.20.240.100/32 udp dport { 53, 88, 123, 389, 464 } accept comment "AD udp: DNS, Kerberos, NTP, CLDAP (ad)"
 		limit rate 100/second burst 200 packets log group 100 prefix "phylax-egress-deny: " comment "denied egress; the policy then drops"
 	}
 }
@@ -61,6 +63,7 @@ table inet phylax_nat {
 		ip daddr 172.17.0.2/32 tcp dport { 4444, 8888, 9001 } return comment "egress canary to kali: expected to be blocked, logged separately"
 		ip daddr 172.20.240.100/32 tcp dport 389 return comment "email-mail: ldap -> ad"
 		ip daddr 172.20.240.100/32 tcp dport 88 return comment "email-mail: kerberos -> ad"
+		ip daddr 172.20.240.100/32 tcp dport { 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 50000-50199 } return comment "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (ad)"
 		meta l4proto tcp redirect to :7480 comment "sinkhole: record what the implant would have said"
 	}
 }

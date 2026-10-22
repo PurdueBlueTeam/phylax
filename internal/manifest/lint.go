@@ -67,6 +67,8 @@ const (
 	RuleReservation  = "NET001"
 	RuleNoPublic     = "NET002"
 	RuleDepPort      = "NET003"
+	RuleDomainMember = "AD001"
+	RuleRPCPin       = "AD002"
 	RuleScorerEst    = "SC001"
 	RuleScorerTime   = "SC002"
 )
@@ -82,6 +84,7 @@ func Lint(m *Manifest) []Finding {
 	l.decoys()
 	l.policy()
 	l.network()
+	l.domain()
 	l.scorer()
 	return l.finish()
 }
@@ -343,31 +346,99 @@ func (l *linter) network() {
 	for _, id := range SortedKeys(m.Services) {
 		s := m.Services[id]
 		for _, d := range s.DependsOn {
-			if !m.hostListensOn(d.To, d.Ports, d.Proto) {
-				l.add(RuleDepPort, SevWarn, "service "+id, "depends_on %q: no declared service or decoy on %s listens on %v", d.Egress, d.To, d.Ports)
+			if !m.hostListensOn(d.To, d.PortSet(), d.Proto) {
+				l.add(RuleDepPort, SevWarn, "service "+id, "depends_on %q: no declared service or decoy on %s listens on %v", d.Egress, d.To, d.PortSet().String())
 			}
 		}
 	}
 }
 
-func (m *Manifest) hostListensOn(host string, ports []uint16, proto string) bool {
+func (m *Manifest) hostListensOn(host string, want Ports, proto string) bool {
 	if proto == "" {
 		proto = "tcp"
 	}
-	for _, p := range ports {
-		found := false
-		for _, id := range m.ServicesOn(host) {
-			for _, ln := range m.Services[id].Listen {
-				if ln.Port == p && ln.Proto == proto {
-					found = true
-				}
+	var have Ports
+	for _, id := range m.ServicesOn(host) {
+		for _, ln := range m.Services[id].Listen {
+			if ln.Proto == proto {
+				ps := ln.PortSet()
+				have.Ports = append(have.Ports, ps.Ports...)
+				have.Ranges = append(have.Ranges, ps.Ranges...)
 			}
 		}
-		if !found {
+	}
+	for _, x := range want.Ports {
+		if !have.Has(x) {
+			return false
+		}
+	}
+	// A range dependency is satisfied by any listener inside it (the target
+	// picks its own port in the range), e.g. dynamic RPC.
+	for _, r := range want.Ranges {
+		if !have.Overlaps(Ports{Ranges: []PortRange{r}}) {
 			return false
 		}
 	}
 	return true
+}
+
+// domain: AD001 a Windows host sharing a segment with a DC but not declared a
+// domain member while scored services use domain accounts (it would lose
+// Kerberos, LDAP, SYSVOL and Netlogon once egress is default-deny); AD002 a DC
+// with members that does not pin its RPC dynamic range.
+func (l *linter) domain() {
+	m := l.m
+	for _, name := range SortedKeys(m.Hosts) {
+		h := m.Hosts[name]
+		if h.IsDomainController() {
+			if len(m.DomainMembers(name)) > 0 && h.RPCRange == "" {
+				l.add(RuleRPCPin, SevWarn, "host "+name, "domain controller does not pin its dynamic RPC range (rpc_range): members are allowed %s, which is wide; pin the range on the DC and declare it", DefaultRPCRange)
+			}
+			continue
+		}
+		if !h.IsWindows() || h.DomainMember != "" {
+			continue
+		}
+		var dc string
+		for _, d := range SortedKeys(m.Hosts) {
+			if dh := m.Hosts[d]; d != name && dh.IsDomainController() && dh.Segment == h.Segment {
+				dc = d
+				break
+			}
+		}
+		if dc == "" {
+			continue
+		}
+		if id := l.domainScored(name); id != "" {
+			l.add(RuleDomainMember, SevError, "host "+name, "Windows host in segment %s with domain controller %s is not marked domain_member, but %s uses domain accounts: default-deny egress would block Kerberos, LDAP, DNS, SMB and RPC to %s; set domain_member: %s", h.Segment, dc, id, dc, dc)
+		}
+	}
+}
+
+// domainScored returns a scored service (or protected domain account) on the
+// host that authenticates with domain accounts, or "".
+func (l *linter) domainScored(host string) string {
+	m := l.m
+	for _, a := range SortedKeys(m.Accounts) {
+		acct := m.Accounts[a]
+		if acct.Scope == "domain" && acct.Protected() && containsStr(acct.Hosts, host) {
+			return "account " + a
+		}
+	}
+	domainAuth := map[string]bool{"smb": true, "winrm": true, "rdp": true, "mssql": true}
+	var generic bool
+	for _, a := range m.Accounts {
+		if a.Scope == "domain" && a.Protected() && len(a.Hosts) == 0 {
+			generic = true
+		}
+	}
+	for _, id := range m.ServicesOn(host) {
+		s := m.Services[id]
+		if s.Scored && s.IsServiceEnabled() && domainAuth[s.Kind] && (generic || s.Transport == nil || s.Transport.Auth != "key") {
+			return "scored service " + id
+		}
+	}
+	return ""
 }
 
 func (l *linter) scorer() {

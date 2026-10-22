@@ -21,6 +21,13 @@
                   "host": {
                     "type": "string"
                   },
+                  "port_ranges": {
+                    "items": {
+                      "pattern": "^[0-9]{1,5}(-[0-9]{1,5})?$",
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
                   "ports": {
                     "items": {
                       "maximum": 65535,
@@ -45,7 +52,6 @@
                 },
                 "required": [
                   "to",
-                  "ports",
                   "reason"
                 ],
                 "type": "object"

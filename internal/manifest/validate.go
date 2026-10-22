@@ -166,6 +166,31 @@ func (m *Manifest) Validate() error {
 				oneOf(subj, "hardening.icmp_echo", h.Hardening.ICMPEcho, "allow", "drop")
 			}
 		}
+		if h.DomainMember != "" {
+			dh, ok := m.Hosts[h.DomainMember]
+			switch {
+			case h.DomainMember == name:
+				e.Addf("%s: domain_member names the host itself", subj)
+			case !ok:
+				e.Addf("%s: domain_member %q is not a host", subj, h.DomainMember)
+			case !dh.IsDomainController():
+				e.Addf("%s: domain_member %q must have the domain_controller role", subj, h.DomainMember)
+			}
+			if h.IsDomainController() {
+				e.Addf("%s: a domain controller cannot also be a domain_member (declare the DC's own replication separately)", subj)
+			}
+		}
+		if h.RPCRange != "" {
+			r, err := ParsePortRange(h.RPCRange)
+			switch {
+			case err != nil:
+				e.Addf("%s: rpc_range: %v", subj, err)
+			case !h.IsDomainController():
+				e.Addf("%s: rpc_range is only valid on a host with the domain_controller role", subj)
+			case r.Lo < 1024:
+				e.Addf("%s: rpc_range %s starts below 1024 (it must not overlap well-known ports)", subj, h.RPCRange)
+			}
+		}
 		if h.IsDHCP() {
 			if h.Public != "" {
 				e.Addf("%s: a DHCP host cannot have a same-octet public address", subj)
@@ -220,6 +245,12 @@ func (m *Manifest) Validate() error {
 		port        uint16
 	}
 	owner := map[portKey]string{}
+	type rangeOwner struct {
+		host, proto string
+		r           PortRange
+		id          string
+	}
+	var rangeOwners []rangeOwner
 	for _, id := range SortedKeys(m.Services) {
 		s := m.Services[id]
 		subj := "service " + id
@@ -235,8 +266,34 @@ func (m *Manifest) Validate() error {
 		}
 		for _, l := range s.Listen {
 			oneOf(subj, "listen.proto", l.Proto, "tcp", "udp")
-			if l.Port == 0 {
-				e.Addf("%s: listener port is required", subj)
+			switch {
+			case l.Port == 0 && l.PortRange == "":
+				e.Addf("%s: listener port or port_range is required", subj)
+			case l.Port != 0 && l.PortRange != "":
+				e.Addf("%s: listener sets both port and port_range", subj)
+			case l.PortRange != "":
+				r, err := ParsePortRange(l.PortRange)
+				if err != nil {
+					e.Addf("%s: listener %v", subj, err)
+					break
+				}
+				for _, o := range rangeOwners {
+					if o.host == s.Host && o.proto == l.Proto && o.r.Overlaps(r) {
+						e.Addf("%s: %s/%s on %s overlaps %s/%s of %s", subj, l.Proto, r, s.Host, o.proto, o.r, o.id)
+					}
+				}
+				for k, id := range owner {
+					if k.host == s.Host && k.proto == l.Proto && r.Contains(k.port) {
+						e.Addf("%s: %s/%s on %s covers %s/%d of %s", subj, l.Proto, r, s.Host, k.proto, k.port, id)
+					}
+				}
+				rangeOwners = append(rangeOwners, rangeOwner{s.Host, l.Proto, r, id})
+				continue
+			}
+			for _, o := range rangeOwners {
+				if o.host == s.Host && o.proto == l.Proto && o.r.Contains(l.Port) && l.Port != 0 {
+					e.Addf("%s: %s/%d on %s is inside the range %s of %s", subj, l.Proto, l.Port, s.Host, o.r, o.id)
+				}
 			}
 			for _, src := range l.Sources {
 				if _, err := netip.ParsePrefix(src); err != nil {
@@ -277,8 +334,13 @@ func (m *Manifest) Validate() error {
 			if _, ok := m.Hosts[d.To]; !ok {
 				e.Addf("%s: depends_on %q: host %q is not a host", subj, d.Egress, d.To)
 			}
-			if len(d.Ports) == 0 {
-				e.Addf("%s: depends_on %q: ports are required", subj, d.Egress)
+			if len(d.Ports) == 0 && len(d.PortRanges) == 0 {
+				e.Addf("%s: depends_on %q: ports or port_ranges are required", subj, d.Egress)
+			}
+			for _, r := range d.PortRanges {
+				if _, err := ParsePortRange(r); err != nil {
+					e.Addf("%s: depends_on %q: %v", subj, d.Egress, err)
+				}
 			}
 			if d.Proto != "" {
 				oneOf(subj, "depends_on.proto", d.Proto, "tcp", "udp")
@@ -373,8 +435,13 @@ func (m *Manifest) Validate() error {
 				e.Addf("%s: to %q is neither a host nor a CIDR", subj, a.To)
 			}
 		}
-		if len(a.Ports) == 0 || a.Reason == "" {
-			e.Addf("%s: ports and reason are required", subj)
+		if (len(a.Ports) == 0 && len(a.PortRanges) == 0) || a.Reason == "" {
+			e.Addf("%s: ports (or port_ranges) and reason are required", subj)
+		}
+		for _, r := range a.PortRanges {
+			if _, err := ParsePortRange(r); err != nil {
+				e.Addf("%s: %v", subj, err)
+			}
 		}
 		if a.Proto != "" {
 			oneOf(subj, "proto", a.Proto, "tcp", "udp")

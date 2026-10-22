@@ -76,18 +76,44 @@ knobs: `lockout_policy`, `ntlm`, `lm_compat_level`, `protected_users`,
 `icmp_echo`).
 
 Roles: `controller`, `relay`, `device_proxy`, `check_runner`, `scanner`,
-`canary`, `decoys`, `capture`; `vantage` is shorthand for
+`canary`, `decoys`, `capture`, `domain_controller`; `vantage` is shorthand for
 `check_runner + scanner + canary`.
+
+Domain membership. Default-deny egress would cut a domain-joined host off from
+its DC, breaking every check that uses domain accounts (SMB, WinRM, RDP, MSSQL
+with Windows auth). So:
+
+- `domain_controller` role marks the DC. `rpc_range: "50000-50199"` (DC only,
+  `lo-hi`, at least 1024) pins the DC's dynamic RPC range; the plans must set it
+  on the DC. Unpinned, members are allowed 49152-65535 and the lint warns (AD002).
+- `domain_member: <dc host>` on any host (Windows, or Linux with sssd/realmd)
+  renders the complete member-to-DC allowance set as one `domain` group
+  (`Phylax Domain` on Windows): tcp 53, 88, 135, 389, 445, 464, 636, 3268, 3269
+  and the RPC range; udp 53, 88, 123 (NTP), 389, 464. The DC gets the matching
+  inbound rules from its members' addresses (a DHCP member contributes its whole
+  segment, marked `approx`). Members in a different segment than the DC also get
+  Palo rules (zone to zone, or inside/outside) placed before the egress deny, and
+  VyOS forward rules, when that device guards either segment. The nftables
+  sinkhole never redirects these flows.
+
+Port ranges. Anywhere a port list was accepted a range can be added without
+changing existing manifests: `listen[{proto, port_range: "50000-50100"}]`
+(instead of `port`), `depends_on[{ports: [135], port_ranges: ["49152-65535"]}]`,
+`egress.allow[{ports, port_ranges}]`. Ranges are inclusive `lo-hi` strings,
+validated (1-65535, lo <= hi); rendered as nft `a-b`, Windows `remote_ranges`
+and device `ranges` (JSON `"lo-hi"`). A listener range may not overlap another
+listener on the host. `NET003` accepts a range dependency when a listener sits
+inside it.
 
 ### services.yml
 
 `host`, `kind` (http, https, ssh, mail, smtp, imap, pop3, ftp, dns, icmp, smb,
 winrm, rdp, mssql, mysql, splunk, ldap, tcp), `scored`, `state` (`running`
-default, `stopped`, `disabled`), `listen[{proto,port,sources}]`, `process`,
+default, `stopped`, `disabled`), `listen[{proto,port|port_range,sources}]`, `process`,
 `transport` (what the scorer does: `plaintext`, `tls_verify`, `starttls`
 never/optional/required, `auth` password/ntlm/key/none, `pty`, `shell`,
 `encryption` none/optional/required), `content`, `data`, `outbound` (`none` or
-a host list), `depends_on[{egress,to,ports,proto,service}]`, `health`.
+a host list), `depends_on[{egress,to,ports,port_ranges,proto,service}]`, `health`.
 `depends_on.service` names the target service and feeds the cycle check.
 `listen.sources` restricts who may connect; it is accepted for unscored
 services and rejected by the lint for scored ones.
@@ -124,7 +150,7 @@ http_admin), `honey_files`, `honeytokens[{kind,at}]`, `exposure`
 ### policy.yml
 
 `firewall.{icmp,dhcp,ipv6}` (`allow`; `drop` is an error), `egress`
-(`allow[{host,to,ports,proto,reason}]`, `sinkhole.{enabled,port}`,
+(`allow[{host,to,ports,port_ranges,proto,reason}]`, `sinkhole.{enabled,port}`,
 `canary_ports`, `deny_log_group`), `patch_windows`, `response`,
 `protected_processes`, `retention`, `limits`, `cache_tiers`.
 
@@ -157,15 +183,18 @@ both. Errors fail CI and plan generation. Warnings and info can be accepted in
 | NET001 | warn | Controller (or relay) on DHCP while a static NAT or relay allowlist depends on it |
 | NET002 | warn | Scored service on a host without a public address in a NATed segment |
 | NET003 | warn | `depends_on` port that nothing on the target listens on |
+| AD001 | error | A Windows host in the same segment as a domain controller is not `domain_member`, while it has a scored domain-auth service (smb, winrm, rdp, mssql) or a scored domain account listing it |
+| AD002 | warn | A domain controller with members does not pin `rpc_range` |
 | SC001 | info | Scorer timing values are estimates |
 | SC002 | warn | Scorer timeout exceeds delay |
 | FW101-FW108 | error/warn | Rendered host policy: a scored port not accepted from all sources; ICMP, ICMPv6, DHCP, DHCPv6 missing; a dependency or the agent link blocked; server not default-deny; a drop rule outside the canary group |
+| FW110 | error | Rendered host policy: a domain member's DC allowances, or a DC's inbound allowance for a member, are missing |
 | FW101, FW102, FW109 | | Device intents: a scored rule restricted by source; no ICMP allow; (info) a NAT target needing a manual address |
 
 ## Renderers (`internal/manifest/render`)
 
 `BuildHostPolicy(m, host)` derives a typed `HostPolicy` (rules in groups
-`base`, `mgmt`, `service`, `dependency`, `decoy`, `egress`, `canary`); the
+`base`, `mgmt`, `service`, `dependency`, `decoy`, `egress`, `domain`, `canary`); the
 outputs below are renderings of it.
 
 - **nftables** (`NFTables`): per Linux host, three tables loaded atomically by
@@ -190,6 +219,21 @@ outputs below are renderings of it.
   rules (ICMP, the Kali path, scored services from any source) and the
   management-access restriction (lockout class, soft-revert protocol).
 
+## `phylax manifest`
+
+```
+phylax manifest load   [--dir DIR] [--team N] [--json]
+phylax manifest lint   [--dir DIR] [--team N] [--json]
+phylax manifest render <host|device> --format nft|windows|palo|vyos [--dir DIR] [--team N]
+```
+
+`--dir` defaults to `$PHYLAX_MANIFEST` or `./manifest`. `load` validates and
+prints a summary. `lint` runs `render.LintAll` (manifest and firewall lint),
+prints findings (human lines, or `{findings, errors, warnings, info, ok}` with
+`--json`) and exits 1 when any non-accepted finding is an error. `render` writes
+nft script text (`nft`), or JSON (`windows`, `palo`, `vyos`); `palo` and `vyos`
+take a device name.
+
 ## Decisions where the design was silent
 
 - `devices` are accepted in `topology.yml` (as in the design's reference) and in
@@ -205,3 +249,11 @@ outputs below are renderings of it.
   need not duplicate management allows.
 - Canary probes are *dropped and logged* on the way out (they are expected to
   fail) and the Kali listens on the canary ports to catch a leak.
+- Port ranges are a separate field (`port_range`, `port_ranges`) rather than a
+  mixed `ports` list, so existing manifests and the typed `[]uint16` ports keep
+  working unchanged.
+- AD001 treats a Windows host as using domain accounts when it runs an enabled
+  scored smb/winrm/rdp/mssql service (unless the service declares key auth), or
+  a scored/protected domain account lists it. An unrestricted domain account
+  (no `hosts`) counts for those kinds.
+- nft limits a rule comment to 128 characters; the renderer truncates at 120.

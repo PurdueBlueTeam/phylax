@@ -357,7 +357,10 @@ func TestWinApplyOrderKeepsMachineReachable(t *testing.T) {
 
 func TestWinNameCollisionWithForeignRuleRefused(t *testing.T) {
 	_, wp := anyWin(t)
-	st, _ := TranslateWindows(wp, WinTranslateOptions{})
+	st, err := TranslateWindows(wp, WinTranslateOptions{})
+	if err != nil {
+		t.Fatalf("translate: %v", err)
+	}
 	f := newFakeWin()
 	f.rules = []WinRuleState{{Name: st.Rules[0].Name, Group: "Someone Else", Direction: "Inbound", Action: "Allow", Protocol: "Any", Profiles: "Any", Enabled: true}}
 	m := newWinMgr(t, f, nil)
@@ -561,4 +564,44 @@ func TestWinPanicOpen(t *testing.T) {
 	if d := DiffWinStates(before, after); len(d) != 0 {
 		t.Fatalf("restore after panic open not exact: %v", d)
 	}
+}
+
+// Every group the renderer emits for a Windows host must be one we own, and
+// the domain allowances (port ranges included) must survive translation.
+func TestWinGroupsFollowRenderer(t *testing.T) {
+	sawDomain, sawRange := false, false
+	for name := range refs {
+		for host, wp := range winPolicies(t, name) {
+			for _, r := range wp.Rules {
+				if !WinOwnedGroup(r.Group) {
+					t.Errorf("%s/%s: renderer group %q is not owned", name, host, r.Group)
+				}
+				sawDomain = sawDomain || r.Group == "Phylax Domain"
+				sawRange = sawRange || len(r.LocalRanges)+len(r.RemoteRanges) > 0
+			}
+			st, err := TranslateWindows(wp, WinTranslateOptions{})
+			if err != nil {
+				t.Fatalf("%s/%s: %v", name, host, err)
+			}
+			for i, r := range wp.Rules {
+				for _, pr := range append(append([]manifest.PortRange(nil), r.LocalRanges...), r.RemoteRanges...) {
+					if !strings.Contains(st.Rules[i].LocalPorts+","+st.Rules[i].RemotePorts, pr.String()) && !hasRule(st, r.Name, pr.String()) {
+						t.Errorf("%s/%s: range %s of %q lost", name, host, pr, r.Name)
+					}
+				}
+			}
+		}
+	}
+	if !sawDomain || !sawRange {
+		t.Errorf("reference manifests no longer exercise domain rules (%v) or ranges (%v)", sawDomain, sawRange)
+	}
+}
+
+func hasRule(st *WinState, name, rng string) bool {
+	for _, r := range st.Rules {
+		if r.Name == name && strings.Contains(r.LocalPorts+","+r.RemotePorts, rng) {
+			return true
+		}
+	}
+	return false
 }

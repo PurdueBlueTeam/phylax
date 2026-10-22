@@ -19,6 +19,7 @@ import (
 	"github.com/google/nftables/userdata"
 	"golang.org/x/sys/unix"
 
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest/render"
 )
 
@@ -152,7 +153,7 @@ func Translate(hp *render.HostPolicy, opt TranslateOptions) (*Ruleset, error) {
 				continue
 			}
 			switch r.Group {
-			case render.GroupMgmt, render.GroupDependency, render.GroupEgress, render.GroupCanary:
+			case render.GroupMgmt, render.GroupDependency, render.GroupEgress, render.GroupCanary, render.GroupDomain:
 				rr := r
 				rr.Action, rr.Log = render.Accept, false
 				nat.addRules(c, rr, ruleOpts{verdict: expr.VerdictReturn})
@@ -282,15 +283,15 @@ func (t *tableBuilder) addRules(c *ChainSpec, r render.Rule, o ruleOpts) {
 			pn = unix.IPPROTO_UDP
 		}
 		l4 = append(l4, l4proto(pn)...)
-		dst, src := r.LocalPorts, r.RemotePorts
+		dst, dstR, src, srcR := r.LocalPorts, r.LocalRanges, r.RemotePorts, r.RemoteRanges
 		if r.Dir == render.Out {
-			dst, src = r.RemotePorts, r.LocalPorts
+			dst, dstR, src, srcR = r.RemotePorts, r.RemoteRanges, r.LocalPorts, r.LocalRanges
 		}
-		if len(src) > 0 {
-			l4 = append(l4, t.portMatch(0, src)...)
+		if len(src)+len(srcR) > 0 {
+			l4 = append(l4, t.portMatch(0, src, srcR)...)
 		}
-		if len(dst) > 0 {
-			l4 = append(l4, t.portMatch(2, dst)...)
+		if len(dst)+len(dstR) > 0 {
+			l4 = append(l4, t.portMatch(2, dst, dstR)...)
 		}
 	}
 	if o.mark {
@@ -348,22 +349,44 @@ func logExpr(group uint16, prefix string) *expr.Log {
 	}
 }
 
-// portMatch matches the transport header port at offset (0 sport, 2 dport).
-func (t *tableBuilder) portMatch(offset uint32, ports []uint16) []expr.Any {
-	ports = slices.Clone(ports)
-	slices.Sort(ports)
-	ports = slices.Compact(ports)
+// portMatch matches the transport header port at offset (0 sport, 2 dport)
+// against single ports and inclusive ranges. Overlapping and adjacent items
+// are merged; more than one item, or any range, becomes an interval set.
+func (t *tableBuilder) portMatch(offset uint32, ports []uint16, ranges []manifest.PortRange) []expr.Any {
+	var iv []manifest.PortRange
+	for _, p := range ports {
+		iv = append(iv, manifest.PortRange{Lo: p, Hi: p})
+	}
+	iv = append(iv, ranges...)
+	sort.Slice(iv, func(i, j int) bool { return iv[i].Lo < iv[j].Lo })
+	var m []manifest.PortRange
+	for _, r := range iv {
+		if n := len(m); n > 0 && int(r.Lo) <= int(m[n-1].Hi)+1 {
+			if r.Hi > m[n-1].Hi {
+				m[n-1].Hi = r.Hi
+			}
+			continue
+		}
+		m = append(m, r)
+	}
 	load := &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: offset, Len: 2}
-	if len(ports) == 1 {
-		var b [2]byte
-		binary.BigEndian.PutUint16(b[:], ports[0])
-		return []expr.Any{load, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: b[:]}}
+	be := func(v uint16) []byte { var b [2]byte; binary.BigEndian.PutUint16(b[:], v); return b[:] }
+	if len(m) == 1 && m[0].Lo == m[0].Hi {
+		return []expr.Any{load, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: be(m[0].Lo)}}
 	}
 	s := &SetSpec{KeyName: nftables.TypeInetService.Name, KeyBytes: nftables.TypeInetService.Bytes, KeyMagic: nftables.TypeInetService.GetNFTMagic()}
-	for _, p := range ports {
-		var b [2]byte
-		binary.BigEndian.PutUint16(b[:], p)
-		s.Elems = append(s.Elems, SetElem{Key: b[:]})
+	if len(ranges) == 0 {
+		for _, r := range m {
+			s.Elems = append(s.Elems, SetElem{Key: be(r.Lo)})
+		}
+	} else {
+		s.Interval = true
+		for _, r := range m {
+			s.Elems = append(s.Elems, SetElem{Key: be(r.Lo)})
+			if r.Hi != 65535 { // the range then runs to the top of the key space
+				s.Elems = append(s.Elems, SetElem{Key: be(r.Hi + 1), End: true})
+			}
+		}
 	}
 	return []expr.Any{load, &expr.Lookup{SourceRegister: 1, SetName: t.addSet("port", s)}}
 }

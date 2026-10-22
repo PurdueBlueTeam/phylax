@@ -127,6 +127,15 @@ type Host struct {
 	Class             string     `yaml:"class,omitempty" json:"class,omitempty"`                             // server (default) | workstation
 	DefaultCredential string     `yaml:"default_credentials,omitempty" json:"default_credentials,omitempty"` // secret name, never a value
 	Hardening         *Hardening `yaml:"hardening,omitempty" json:"hardening,omitempty"`
+	// DomainMember names the domain controller host this host joins. The
+	// renderers emit the complete member-to-DC allowance set (DNS, Kerberos,
+	// LDAP, SMB, RPC, NTP) so default-deny egress cannot break domain auth.
+	// Works for Windows members and for Linux members (sssd/realmd).
+	DomainMember string `yaml:"domain_member,omitempty" json:"domain_member,omitempty"`
+	// RPCRange pins the DC's dynamic RPC port range ("lo-hi", only on a host
+	// with the domain_controller role). Unpinned, the renderers open
+	// 49152-65535 from every member and the lint warns.
+	RPCRange string `yaml:"rpc_range,omitempty" json:"rpc_range,omitempty"`
 }
 
 // OS identifies the operating system.
@@ -156,11 +165,14 @@ const (
 	RoleCanary      = "canary"
 	RoleDecoys      = "decoys"
 	RoleCapture     = "capture"
+	// RoleDomainController marks an Active Directory domain controller; hosts
+	// that name it in domain_member get member-to-DC allowances.
+	RoleDomainController = "domain_controller"
 	// RoleVantage is shorthand for check_runner + scanner + canary (the Kali).
 	RoleVantage = "vantage"
 )
 
-var validRoles = []string{RoleController, RoleRelay, RoleDeviceProxy, RoleCheckRunner, RoleScanner, RoleCanary, RoleDecoys, RoleCapture, RoleVantage}
+var validRoles = []string{RoleController, RoleRelay, RoleDeviceProxy, RoleCheckRunner, RoleScanner, RoleCanary, RoleDecoys, RoleCapture, RoleVantage, RoleDomainController}
 
 // HasRole reports whether the host has the role, expanding `vantage`.
 func (h Host) HasRole(role string) bool {
@@ -206,9 +218,11 @@ type Service struct {
 // Listener is one listening socket. Sources, if set, restricts who may
 // connect; the lint rejects that on scored services.
 type Listener struct {
-	Proto   string   `yaml:"proto" json:"proto"` // tcp | udp
-	Port    uint16   `yaml:"port" json:"port"`
-	Sources []string `yaml:"sources,omitempty" json:"sources,omitempty"`
+	Proto string `yaml:"proto" json:"proto"`                   // tcp | udp
+	Port  uint16 `yaml:"port,omitempty" json:"port,omitempty"` // a single port, or:
+	// PortRange is "lo-hi" instead of Port (exactly one of the two).
+	PortRange string   `yaml:"port_range,omitempty" json:"port_range,omitempty"`
+	Sources   []string `yaml:"sources,omitempty" json:"sources,omitempty"`
 }
 
 // Process identifies the service's process for pinning.
@@ -245,11 +259,13 @@ type DataRef struct {
 
 // Dependency is an outbound allowance a service needs.
 type Dependency struct {
-	Egress  string   `yaml:"egress" json:"egress"` // label
-	To      string   `yaml:"to" json:"to"`         // host name
-	Ports   []uint16 `yaml:"ports" json:"ports"`
-	Proto   string   `yaml:"proto,omitempty" json:"proto,omitempty"`     // tcp (default) | udp
-	Service string   `yaml:"service,omitempty" json:"service,omitempty"` // optional service id on the target, for cycle checks
+	Egress string   `yaml:"egress" json:"egress"` // label
+	To     string   `yaml:"to" json:"to"`         // host name
+	Ports  []uint16 `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// PortRanges are "lo-hi" strings, additional to Ports (at least one of the two).
+	PortRanges []string `yaml:"port_ranges,omitempty" json:"port_ranges,omitempty"`
+	Proto      string   `yaml:"proto,omitempty" json:"proto,omitempty"`     // tcp (default) | udp
+	Service    string   `yaml:"service,omitempty" json:"service,omitempty"` // optional service id on the target, for cycle checks
 }
 
 // Health is a manifest-declared health check.
@@ -458,11 +474,13 @@ type EgressPolicy struct {
 
 // EgressAllow is one extra egress allowance for a host (or all servers).
 type EgressAllow struct {
-	Host   string   `yaml:"host,omitempty" json:"host,omitempty"` // empty: every server
-	To     string   `yaml:"to" json:"to"`                         // host name or CIDR
-	Ports  []uint16 `yaml:"ports" json:"ports"`
-	Proto  string   `yaml:"proto,omitempty" json:"proto,omitempty"`
-	Reason string   `yaml:"reason" json:"reason"`
+	Host  string   `yaml:"host,omitempty" json:"host,omitempty"` // empty: every server
+	To    string   `yaml:"to" json:"to"`                         // host name or CIDR
+	Ports []uint16 `yaml:"ports,omitempty" json:"ports,omitempty"`
+	// PortRanges are "lo-hi" strings, additional to Ports (at least one of the two).
+	PortRanges []string `yaml:"port_ranges,omitempty" json:"port_ranges,omitempty"`
+	Proto      string   `yaml:"proto,omitempty" json:"proto,omitempty"`
+	Reason     string   `yaml:"reason" json:"reason"`
 }
 
 // Sinkhole configures the Linux denied-egress catcher.
@@ -546,3 +564,24 @@ func (s *StringList) UnmarshalYAML(n *yaml.Node) error {
 
 // IsNone reports the `none` marker.
 func (s StringList) IsNone() bool { return len(s) == 1 && s[0] == "none" }
+
+// PortSet returns the listener's port or range.
+func (l Listener) PortSet() Ports {
+	if l.PortRange != "" {
+		return Ports{Ranges: MustPortRanges([]string{l.PortRange})}
+	}
+	return Ports{Ports: []uint16{l.Port}}
+}
+
+// PortSet returns the dependency's ports and ranges.
+func (d Dependency) PortSet() Ports {
+	return Ports{Ports: d.Ports, Ranges: MustPortRanges(d.PortRanges)}
+}
+
+// PortSet returns the allowance's ports and ranges.
+func (a EgressAllow) PortSet() Ports {
+	return Ports{Ports: a.Ports, Ranges: MustPortRanges(a.PortRanges)}
+}
+
+// IsDomainController reports whether the host has the domain_controller role.
+func (h Host) IsDomainController() bool { return h.HasRole(RoleDomainController) }

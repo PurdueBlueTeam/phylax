@@ -113,6 +113,30 @@
    "enabled": true
   },
   {
+   "name": "Phylax Domain inbound domain 1",
+   "description": "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (members: mail)",
+   "group": "Phylax Domain",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "TCP",
+   "local_ports": "53,88,135,389,445,464,636,3268,3269,50000-50199",
+   "remote_addresses": "10.10.2.20/32",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Domain inbound domain 2",
+   "description": "AD udp: DNS, Kerberos, NTP, CLDAP (members: mail)",
+   "group": "Phylax Domain",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "53,88,123,389,464",
+   "remote_addresses": "10.10.2.20/32",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
    "name": "Phylax Mgmt outbound agent_link 1",
    "description": "agent link to the controller",
    "group": "Phylax Mgmt",

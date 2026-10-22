@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest/render"
 )
 
@@ -19,13 +20,35 @@ import (
 // it is unit tested on Linux.
 
 // WinMgmtGroup is the Windows rule group holding the management rules.
-const WinMgmtGroup = "Phylax Mgmt"
+var WinMgmtGroup = func() string {
+	wp, _ := render.WindowsRules(&render.HostPolicy{Host: "probe", Family: "windows", Rules: []render.Rule{{Group: render.GroupMgmt, Kind: render.KindAgentLink, Dir: render.Out, Action: render.Accept, Proto: "tcp"}}})
+	return wp.Rules[0].Group
+}()
 
-// winOwnedGroups are the rule groups this package owns. render defines the
-// names; any rule outside them is foreign and never modified.
-var winOwnedGroups = map[string]bool{
-	"Phylax Base": true, WinMgmtGroup: true, "Phylax Service": true,
-	"Phylax Dependency": true, "Phylax Decoy": true, "Phylax Egress": true, "Phylax Canary": true,
+// winOwnedGroups are the rule groups this package owns, derived from the
+// renderer: every render.Group constant is run through render.WindowsRules, so
+// the names cannot drift from what the renderer emits. (A test renders every
+// Windows host of the reference manifests and fails on any group outside this
+// set, which catches a new Group constant missing from allRenderGroups.)
+var winOwnedGroups = func() map[string]bool {
+	m := map[string]bool{}
+	var rules []render.Rule
+	for _, g := range allRenderGroups {
+		rules = append(rules, render.Rule{Group: g, Kind: render.KindService, Dir: render.In, Action: render.Accept, Proto: "tcp"})
+	}
+	wp, err := render.WindowsRules(&render.HostPolicy{Host: "probe", Family: "windows", Rules: rules})
+	if err != nil {
+		panic(err)
+	}
+	for _, r := range wp.Rules {
+		m[r.Group] = true
+	}
+	return m
+}()
+
+var allRenderGroups = []render.Group{
+	render.GroupBase, render.GroupMgmt, render.GroupService, render.GroupDependency,
+	render.GroupDecoy, render.GroupEgress, render.GroupCanary, render.GroupDomain,
 }
 
 // WinOwnedGroup reports whether a rule group is one of ours.
@@ -106,7 +129,7 @@ func TranslateWindows(wp *render.WinPolicy, opt WinTranslateOptions) (*WinState,
 		rs := WinRuleState{
 			Name: r.Name, Description: r.Description, Group: r.Group,
 			Direction: r.Direction, Action: r.Action, Protocol: r.Protocol,
-			LocalPorts: NormPorts(joinPorts(r.LocalPorts)), RemotePorts: NormPorts(joinPorts(r.RemotePorts)),
+			LocalPorts: NormPorts(joinPorts(r.LocalPorts, r.LocalRanges)), RemotePorts: NormPorts(joinPorts(r.RemotePorts, r.RemoteRanges)),
 			ICMPTypes: r.ICMPTypes, Profiles: "Any", Enabled: r.Enabled,
 		}
 		if r.Profiles != "" && r.Profiles != "Any" {
@@ -144,10 +167,13 @@ func TranslateWindows(wp *render.WinPolicy, opt WinTranslateOptions) (*WinState,
 	return st, nil
 }
 
-func joinPorts(p []uint16) string {
-	s := make([]string, len(p))
-	for i, v := range p {
-		s[i] = strconv.Itoa(int(v))
+func joinPorts(p []uint16, rs []manifest.PortRange) string {
+	var s []string
+	for _, v := range p {
+		s = append(s, strconv.Itoa(int(v)))
+	}
+	for _, r := range rs {
+		s = append(s, r.String())
 	}
 	return strings.Join(s, ",")
 }

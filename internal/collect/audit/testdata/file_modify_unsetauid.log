@@ -1,0 +1,4 @@
+type=SYSCALL msg=audit(1700000012.012:5200): arch=c000003e syscall=257 success=yes exit=0 a0=55d0c0a1 a1=55d0c0b2 a2=55d0c0c3 a3=7ffd1234 items=1 ppid=900 pid=5201 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="sed" exe="/usr/bin/sed" subj=unconfined key="phylax_fim"
+type=CWD msg=audit(1700000012.012:5200): cwd="/"
+type=PATH msg=audit(1700000012.012:5200): item=0 name="/etc/passwd" inode=8 dev=08:01 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
+type=EOE msg=audit(1700000012.012:5200): 

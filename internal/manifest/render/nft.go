@@ -3,6 +3,8 @@ package render
 import (
 	"fmt"
 	"strings"
+
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
 
 // Tables written by the renderer. The management table is separate so restore
@@ -94,7 +96,7 @@ func NFTables(hp *HostPolicy) (string, error) {
 			if r.Dir != Out || r.Proto != "tcp" {
 				continue
 			}
-			if r.Group == GroupMgmt || r.Group == GroupDependency || r.Group == GroupEgress || r.Group == GroupCanary {
+			if r.Group == GroupMgmt || r.Group == GroupDependency || r.Group == GroupEgress || r.Group == GroupCanary || r.Group == GroupDomain {
 				rr := r
 				rr.Action, rr.Log = Accept, false
 				for _, line := range ruleLines(rr, false) {
@@ -161,9 +163,9 @@ func ruleLines(r Rule, mark bool) []string {
 // ports renders the port matches. For In rules LocalPorts are destination
 // ports and RemotePorts source ports; for Out rules the reverse.
 func ports(proto string, dir Direction, r Rule) []string {
-	dst, src := r.LocalPorts, r.RemotePorts
+	dst, src := portItems(r.LocalPorts, r.LocalRanges), portItems(r.RemotePorts, r.RemoteRanges)
 	if dir == Out {
-		dst, src = r.RemotePorts, r.LocalPorts
+		dst, src = src, dst
 	}
 	var out []string
 	if len(src) > 0 {
@@ -178,13 +180,19 @@ func ports(proto string, dir Direction, r Rule) []string {
 	return out
 }
 
-func portSet(p []uint16) string {
-	s := make([]string, len(p))
-	for i, v := range p {
-		s[i] = fmt.Sprint(v)
+// portItems lists single ports then ranges ("49152-65535" is nft's range syntax).
+func portItems(p []uint16, rs []manifest.PortRange) []string {
+	var s []string
+	for _, v := range p {
+		s = append(s, fmt.Sprint(v))
 	}
-	return set(s)
+	for _, r := range rs {
+		s = append(s, r.String())
+	}
+	return s
 }
+
+func portSet(items []string) string { return set(items) }
 
 func set(items []string) string {
 	if len(items) == 1 {
@@ -205,6 +213,8 @@ func verdict(r Rule, mark bool) string {
 	return strings.Join(parts, " ")
 }
 
+const maxNFTComment = 120
+
 func comment(r Rule) string {
 	if r.Comment == "" {
 		return ""
@@ -215,5 +225,8 @@ func comment(r Rule) string {
 		}
 		return ch
 	}, r.Comment)
+	if len(c) > maxNFTComment {
+		c = c[:maxNFTComment-3] + "..." // nft rejects comments over 128 characters
+	}
 	return fmt.Sprintf(" comment \"%s\"", c)
 }

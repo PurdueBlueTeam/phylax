@@ -16,6 +16,7 @@ import (
 	"github.com/google/nftables/expr"
 
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest/render"
 )
 
@@ -59,7 +60,7 @@ func TestKernelInDocker(t *testing.T) {
 	if strings.Contains(s, "--- SKIP") {
 		t.Fatalf("a kernel test was skipped inside the container (nf_tables unavailable?)")
 	}
-	if n := strings.Count(s, "--- PASS: TestKernel_"); n < 8 {
+	if n := strings.Count(s, "--- PASS: TestKernel_"); n < 9 {
 		t.Fatalf("only %d kernel tests passed", n)
 	}
 }
@@ -217,6 +218,8 @@ func TestKernel_RichPolicyRoundTrips(t *testing.T) {
 				Peers: pfx("172.16.0.0/12", "172.16.5.0/24", "2001:db8::/32")},
 			{Group: render.GroupCanary, Kind: render.KindCanary, Dir: render.Out, Action: render.Drop, Proto: "tcp", RemotePorts: []uint16{4444},
 				Peers: pfx("10.0.0.99/32"), Log: true, LogGroup: 8, Comment: "canary"},
+			{Group: render.GroupDomain, Kind: render.KindDomain, Dir: render.Out, Action: render.Accept, Proto: "tcp", RemotePorts: []uint16{88, 135, 389},
+				RemoteRanges: []manifest.PortRange{{Lo: 50000, Hi: 50199}, {Lo: 49152, Hi: 65535}, {Lo: 389, Hi: 400}}, Peers: pfx("172.20.240.100/32")},
 			{Group: render.GroupDecoy, Kind: render.KindDecoy, Dir: render.In, Action: render.Accept, Proto: "tcp", LocalPorts: []uint16{2222}},
 		},
 	}
@@ -483,5 +486,16 @@ func TestKernel_PanicOpenAndRestore(t *testing.T) {
 	}
 	if d := DiffRulesets(before, mustRead(t, m)); len(d) != 0 {
 		t.Fatalf("restore after panic open not exact: %v", d)
+	}
+}
+
+func TestKernel_EveryReferenceHostInstalls(t *testing.T) {
+	m := newMgr(t, nil)
+	for name := range refs {
+		for host, hp := range linuxPolicies(t, name) {
+			if _, err := m.Apply(context.Background(), hp, ApplyOptions{}); err != nil {
+				t.Errorf("%s/%s: %v", name, host, err)
+			}
+		}
 	}
 }
