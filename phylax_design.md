@@ -1369,3 +1369,418 @@ The integrity ledger is alert only (D-1): D5d never runs tier 0, and its one-cli
 ### Audit trail
 
 Every action, automatic or manual, writes an event: what triggered it, before and after state, the undo, and the health result afterwards. This is the containment section of every IR report, and the answer when the White Team asks why something changed.
+
+## Binary integrity ledger
+
+D-1: detect red-team-modified or replaced binaries continuously, and **alert only**. At the 2026 regional the red team replaced the Postfix binary with a proxy to their Kali and replaced `dns.exe` with a build that had a remote kill switch. In 2020 teams saw trojaned `nologin` and `dash`. These are prebaked, so they are not "changes", and file-change monitoring stays silent. The old design checked binaries once, in the first-15-minutes hunt [PRO §2, COV L-8/S-1/S-2].
+
+### Truth sources, never the host alone
+
+In order of trust. The host's own package database is a hint only, because an attacker with root can edit it.
+
+| Rank | Source | What it gives | Where it comes from |
+| --- | --- | --- | --- |
+| 1 | **Lab reference ledgers** | Path to sha256, size, mode, owner package, signer, for each OS and role we have images for | Built in the lab from the same ISOs and cloud images as the packet's OS versions (Rocky 9, Ubuntu 22.04, Debian 12, Server 2019 and 2022, Windows 11), signed, shipped in the release as compressed indexes |
+| 2 | **Windows signatures plus Winbindex** | Authenticode and catalog verification natively (`WinVerifyTrust`); exact sha256 for every Microsoft binary version of the builds in play | Winbindex data fetched and trimmed in CI for the three builds; cached (D-5) |
+| 3 | **Vendor packages** | For the exact package versions found on the host, the real file hashes | The controller downloads the `.deb` or `.rpm` from the distro mirror (prefetched for announced OS versions, cached), extracts and hashes the contents. This survives an attacker who edited the host's `dpkg` md5sums or RPM database |
+| 4 | **Host package metadata** | `dpkg` md5sums, RPM SQLite digests | Hint only; used to guess which package version to fetch, never as proof |
+
+The controller fetches the version the host *claims* and the distro's current version. A binary that matches neither is a mismatch. Third-party signed software (Splunk, SQL Server, Sysinternals) is accepted against a signer allowlist from the manifest.
+
+### Verdicts
+
+| Verdict | Meaning |
+| --- | --- |
+| `match` | Hash equals a truth-source entry for this path and version |
+| `match_other_version` | Hash is a known-good for a different version of the package (patch-level drift; informational) |
+| `unknown` | Path or hash appears in no source (an unpackaged binary in a system directory) |
+| `mismatch` | The path is known and the hash equals no known version |
+| `sig_invalid` | Authenticode or catalog failed, or the signer is not on the allowlist (Windows) |
+
+### When it checks
+
+- **At enrollment:** a full sweep of system binaries, libraries, service binaries, drivers, and scheduled-task and autostart targets against the ledger. This replaces the one-time T+15 hunt for binaries, and the hunt re-runs it.
+- **At every exec:** the agent hashes the executable (cached by device, inode, ctime and size) and looks it up. An `unknown` or `mismatch` hash running as root, as a service account, or as a scored service's process raises D5d. On Windows the hash comes from Sysmon 1 (and 6 for drivers, 7 for image loads).
+- **Loaded libraries:** for service processes, file-backed mappings in `/proc/<pid>/maps` are checked against the ledger at start and every 60 s. This catches `LD_PRELOAD`, a replaced `.so`, and a PHP or Apache module that is not package-owned. Windows: Sysmon 7.
+- **Periodic:** pinned service binaries every 60 s; all system paths every 15 minutes, hashing only files whose device, inode, size, mtime or ctime changed, with a full re-hash on a slower cadence. The sweeps are low priority and rate-limited.
+- **After every restore, re-enrollment or reset,** a full sweep runs before the host may be tagged golden.
+- **Around patch windows,** the controller pre-resolves the hashes of the packages the window will install, so expected changes are `match` and others stay alerts.
+
+### Service binary pinning
+
+The manifest (or discovery) ties each scored service to its process and its binaries (`pin: true`). The agent checks the running image (`/proc/<pid>/exe`, including `(deleted)`, memfd and a replaced inode) against the on-disk file **and** the ledger. That catches "swapped but not yet restarted" and "restarted on the trojan".
+
+### Behavioural corroboration
+
+Severity rises when the same binary shows service-inappropriate behaviour, because a ledger can be incomplete and a rootkit can lie to hashing:
+
+| Signal | Example |
+| --- | --- |
+| Outbound from a service that has none | Postfix to a non-relay host; `dns.exe` to an unexpected peer (D4b) |
+| Near-symmetric bytes in and out on a service socket | The proxy signature |
+| A new listener, child shell or unusual module load | D1, D3, Sysmon 7 |
+| Running image differs from the file on disk | Pinning check |
+
+These would have caught the regional's Postfix proxy even without a ledger entry.
+
+### YARA, scheduled
+
+The `scan` module runs the pinned YARA-X binary every 5 minutes over process memory and files, deduplicated by inode and at low priority, with a C2 corpus: Sliver, Mythic (Apollo and Poseidon), Realm, Sentinel, chisel, ligolo, pamspy, sshsnake, watershell, Cobalt Strike and Metasploit stagers [WT §2.3, §9.3]. Process memory reading is the agent's job (`/proc/<pid>/mem`, `ReadProcessMemory`); whether the scanner takes streams or needs a file is lab-tested. Rules come from public sets with their licences checked before use; the UCF rule set's licence is unknown. Detections raise D5 or D5d at tier 1 with a quarantine proposal. **Complexity flag:** YARA is the one host binary in a default path; it is pre-approved, hash-pinned and CPU-capped.
+
+### The alert and the response
+
+The alert carries the hash, the ledger verdict, the signer, the owning package, the expected file and its source, the process tree and the network behaviour. **There is no automatic restore.** The one-click tier-1 response is: quarantine the file as evidence (hash, mtime, copy), restore the known-good file from the **local depot**, restart the service, and verify with the scorer-mimic probe.
+
+### The local depot
+
+Known-good copies of service binaries and their packages for the announced OS versions, plus the vendor packages the ledger fetched. It is a signed release asset (small tier) and a controller cache (large tier), so a restore never depends on the internet (D-5). DePaul's "offline depot" is the model [PRO §2].
+
+### Limits
+
+- A root attacker can lie to the agent (a hooked `readdir`, a rootkit). Cross-view (`crossview`) and behavioural corroboration are the mitigation. Hypervisor-level verification isn't available.
+- The first-contact trust gap: the ledger's own code runs on a possibly backdoored host. Hashing uses only native Go calls, never host tools.
+- A ledger is only as complete as the images behind it. `unknown` is a prompt to look, not proof, and `match_other_version` keeps patch drift from flooding the queue.
+- Expected false positives: package updates outside a tagged window, self-built binaries, and files modified by the organizers' images. The queue lets an operator accept a hash into the overrides.
+
+## The Kali as an external vantage point
+
+D-3: the Kali sits on VyOS's side leg, outside the Palo. From there it reaches our services through the same NAT and policy path as the scorer. Neither the controller nor the in-LAN runners see that path [PKT §2, PRO §4]. **The controller stays on the LAN** (D-4), because moving it to the Kali would require allowing outbound access from the LAN to it.
+
+### The Kali agent
+
+The Kali runs the same agent with the roles `check_runner`, `scanner` and `canary`. It dials the controller outbound through VyOS and the Palo, under the one declared rule and static NAT (§ Topology). It is installed by the console one-liner. It stays a workstation: it runs checks and scans and nothing else. This needs confirming with the organizers (§ Risks and open questions).
+
+| Aspect | Rule |
+| --- | --- |
+| Trust | Untrusted vantage point. It cannot command other hosts. Its verdicts are evidence about the public path only. |
+| Secrets | Scored credentials are delivered in signed steps for a probe, held in memory, never written to disk, and rotated if the Kali is suspected. |
+| Targets | Only our own public addresses from the manifest. The scorer, other teams, the White and Red Teams and global assets are never targets. |
+| Labeling | The Kali's translated source address is registered as `us`, so our probes and scans never look like the red team. |
+| Rate | Probes stay out of the scorer's burst window and below knife-edge volume; scans run at a low rate. |
+
+### Quotient-faithful checks through the public path
+
+The `check_runner` on the Kali runs the same probes as the in-LAN runners (§ Active checks), against the **public** addresses `172.25.(20+T).x`. They reuse Quotient's client behaviour: plaintext protocols, SSH password with PTY and shell and a typed command, NTLM for SMB and WinRM, one random item and credential per faithful run plus a full sweep of the learned item union [SP §A, Q §9]. This is the primary "is it up for the scorer" signal. A mismatch with the in-LAN probe is V1, and it tells you whether the fault is the service or the Palo/NAT path.
+
+### PCR credential verification
+
+After every PCR transaction, the Kali logs in with the new credential through the public path before the rotation step is marked done (§ Credentials). A failed login is V4 and starts the rollback.
+
+### External perimeter scans
+
+A scheduled scan of our public IPs: full-range TCP connect scan at a low rate, plus UDP probes on common ports with protocol-specific payloads (DNS, NTP, SNMP, TFTP, IKE). The Kali's `nmap` is a pre-approved host tool for service detection. Results are diffed against the declared exposure (the services marked scored, plus declared decoys). Anything newly open is V2. Durkee's debrief called out "far too many ports open… port 135 open" [PKT §7]. The output doubles as evidence for the recurring perimeter-scan injects (18 of 22 events [PRO §4]).
+
+### Egress canaries
+
+The Kali listens on a set of ports. Agents periodically (rate-limited, tagged) try to reach it on ports that policy should block, from servers and workstations, and report "blocked as expected" or "leak" (V3). It proves the egress policy and the Palo rules from the inside. Canary traffic carries its tag, so it never raises D12 or the beacon analysis.
+
+### What opens up
+
+Because the Kali is an external vantage point, it can also: run the zero-day style checks the red team would try against our perimeter (a Zerologon check-only tester against the DC's public path, an SMB and WinRM exposure check), measure the Palo's NAT behaviour (do inbound connections keep the real source?), confirm that blocked sources stay blocked, and record what the public path looks like when the Palo is under load. Each is a probe type on the same `check_runner`, not a new subsystem.
+
+**Complexity flag:** the Kali adds an inbound path to the controller (one port, one source, pinned keys), scored credentials in a less-trusted place, and a host tool or two (`nmap`, `xfreerdp`). It is bounded by single-purpose roles, memory-only credentials, and the fact that every Kali verdict is advisory.
+
+## Deception
+
+Three kinds of deception turn red-team curiosity into precise, low-noise alerts:
+
+- **Honeytokens:** fake credentials, keys and paths, unique per host, planted where attackers loot.
+- **Decoy services:** fake SSH with a full fake shell, and other bait ports, reachable from inside the LAN and from outside.
+- **Decoy content:** honey files and web paths that nothing legitimate ever touches.
+
+A token's origin tells you which host was looted and roughly when.
+
+### Principles
+
+- **Declared like services.** Decoys are listed in `decoys.yml`. Host-firewall and Palo rules are generated for them.
+- **Isolated.** All decoy listeners and the fake shell run in the agent's unprivileged decoy process.
+- **Record only.** Nothing received is ever executed. Decoys never connect back, and never touch red-team infrastructure.
+- **Never on scored ports,** and never change any content the scorer fetches. In 2027, SSH, WinRM and RDP are scored on specific hosts; decoys of those kinds go only on hosts where the service is not scored (for example SSH on the Windows hosts, WinRM and RDP on the Linux hosts).
+- **Generated at competition time.** Token values, banners, honey paths and fake data are generated when the plan runs. The pools are in the public repo, so a careful attacker may recognise some decoys; per-host values are what the repo can't reveal. Banners and decoy ports are randomised per event too (D-8).
+- **Severity follows depth.** Info: connecting. High: logging in or running commands. Critical: using a honey credential or key anywhere.
+
+### Honeytokens
+
+Every token is unique to its host and recorded in the controller's token registry.
+
+| Token | Planted at | Sighted when it shows up at |
+| --- | --- | --- |
+| Fake SSH private key (`/root/.ssh/id_rsa_backup`) | Each Linux host | The SSH decoy recognizes its fingerprint |
+| Fake DB or app credentials | `.env`, config backups, `web.config` | Logins to MySQL, decoy services, the web admin page |
+| Fake shell history with an inline password | Root and admin home directories | That password tried anywhere |
+| Decoy credential in LSASS (a `runas /netonly`-style logon session kept alive by the agent) | Windows servers | Failed authentication for that account on the DC (4625, 4771) |
+| Honey AD accounts: one with an SPN, one with pre-auth disabled, one that looks like an admin | DC, in a separate OU | Ticket requests (4769, 4768) or any logon attempt |
+| Honey OpenCart admin with a unique password | ecom database | That login attempted on the admin page |
+| Honey DNS record that nothing uses | DNS zone | Any query for it |
+| Honey SQL login and honey SMB file on the MSSQL host | MSSQL, the SOP share's neighbour directory | That login attempt; an open of the honey file (4663) |
+
+**Complexity flag:** the LSASS decoy session needs the agent to keep a logon session alive on each Windows server. It's one of the few ways to tell that LSASS was dumped. If Defender or a reboot kills it, the agent recreates it.
+
+### Decoy services
+
+| Decoy | Behavior |
+| --- | --- |
+| SSH on 22 (where real SSH is absent or not scored) | Full fake shell: accepts a login after a few attempts, presents a believable filesystem and command set, records every keystroke, never executes anything. Banner randomized per host. |
+| MySQL, Redis, Telnet on hosts that don't run them | Protocol-correct handshake and login prompts; credentials recorded |
+| WinRM (5985) and RDP (3389) on hosts where those are not scored | Connect and negotiate only; credentials recorded where the protocol offers them |
+| Fake admin web panel on an unused port | Login page that records every credential tried |
+
+There's no SMB decoy: Windows holds port 445 on every host. **Complexity flag:** the fake shell is the largest decoy by far. It's isolated in the unprivileged process, has no real filesystem or command execution behind it, and has its own fuzz tests in CI.
+
+### Decoy content
+
+- **Honey files** (`passwords.xlsx`, `backup.sql`, `id_rsa_old`). Opening one alerts: fanotify on Linux, file auditing (4663) on Windows.
+- **Honey web paths** in each webroot, plus unguessable paths mentioned only in breadcrumbs.
+
+### Exposure
+
+- **Inside the LAN:** a connection from one of our own servers to a decoy means that server is compromised. This is more useful on a flat LAN, where nothing else watches east-west.
+- **Outside, through the Palo:** decoys on public addresses get found by external probing. Their source IPs are tagged as red team, which feeds traffic labeling. The Kali's own address is exempt.
+- **Noise:** traffic generators can send suspicious traffic from random IPs, so bare connections are info-level, and blocking stays one click.
+
+## Prebaked implant hunting
+
+Every team starts from identical images of known OS versions. We build clean reference VMs of the same versions in the lab, record their known-good state, and diff each live host against it in the first 15 minutes. **The hunt then repeats every 10 minutes, and after every restore, re-enrollment or reset**, because prebaked items are not changes and a restored host can be re-infected [COV §6.10, TTP X-2]. The diff runs as Go-native collection actions, without trusting host tools.
+
+### Reference builds
+
+One scripted build per OS version announced (Packer templates in the lab repo), with the same roles the competition hosts run. Each build records:
+
+| Artifact | Linux | Windows |
+| --- | --- | --- |
+| File inventory with hashes (feeds the ledger) | `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`, `/opt` | `System32`, `SysWOW64`, `drivers`, `Program Files` |
+| Ownership and signing | Which package owns each file | Authenticode signer for every executable |
+| Autostarts | Enabled units and timers, generators, cron, at, rc, profile.d, motd, udev, PAM, NSS, loader config | Services, scheduled tasks (XML), Run keys, WMI subscriptions, LSA packages, IFEO, Appendix C |
+| Accounts | passwd, group, sudoers | Local users and groups |
+| Kernel | Modules, sysctls, BPF programs, file capabilities, SUID set | Drivers with signers |
+| Service config | Distro defaults for Apache or httpd, PHP, Postfix, Dovecot, MySQL | Clean IIS, DNS, SQL Server and Splunk-on-Windows config where relevant |
+
+References ship as signed release assets in the cache's first tier.
+
+### Live hunt
+
+The hunt is a read-only plan that runs on every host in parallel with credential rotation. Target: results in the UI by T+15 min.
+
+1. **Collect** the same artifacts natively.
+2. **Diff** against the reference: added, modified and missing items.
+3. **Enrich** each finding with hash, signer, owner, package, ledger verdict, file times (watching for timestomping), and what references it.
+4. **Score:**
+   - **High:** an unsigned or non-vendor binary referenced by any autostart; an unowned file in a system directory; a modified packaged binary (ledger `mismatch`); `/etc/ld.so.preload` content; a new PAM or NSS module; IFEO debuggers; LSA packages; a non-stock IIS module; `ServerLevelPluginDll` on the DNS service; a service unit with `LD_PRELOAD` or unneeded ambient capabilities.
+   - **Medium:** added cron, timer or task with a script action; new SUID file or file capability; added SSH key; `chattr +i` on a unit, sudoers file or webroot file; PHP `disable_functions` or `auto_prepend_file` differences; modified default config.
+   - **Low:** everything else that differs.
+5. **Review** in the UI as a queue. Approved items become a remediation plan that disables and quarantines (moves, with metadata) but never deletes. `chattr -i` is applied explicitly and logged before a remove.
+
+### Remote-access agent kill list
+
+A signed, editable list of management agents that are hunted and tier-0 disabled unless the manifest allows them: Teleport, Webmin, MeshCentral agent, AWS SSM agent, TeamViewer, Tailscale, ngrok, cloudflared, chisel, frp [WT §9.1]. The manifest's "approved management agents" exception covers Wazuh and Splunk.
+
+### Package verification without host tools
+
+- **Debian and Ubuntu:** the agent reads the per-package checksum lists under `/var/lib/dpkg/info/` and hashes files itself. This is a hint; the ledger's vendor-package truth is the proof.
+- **Rocky:** the RPM database is SQLite, which the agent reads with its own library.
+- Package holds (`apt-mark hold`, `versionlock`) on PAM, ssh, sudo and libc are flagged.
+
+### Application references
+
+| Component | Reference | Check |
+| --- | --- | --- |
+| OpenCart (if present on Rocky) | Vendor archive for the detected version | Hash every webroot file. Unknown scripts and modified core files (`framework.php`-style backdoors) go to the top. Extra `oc_user` rows. |
+| Apache or httpd, PHP | Package defaults | Modules directory and `extension_dir` against the package; `disable_functions`; `auto_prepend_file`; unit `Environment=LD_PRELOAD` |
+| Postfix | Package defaults and ledger | `master.cf` pipe transports and content filters; `/etc/aliases` pipes; the binaries |
+| Dovecot | Package defaults | Post-login scripts, global sieve scripts, passdb and userdb pointing at scripts |
+| MySQL | Package defaults | User-defined functions, plugin directory, accounts with FILE or SUPER, `mysql.user` diff |
+| SQL Server (MSSQL) | Clean install | `xp_cmdshell` state, `sa`, sysadmins, linked servers, Agent jobs, the account used by the 1433 check |
+| IIS, DNS, SMB | Reference config | Modules, handlers, ISAPI filters; DNS forwarders and `ServerLevelPluginDll`; share list and the SOP directory ACLs |
+| Splunk | Splunk's own file manifest | Files differing from it; non-stock apps; scripted inputs; deployment-server settings |
+
+### Active Directory
+
+There's no clean reference for a domain the competition built, so the DC's agent runs generic checks **every 10 minutes**, not only at T+15:
+
+- members of every privileged group, including nested membership (a group inside Enterprise Admins), objects in unusual OUs and `CN=Builtin`, and `whenCreated` compared with the drop flag
+- SPNs on user accounts; unconstrained, constrained and resource-based delegation
+- `msDS-KeyCredentialLink` and SID history
+- non-default access-control entries on AdminSDHolder and the domain object, especially replication rights
+- every GPO with its links, modification time, contents (tasks, scripts, registry preferences) and SYSVOL writes
+- `krbtgt` password age, machine account quota, DnsAdmins membership, `FullSecureChannelProtection`, the build number
+
+Event-driven detection covers the same ground between runs (5136, 5137, 4670, 4741, 4742, 4929) [COV T-6].
+
+### The firewall-killer
+
+Red teams often plant something that disables host firewalls on a timer. The hunt should find its trigger. If it doesn't, D10 catches the execution and records the lineage. Three restores of the same object in 10 minutes open an incident and a targeted hunt.
+
+### Other hunts
+
+- **`hunt.pii`:** a scan for personal data in files and databases, for scenarios that involve PII and for the exposure statement in IRs [WT §9.6].
+- **Credential files:** names such as `*passlist*`, `*.kdbx`, `id_rsa*`, `.env`, `unattend.xml`, with reads logged.
+- **Post-hardening adversarial verification:** after a hardening plan, a probe from the Kali and the controller proves that the default and old passwords fail, the new key works, a canary port is closed and scored checks pass [WT §9.2].
+
+### Keeping the baseline current
+
+Accepted findings and inject changes go into overrides as the host's live baseline. Later hunts diff against reference plus overrides. Each host also keeps an **expected-state baseline** (systemd units, kernel modules, services, listeners, scheduled tasks) from the manifest and the first clean sweep, so drift is a diff against known state.
+
+## Network devices and credentials
+
+Network devices are managed agentlessly by adapters inside `phylax`, reached directly (the Palo's management is on the LAN) or through the device-proxy role. Credentials are generated at competition time, held in the controller's vault, and rotated by plans in dependency order. Scored accounts are changed only as PCR transactions.
+
+### Device adapters
+
+The adapter exposes primitives and the controller owns the safe-change protocol, so the same runner works for every device [DA §4]:
+
+```go
+type Adapter interface {
+    Kind() Kind; Caps() Caps; Close() error
+    Info(ctx) (Info, error)               // liveness, version, clock, licence
+    Probe(ctx) error                      // fresh connection + auth + one read (the lockout canary)
+    RotateAdmin(ctx, RotateSpec) (Creds, error)
+    Snapshot(ctx, label) (Snapshot, error); Diff(ctx, a, b) (Diff, error)
+    Drift(ctx, lastGood Snapshot) (DriftReport, error)   // emits device_config events
+    Begin(ctx, TxOptions) (Tx, error)     // Preflight, Lock, Stage, Pending, Validate, Commit, Confirm, Rollback, Close
+    Admins(ctx) (AdminState, error); Events(ctx, EventFilter) ([]Event, Cursor, error)
+    Capture(ctx, CaptureSpec) (Capture, error)
+}
+```
+
+Capability flags say what is native: config lock, scoped commit, validate, native confirm, soft dead-man, rollback, connection events. A lockout-risk transaction on a device with no way to revert is refused until the Network role acknowledges that the console is ready.
+
+**Palo Alto (PAN-OS 11.0.2).** Our own thin XML-API client (about 300 lines: form POST, `encoding/xml`, `X-PAN-KEY`, pinned TLS, context deadlines), because the maintained SDK lacks lock, commit and operational helpers and its tags cannot be fetched. Typed rule CRUD may use the SDK behind our interface [DA §1.15]. Every rule and object we create carries a `phylax-managed` tag; the adapter edits only tagged items. The safe-change protocol [DA §1.12]:
+
+1. Preflight: system info, jobs idle, config and commit locks free, no foreign pending changes, running-config hash equals last known-good.
+2. Take the config lock; snapshot the running config and the prior XML of each touched path.
+3. Stage the change (tagged); check that pending changes contain only our paths.
+4. Validate (a full validation job) and refuse on failure.
+5. Commit with an admin-scoped partial commit; poll to completion.
+6. Health: `test security-policy-match` for each scored flow, scorer-mimic probes from the Kali and the LAN, a fresh-connection API call.
+7. On pass: new last-known-good, a named saved copy, release the lock. On fail: granular revert and a second commit; if the management path is lost, alert and use the console.
+
+PAN-OS has no commit-confirm, so management-path edits (permitted IPs, management profiles, services, the API account) are their own commit, additive first (add the new permitted entry, commit, verify with a brand-new connection, then remove the old), and never combined with service rules. Palo management lockdown to the controller's address is first-hour mitigation #2 for the unpatched 11.0.2 [SV R2.4]. The adapter reads the licence once and disables actions that need a missing subscription. Drift polls (system info 10 s, jobs 15 s, logs 30 s, running-config hash every 5 min) feed D14 [DA §1.13].
+
+**VyOS (1.4).** SSH with the Go SSH client for lockout-class changes, HTTP reads for state. VyOS's `commit-confirm` **reboots the router** into the saved config, and the HTTP API commits immediately and cannot roll back [DA §0]. So the protocol arms its own soft revert [DA §2.4]:
+
+1. Preflight: latest commit equals last known, `compare` empty.
+2. Save the running config to an archive file (not `/config/config.boot`).
+3. Arm a `systemd-run` timer (90 s default, run through `sg vyattacfg`) that loads the snapshot and commits.
+4. Apply with a plain commit.
+5. Health from a new connection: scorer-mimic probes, interfaces and routes.
+6. On pass: stop the timer, `save`, record the new last-known-good. On fail: run the revert and alert.
+
+The config is not saved until the health check passes, so a surprise reboot returns to the previous boot config. Lockout classes: `service ssh`, `service https`, `system login`, management-path interfaces, NAT and policy on the path to the controller, the default route. Off-box `commit-archive` records every commit. Whether `commit-confirm action reload` exists on the installed 1.4.0 image is a lab check; if it does, native confirm replaces the timer.
+
+**Cisco FTD (FDM).** Not in the 2027 environment. Built only if an infra includes it: pending changes are global, there is no per-admin deploy and no REST rollback, and connection events come by syslog [DA §3]. Until then it falls back to console, a printed checklist and hand-taken snapshots.
+
+**Reaching devices.** The Palo's management is on the LAN. VyOS (`172.16.0.254`) is reached through the Palo with a rule from the controller. Device management access lists allow only the controller (or a device-proxy host).
+
+**First contact** with devices stays manual: change the admin password on the console in the first minutes, then the adapter takes over with new credentials and a dedicated API account.
+
+### Credentials
+
+**Inventory.** Every account in `accounts.yml`, plus whatever discovery finds: local accounts on every host, domain accounts, and service and app accounts (MySQL, OpenCart admin, Splunk, SQL Server, the Palo and VyOS). Each has a `scored` flag (declared, or learned from the scorer), a credlist, a rotation policy, and the files and services that embed it.
+
+**Generation.**
+
+- Passphrases of four or more words plus digits for unscored human accounts, easy to type on a console.
+- **For scored accounts,** 16 to 24 characters from `[A-Za-z0-9._+=-]`. That avoids `@ : /` (which break the MySQL DSN builder), shell metacharacters (custom checks pass the password through a shell), and the quote-stripping edge cases of the PCR page [Q §9.1].
+- **Stateless break-glass credentials** for unscored accounts are derived (HMAC of the passphrase, host, account and epoch), so a lost controller can regenerate them from a printed secret. Scored accounts stay under PCR. [WT §9.10]
+- Held in the vault, in memory once unlocked. Never in the repo, never in logs, masked in the UI until revealed.
+
+**Rotation order:**
+
+1. **T+0 to 5, by hand on consoles:** the Palo and VyOS admin accounts.
+2. **T+2 to 10, first-contact plans with the dead-man switch:** root and administrator on every host and the domain administrator, then our own admin accounts. `sysadmin` is rotated only after the PCR list is checked (below).
+3. **T+10 to 30:** unscored service and app accounts. Each rotation updates the files that embed the credential in the same plan, then runs the scorer-mimic probe.
+4. **Scored accounts:** only as PCR transactions.
+
+**Zerologon ordering.** On the DC, the plan first reads the build, `FullSecureChannelProtection` and Netlogon events. If the secure channel is not enforced, enforce or patch it, or filter RPC to the DC, *before* any domain password rotation, because a vulnerable DC lets the attacker reset the machine account and dump the new hashes anyway. Server 2022 is expected to ship the fix [SV R2.4].
+
+**krbtgt.** A double reset invalidates forged tickets. With a single DC there's no replication delay, but every Kerberos ticket dies. Test in the lab whether AD-backed IMAP and POP3 survive it, and run it right after a scorer round passes.
+
+### PCR as a transaction
+
+A scored account is a record {host password(s), Quotient password, last observed scorer login, state}. The state machine [Q §5, Q §9.1]:
+
+| State | Meaning | Next |
+| --- | --- | --- |
+| `stable` | Host and Quotient agree, last scorer login passed | `planned` |
+| `planned` | New password generated (rules above); waiting for the quiet window | `applying` |
+| `applying` | In the window `[burst end + safety, next start − safety]` the host change runs on every host where the user exists, and the PCR CSV (one block per credlist **path**, never the display name) is shown to the operator | `pending` |
+| `pending` | The human has pasted the CSV; the operator confirms the portal's reply (`count` equals the number of lines, `skipped` empty) | `verifying` |
+| `verifying` | The Kali logs in with the new credential through the public path (V4 on failure), then the account waits for a **passing scorer login by that user** in the next bursts (a random credential per check means it can take several rounds: expect about `k ln k` rounds to see all `k` users) | `confirmed` |
+| `confirmed` | Recorded; the account leaves "pending" | `stable` |
+| `failed` | Next burst shows a failed login for that user | Roll back: resubmit the old value through PCR and revert the host |
+
+Rules:
+
+- **Both changes must land before the next enqueue.** The burst is over within seconds; the usable window is at least `Delay − Jitter − burst length` (about 50 s at upstream defaults). The order of the two changes does not matter, but a gap costs one failed round for that user's draws, not for the whole service. Never submit a PCR during an enqueue pass: credential reads are not atomic.
+- **Never use "Reset to Defaults".** It rewrites every user in the credlist to the known defaults. Rollback is a PCR with the old value.
+- **The CSV generator** emits `username,password` lines with no leading or trailing spaces, a comma on every line (a line with no comma stores an empty password), no password that starts and ends with a quote, case-exact usernames, and one block per credlist path. It reads back `count` and `skipped` and refuses to continue on a mismatch.
+- **The PCR step stays human** (a portal login), unless the organizers approve scripting it; the `pcr.submit` action is off until then.
+- **A host change without a PCR, or the reverse, is a bug.** The lint rejects any plan that changes a scored account on the host alone.
+- **`sysadmin`:** protected until the PCR list (or `GET /api/credlists`) shows whether it is a scored user. If it is, it rotates by transaction; if not, it rotates freely.
+- **After rotation,** any successful admin authentication from a source other than the controller is a D9 alert, because no legitimate actor has those credentials.
+
+## OSS alongside Phylax
+
+D-9: OSS tooling next to Phylax is allowed. The v2 design removed Wazuh, Velociraptor and Ansible to save complexity. v3 keeps Velociraptor and Ansible out (they duplicate the controller) but allows optional sensors where they are cheaper than building. The principle: **Phylax owns orchestration, integrity, chains and checks; OSS tools are optional sensors whose health Phylax monitors. Nothing on the critical path depends on them.** Evidence: [OA, IJ, SV R2.3.6, PRO §10].
+
+| Tool | Role | Where | How Phylax uses it |
+| --- | --- | --- | --- |
+| **Wazuh** | Secondary detection (FIM, rootcheck, SCA), central dashboard, and the evidence for endpoint-protection and central-logging injects | Manager on the Ubuntu workstation if it has the RAM, otherwise the Debian Splunk host under a cgroup cap; agents on every host | `wazuh.deploy` and `wazuh.health` plans; alerts imported as low-priority context; screenshots and agent lists for injects |
+| **Sysmon** | Windows telemetry (the main Windows sensor) | Windows hosts | Installed and kept alive by the agent, renamed (D-8) |
+| **Suricata and Zeek** | Protocol logs and signatures over pulled pcaps | The controller | Offline analysis of frozen slices; output joined by Community ID. Not live: the flat LAN has no tap |
+| **Sigma** | Detection logic | Build time | The importer in § Detection |
+| **YARA-X** | Scheduled memory and file scans with a C2 corpus | Every host (`scan`) | Pre-approved, pinned, low priority |
+| **Splunk** | The environment's SIEM (also scored) | Debian Splunk host | Phylax alerts and Palo logs forwarded over HEC into a dedicated index; optional scheduled searches from the Sigma importer |
+| **ClamAV** | Windows anti-malware for the endpoint-protection inject | Windows hosts | `av.clamav` plan with hourly and on-access scanning |
+
+### Wazuh deploy plan
+
+The injects recur: "Configure End-Point Protection Software" (SVRA12T in 2026 quals, where we deployed a Wazuh manager and agents; SOFT04A in the 2026 regional; 6 events across 4 seasons) and central logging (SOCS30T, TOOL29T; 16 events in 9 seasons). So the inject kit includes a `wazuh.deploy` plan, deployed early so it is ready when the inject lands and adds detection the whole time [IJ, PRO §10].
+
+| Decision | Setting |
+| --- | --- |
+| Version | Pinned: **manager and agents 4.14.9 or newer**, agent not newer than the manager. The 4.7 and 4.14.3 URLs in older playbooks are vulnerable (CVE-2025-24016 and the 2026 `authd` and API bugs). If no fixed version can be cached, skip Wazuh rather than run 4.7 [SV R2.3.6] |
+| Packages | The offline bundle (manager, indexer, dashboard, agent MSI/deb/rpm) is in the cache before the event; nothing is downloaded at install time (D-5) |
+| Manager placement | A trusted Linux host that is not scored. Default: the Ubuntu workstation if the lab shows at least 8 GB RAM headroom; otherwise the Debian Splunk host with a memory cap (the scored Splunk Web must not starve). Measured in the lab |
+| Exposure | Ports 1514, 1515, 55000 and 443 allowed only from our hosts. `authd` uses a password and is stopped after enrollment. The dashboard and API credentials are rotated and held in the vault |
+| Manager risk | Whoever owns the manager owns every agent through pushed config (SCA and command policies), so the manager's host is a tier-0 asset. Remote commands are disabled on agents; **Wazuh active response is disabled**, because response is Phylax's and typed |
+| Agent groups | FIM, rootcheck and SCA groups pre-configured; log collection for the services' logs; syscollector on |
+| Health | `wazuh.health` polls the API read-only: agents connected, last keepalive, manager CPU and memory. A disconnected agent or a dead manager is a platform alert, since the red team may kill it |
+| Evidence pack | The agent list export, a generated test alert, the group configuration and dashboard screenshots (taken by a human) saved into the inject kit for the PDF response |
+| Order | Deploy after credentials and firewalls (T+45 to 90 in the event timeline) |
+| Uninstall | A plan removes it if it misbehaves |
+
+Wazuh rules are GPL-2.0: Phylax reads Wazuh alerts but does not copy its rule text.
+
+### Splunk forwarding
+
+`splunk.hec_setup` creates a HEC token and a dedicated `phylax` index on the Splunk host. It touches no index the scored query searches (the Splunk check reads specific data [SH §11]). The controller forwards alerts, incidents, firewall and Palo logs and the chain timeline as JSON. It's optional, off the critical path, and a good source of "central logging" evidence for injects. The Sigma importer can emit scheduled searches for the same host, with `enableSched` set (UIUC's converted searches never ran on a schedule [DR §4]).
+
+### Suricata and Zeek
+
+When an alert freezes the ring, the pulled pcap can be analysed offline on the controller. Suricata (ET Open rules, cached) produces alerts and `eve.json` with Community IDs; Zeek produces protocol logs. The results attach to the incident and the trace-back. Neither runs live.
+
+## Offline-first: caches and depots
+
+D-5: every host should have internet, but it's slow. Phylax treats the internet as an optimisation and builds everything it needs into caches before the event, so no decision waits on a download. This is also the safe course for rules that change from event to event (the proxy and repo rules this year are unclear [PKT §4.4]).
+
+### What is cached, in tiers
+
+Sizes are estimates to be measured in M0. A tier must be complete before the features that need it start.
+
+| Tier | Contents | Approx size | Needed by |
+| --- | --- | --- | --- |
+| 0: in the release | `phylax` binaries, rules (hand-written and Sigma-derived), YARA C2 corpus, Sysmon config, decoy pools, inject-kit templates, ATT&CK dataset, ledger indexes (path to hash, compressed) for the announced OS versions, the cache index | tens of MB | Everything at `init` |
+| 1: fetched at init, small and critical | Sysmon (fetched from Microsoft; not redistributable), YARA-X binaries, Typst, Winbindex extract for Server 2019, 2022 and Windows 11, the Wazuh offline bundle and agent installers, Suricata rules, the nmap/xfreerdp pins for the Kali | hundreds of MB | Telemetry, ledger on Windows, OSS deploys |
+| 2: background, large | The depot: distro packages for the service stacks (httpd, php, postfix, dovecot, openssh, sudo, polkit and their dependency closure) per OS, the exact vendor package versions for ledger proofs, security-relevant OS updates, optionally Windows cumulative updates | GB | Patch windows, restores, ledger vendor proofs |
+
+### How caches are built and refreshed
+
+- **Build.** `phylax cache build` runs in CI on a schedule and on release. It produces a content-addressed set of blobs (sha256, size, source URL, licence, tier), an index signed by the release key, and a changelog. Ledger indexes are rebuilt from the lab images, Winbindex and the distro mirrors. Weekly builds; a final rebuild the day before the event.
+- **Publish.** Signed release assets on GitHub (primary), `dist/` in the repo (fallback), vendor mirrors directly (last).
+- **Sync.** `phylax cache sync` runs on the controller from T+0, resumable and chunked, bandwidth-capped so it doesn't starve the first-contact traffic, in tier order, verifying every hash. The Platform page shows each tier's progress. Features that need an incomplete tier show "waiting for cache" instead of failing.
+- **Cache-through.** Any in-event fetch (a patch window miss, an unknown package version) goes through the controller, is logged, and is stored for later. A fetch that fails degrades the feature (a ledger verdict becomes `unknown`), never the platform.
+- **Refresh at the event.** Only the index delta is fetched at the event: new blobs since the last build, in tier order. If the internet is too slow, the previous complete set is already enough.
+- **Offline drill.** A lab test runs the whole cold start with the internet blocked (T40).
+
+**Complexity flag:** the cache is a content-addressed store with a signed index, a CI build job and a sync client. It is bounded by tiers, by reusing the release signing path, and by the rule that no feature requires a live fetch.
