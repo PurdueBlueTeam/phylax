@@ -282,11 +282,13 @@ func (m *Mapper) mapSysmon(r *Record, e *event.Event) bool {
 		f["path"] = d["target_filename"]
 		f["op"] = "create"
 		f["actor_exe"], f["actor_pid"] = f["exe"], f["pid"]
+		sysvolPolicyFields(f, d["target_filename"])
 	case 23, 26:
 		e.Kind, e.Priority = KindFileChange, event.PriorityNormal
 		f["path"] = d["target_filename"]
 		f["op"] = "delete"
 		f["actor_exe"], f["actor_pid"] = f["exe"], f["pid"]
+		sysvolPolicyFields(f, d["target_filename"])
 	case 12, 13, 14:
 		f["category"] = "registry"
 		f["op"] = map[int]string{12: "create_delete", 13: "set_value", 14: "rename"}[r.EventID]
@@ -416,6 +418,7 @@ func (m *Mapper) mapSecurity(r *Record, e *event.Event) bool {
 		f["category"] = "ad_object_change"
 		f["op"] = map[int]string{5136: "modified", 5137: "created", 5139: "moved", 5141: "deleted"}[r.EventID]
 		f["object_dn"], f["object_class"] = d["object_dn"], d["object_class"]
+		gpoObjectFields(f, d["object_dn"], d["object_class"])
 		f["attribute"] = d["attribute_ldap_display_name"]
 		f["attribute_value"] = d["attribute_value"]
 		switch d["operation_type"] {
@@ -460,6 +463,9 @@ func (m *Mapper) mapSecurity(r *Record, e *event.Event) bool {
 		f["share_name"] = d["share_name"]
 		f["share_path"] = d["share_local_path"]
 		f["relative_target"] = d["relative_target_name"]
+		if strings.EqualFold(d["share_name"], `\\*\SYSVOL`) || strings.HasSuffix(strings.ToUpper(d["share_name"]), `\SYSVOL`) {
+			sysvolPolicyFields(f, `\sysvol\`+strings.TrimLeft(d["relative_target_name"], `\`))
+		}
 		f["source"] = cleanIP(d["ip_address"])
 		f["subject_account"] = subject
 	case 4929:

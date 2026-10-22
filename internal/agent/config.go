@@ -168,6 +168,8 @@ func (a *Agent) moduleEnv() Env {
 
 // reconcile starts, stops and reconfigures modules so that they match cfg.
 func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
+	a.holdBegin()
+	defer a.holdEnd()
 	env := a.moduleEnv()
 	res := map[string]string{}
 	degraded := false
@@ -212,6 +214,7 @@ func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 			continue // an already running module keeps its previous settings
 		}
 		a.sup.Remove(f.Name)
+		a.expectSubscriber(spec)
 		if err := a.sup.Add(spec); err != nil {
 			res[f.Name] = "error: " + err.Error()
 			degraded = true

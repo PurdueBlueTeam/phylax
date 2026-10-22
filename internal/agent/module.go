@@ -57,6 +57,10 @@ type ModuleSpec struct {
 	// counted, never blocking the module.
 	Rate  float64
 	Burst int
+	// Subscriber marks a module that calls Env.Subscribe from Start. The agent
+	// buffers locally published events until it has, so none are lost in the
+	// start-up window.
+	Subscriber bool
 }
 
 // Budget is the memory/CPU budget hook. It is polled every SupervisorOptions.

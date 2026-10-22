@@ -31,7 +31,7 @@ when:
   event: process_start            # kind or list of kinds (mandatory)
   all: [ ...conditions... ]       # AND
   any: [ ...conditions... ]       # OR, ANDed with all
-  count: {window: 2m, gte: 12, by: [agent, source, account], distinct: host, cooldown: 2m}
+  count: {window: 2m, gte: 12, by: [agent, source, account], distinct: host, cooldown: 2m}   # distinct: a field or a list (composite tuple)
   sequence: {by: [pid], within: 30s, then: {event: net.connection_opened, all: [...]}}
 tests: [ ... ]
 ```
@@ -57,7 +57,7 @@ Operators (string operators are case-insensitive, ASCII folding; suffix `_cs` ma
 
 ## Counts and sequences
 
-`count`: per key (the `by` fields; a missing field contributes an empty component), fires when `gte` events (or `gte` distinct values of `distinct`) arrive within `window`. After firing the key is quiet for `cooldown` (default `window`). `by: [agent, source, account]` gives per-host, per-source, per-account windows; `agent` is a pseudo field (the event's agent). Evidence is the last three events. State per rule is bounded (`Options.MaxKeys`, default 4096; expired keys are pruned, then the least recently seen evicted). Windows use event time, so replays and tests with a fake clock are deterministic.
+`count`: per key (the `by` fields; a missing field contributes an empty component), fires when `gte` events (or `gte` distinct values of `distinct`) arrive within `window`. After firing the key is quiet for `cooldown` (default `window`). `by: [agent, source, account]` gives per-host, per-source, per-account windows; `agent` is a pseudo field (the event's agent). `distinct` may be a list, counting distinct tuples (`distinct: [laddr, lport]`). Any address field has derived network-prefix forms `<field>_net8`, `_net16`, `_net24` (IPv6: twice the bits), usable in `by`, `distinct` and `entities`, so a rotating-source scanner can be keyed by its /16 (`by: [raddr_net16]`). Evidence is the last three events. State per rule is bounded (`Options.MaxKeys`, default 4096; expired keys are pruned, then the least recently seen evicted). Windows use event time, so replays and tests with a fake clock are deterministic.
 
 `sequence`: the rule's own `when` is stage A; `then` is stage B (own event kinds and conditions). When B matches and an A with the same `by` key arrived within `within`, the rule fires with both events as evidence; A is consumed. One pending A per key, bounded.
 
@@ -113,6 +113,12 @@ Field lookup order: the flat key, the nested path (`parent.comm` into `{parent: 
 
 **net_connect** (audit connect/accept; Sysmon 3): audit `direction`, `addr`, `port`; Windows `dir` (`in`|`out`), `src_ip`, `dst_ip`, `src_port`, `dst_port`, `initiated`, `dst_host`.
 
+**http_request** (capture `HTTPEvents`, from the HTTP parser): `method`, `host`, `uri`, `ua`, `status`, `src_ip`, `src_port`, `dst_ip`, `dst_port`, `community_id`, and `dst_org` / `dst_cloud` from the configured network list (`capture.OrgNet`; empty list means no classification). Credentials are never copied.
+
+**process_start env (Linux)**: `env.LD_PRELOAD`, `env.LD_AUDIT`, `env.LD_LIBRARY_PATH`, `env.LD_DEBUG`, `env.LD_BIND_NOW` (value, clipped to 512 bytes) and `env.HIDDEN` / `env.BLOCKED` (the value `(set)`, presence only), read from `/proc/<pid>/environ` at exec (bounded to 256 KiB). No other variable is ever stored.
+
+**Group Policy fields** (winevt): on `file_change` and 5145 `sec_event`, `sysvol_policy`, `gpo_guid`, `gpo_section` (`machine`|`user`), `gpo_item` (`gpp_scheduledtasks`, `gpp_groups`, `gpp_other`, `scripts`, `registry_pol`, `security_template`, `other`); on 5136/5137/5139/5141, `gpo: true` and `gpo_guid` when the object is a groupPolicyContainer.
+
 **audit.rules_changed**, **telemetry_gap** (`source`, `reason`, `count`).
 
 **auth_success / auth_fail** (logs module; winevt 4624/4625): `account`, `source` (source IP), `service` (`sshd`, `cockpit`, ..., `windows`), `method`, `logon_type`, `logon_type_name`, `machine_account`, `status`, `sub_status`.
@@ -123,4 +129,4 @@ Field lookup order: the flat key, the nested path (`parent.comm` into `{parent: 
 
 ## Corpus
 
-`rules/linux_persistence.yml` (file_change), `linux_exec.yml` (process_start), `network.yml` (net.*), `auth.yml`, `windows.yml`, `logs.yml`, `profiles.yml`; `rules/pending/` names each missing producer in `needs:`. Mapping from the proposed rules P01-P81 to ids is in the rule ids (`D18.default-cred-logon` = P01 ...); additional catalog rules: D1, D3, D4, D5a/b, D5h, D7a, D6a, D2a, D10 (audit rules, telemetry gap), D12/D12b, V3.
+`rules/linux_persistence.yml` (file_change), `linux_exec.yml` (process_start), `network.yml` (net.*), `auth.yml`, `windows.yml`, `logs.yml`, `mw-redteam.yml` (P82-P90 shape rules from the Midwest red team's public tooling), `profiles.yml`; `rules/pending/` names each missing producer in `needs:`. Mapping from the proposed rules P01-P81 to ids is in the rule ids (`D18.default-cred-logon` = P01 ...); additional catalog rules: D1, D3, D4, D5a/b, D5h, D7a, D6a, D2a, D10 (audit rules, telemetry gap), D12/D12b, V3.

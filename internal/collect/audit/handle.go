@@ -98,6 +98,13 @@ func (m *Module) onExec(e *ExecEvent) {
 		if child.Cgroup != "" {
 			f["cgroup"] = child.Cgroup
 		}
+		// Loader-injection variables only (see procenv.go); only when /proc
+		// still describes the process that exec'd (not a reused pid).
+		if e.Success && child.Live && child.Exe != "" {
+			if env := readEnvKeys(m.procs.root, e.PID); env != nil {
+				f["env"] = env
+			}
+		}
 	}
 	// Parent: /proc at event time, else the cache of earlier exec events.
 	if par, ok := m.procs.Resolve(e.PPID, e.Time); ok {
