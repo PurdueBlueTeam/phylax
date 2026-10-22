@@ -1,0 +1,12 @@
+# fixed outputs for fake commands. NAME<TAB>output (\n escapes). {{HOST}} and {{USER}} are substituted.
+uname -a	Linux {{HOST}} 5.15.0-101-generic #111-Ubuntu SMP Tue Mar 5 20:16:58 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux
+uname	Linux
+id	uid=0(root) gid=0(root) groups=0(root)
+whoami	root
+w	 10:12:01 up 41 days,  3:07,  1 user,  load average: 0.08, 0.03, 0.01\nUSER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\nroot     pts/0    10.0.0.5         10:11    0.00s  0.02s  0.00s w
+ps	  PID TTY          TIME CMD\n 1288 pts/0    00:00:00 bash\n 1301 pts/0    00:00:00 ps
+ifconfig	eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500\n        inet 10.0.0.23  netmask 255.255.255.0  broadcast 10.0.0.255
+ip a	1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n    inet 127.0.0.1/8 scope host lo\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n    inet 10.0.0.23/24 brd 10.0.0.255 scope global eth0
+df -h	Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        40G   11G   27G  29% /
+free -m	              total        used        free\nMem:           3936         812        2104
+uptime	 10:12:01 up 41 days,  3:07,  1 user,  load average: 0.08, 0.03, 0.01

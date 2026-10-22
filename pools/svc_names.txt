@@ -1,0 +1,6 @@
+svc_backup
+svc_sql
+svc_web
+svc_monitor
+svc_deploy
+svc_report

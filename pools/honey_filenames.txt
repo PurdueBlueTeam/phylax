@@ -1,0 +1,10 @@
+passwords.txt
+passwords.xlsx
+backup.sql
+db_backup.sql.gz
+id_rsa_old
+id_rsa_backup
+creds.txt
+vpn-credentials.txt
+admin_notes.txt
+network_diagram_passwords.txt
