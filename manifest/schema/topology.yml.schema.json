@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "backups": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "host",
+          "path"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "controller": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_port": {
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "host": {
+          "type": "string"
+        },
+        "ui": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host",
+        "agent_port",
+        "ui"
+      ],
+      "type": "object"
+    },
+    "devices": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "external_ip": {
+            "type": "string"
+          },
+          "mgmt": {
+            "type": "string"
+          },
+          "ports": {
+            "items": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "proxy": {
+            "type": "string"
+          },
+          "segment": {
+            "type": "string"
+          },
+          "vendor": {
+            "enum": [
+              "panos",
+              "vyos",
+              "ftd"
+            ],
+            "type": "string"
+          },
+          "via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor",
+          "mgmt",
+          "segment"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "segments": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "cidr": {
+            "type": "string"
+          },
+          "controller_path": {
+            "additionalProperties": false,
+            "properties": {
+              "allow_from": {
+                "type": "string"
+              },
+              "port": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "public": {
+                "type": "string"
+              },
+              "via": {
+                "enum": [
+                  "static_nat"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "via",
+              "public",
+              "allow_from",
+              "port"
+            ],
+            "type": "object"
+          },
+          "firewall": {
+            "type": "string"
+          },
+          "nat": {
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "static_1to1_same_octet"
+                ],
+                "type": "string"
+              },
+              "public_pool": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "public_pool",
+              "mode"
+            ],
+            "type": "object"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "relay": {
+            "type": "string"
+          },
+          "relay_port": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "uplink": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cidr"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "team": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "team",
+    "controller",
+    "segments"
+  ],
+  "title": "Phylax topology.yml",
+  "type": "object"
+}

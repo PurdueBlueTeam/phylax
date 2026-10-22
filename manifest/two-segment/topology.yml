@@ -1,0 +1,21 @@
+# Two-segment variant (2026 style): a corporate segment holding the controller and a
+# DMZ segment whose hosts cannot reach the controller directly. The DMZ's relay host
+# splices agent connections to the controller.
+team: 7
+controller:
+  host: ctl-wkst
+  agent_port: 7443
+  ui: 127.0.0.1:8443
+segments:
+  corp:
+    cidr: 10.10.1.0/24
+    firewall: palo1
+  dmz:
+    cidr: 10.10.2.0/24
+    firewall: palo1
+    nat: { public_pool: "172.25.{{ 20 + team }}.0/24", mode: static_1to1_same_octet }
+    relay: web                           # accepts only from the DMZ, dials the controller
+    relay_port: 7444
+    # parent defaults to the controller's segment (corp)
+devices:
+  palo1: { vendor: panos, mgmt: 10.10.1.250, segment: corp }

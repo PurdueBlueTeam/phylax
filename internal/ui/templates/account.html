@@ -1,0 +1,9 @@
+{{define "content"}}
+<h1>Account</h1>
+<form method="post" action="/account/password" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Current password <input name="current" type="password" autocomplete="current-password" required></label>
+<label>New password (12+ characters) <input name="new" type="password" autocomplete="new-password" minlength="12" required></label>
+<button type="submit">Change password</button>
+</form>
+{{end}}

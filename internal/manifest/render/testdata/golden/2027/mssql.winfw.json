@@ -1,0 +1,215 @@
+{
+  "host": "mssql",
+  "default_inbound": "Block",
+  "default_outbound": "Block",
+  "rules": [
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcp 1",
+      "description": "DHCP client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcp 1",
+      "description": "DHCP server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcpv6 1",
+      "description": "DHCPv6 client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcpv6 1",
+      "description": "DHCPv6 server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Canary",
+      "name": "Phylax Canary outbound canary 1",
+      "description": "egress canary to kali: expected to be blocked, logged separately",
+      "direction": "Outbound",
+      "action": "Block",
+      "protocol": "TCP",
+      "remote_ports": [
+        4444,
+        8888,
+        9001
+      ],
+      "remote_addresses": [
+        "172.17.0.2/32"
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Decoy",
+      "name": "Phylax Decoy inbound decoy 1",
+      "description": "decoy [ssh] (record only)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        22
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Decoy",
+      "name": "Phylax Decoy inbound decoy 2",
+      "description": "decoy [telnet] (record only)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        23
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Mgmt",
+      "name": "Phylax Mgmt outbound agent_link 1",
+      "description": "agent link to the controller",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "remote_ports": [
+        7443
+      ],
+      "remote_addresses": [
+        "172.20.240.0/24"
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service mssql-rdp 1",
+      "description": "mssql-rdp (rdp)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        3389
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service mssql-smb 1",
+      "description": "mssql-smb (smb)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        445
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service mssql-sql 1",
+      "description": "mssql-sql (mssql)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        1433
+      ],
+      "profiles": "Any",
+      "enabled": true
+    }
+  ],
+  "denied_egress_audit": true
+}

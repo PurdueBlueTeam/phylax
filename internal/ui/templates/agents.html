@@ -1,0 +1,9 @@
+{{define "agents_table"}}<table id="agents-table">
+<thead><tr><th>Name</th><th>OS</th><th>Version</th><th>Link</th><th>Lag (ms)</th><th>Spool</th><th>Safe mode</th><th>Last seen</th></tr></thead>
+<tbody>{{range .Data}}<tr><td>{{.Name}}</td><td>{{.OS}}</td><td>{{.Version}}</td><td class="link-{{.LinkState}}">{{.LinkState}}</td><td>{{.LagMillis}}</td><td>{{.SpoolDepth}}</td><td>{{if .SafeMode}}on{{else}}off{{end}}</td><td>{{ago .LastSeen}}</td></tr>
+{{else}}<tr><td colspan="8">No agents connected.</td></tr>{{end}}</tbody>
+</table>{{end}}
+{{define "content"}}
+<h1>Agents</h1>
+<div hx-get="/agents/table" hx-trigger="every 5s" hx-swap="innerHTML">{{template "agents_table" .}}</div>
+{{end}}

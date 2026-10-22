@@ -1,0 +1,16 @@
+{{define "pane-overview"}}<section class="pane" id="pane-overview"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "pane-alerts"}}<section class="pane" id="pane-alerts"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "pane-plans"}}<section class="pane" id="pane-plans"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "pane-approvals"}}<section class="pane" id="pane-approvals"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "pane-roundclock"}}<section class="pane" id="pane-roundclock"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "pane-health"}}<section class="pane" id="pane-health"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
+{{define "content"}}
+<div class="dash">
+{{template "pane-overview" .Data.Overview}}
+{{template "pane-roundclock" .Data.RoundClock}}
+{{template "pane-alerts" .Data.Alerts}}
+{{template "pane-plans" .Data.Plans}}
+{{template "pane-approvals" .Data.Approvals}}
+{{template "pane-health" .Data.Health}}
+</div>
+{{end}}

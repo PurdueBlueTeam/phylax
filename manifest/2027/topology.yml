@@ -1,0 +1,27 @@
+# 2027 reference manifest: topology (design: "The reference manifest (2027)").
+# Template expressions like {{ 20 + team }} are expanded at load time from `team`.
+team: 1                                    # team T=1: public pool is 172.25.21.0/24
+controller:
+  host: ubuntu-wkst                        # DHCP on the LAN; reservation requested (Risks)
+  agent_port: 7443                         # agent streams and bootstrap downloads only
+  ui: 127.0.0.1:8443                       # separate listener, login required
+segments:
+  lan:
+    cidr: 172.20.240.0/24
+    firewall: palo1                        # mgmt 172.20.240.200, on this LAN
+    uplink: vyos1                          # reached through the Palo's outside zone
+    nat: { public_pool: "172.25.{{ 20 + team }}.0/24", mode: static_1to1_same_octet }
+  kali_leg:
+    cidr: 172.17.0.0/24
+    firewall: vyos1                        # no Palo between this leg and the Core side of VyOS
+    controller_path:                       # how an agent here reaches the controller
+      via: static_nat
+      public: "172.25.{{ 20 + team }}.30"  # free address in the pool; maps to the controller (Kali vantage)
+      allow_from: kali                     # the Palo rule allows only the Kali's source address
+      port: 7443
+devices:
+  palo1: { vendor: panos, mgmt: 172.20.240.200, segment: lan }
+  # external_ip is the address VyOS source-NATs the Kali and the workstations to (PKT 2).
+  vyos1: { vendor: vyos,  mgmt: 172.16.0.254,  segment: lan, via: palo1, external_ip: "172.31.{{ 20 + team }}.2" }
+backups:
+  - { name: controller-local, host: ubuntu-wkst, path: /var/lib/phylax/backups }

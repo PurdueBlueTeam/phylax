@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "hosts": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "class": {
+            "enum": [
+              "server",
+              "workstation"
+            ],
+            "type": "string"
+          },
+          "default_credentials": {
+            "type": "string"
+          },
+          "hardening": {
+            "additionalProperties": false,
+            "properties": {
+              "icmp_echo": {
+                "enum": [
+                  "allow",
+                  "drop"
+                ],
+                "type": "string"
+              },
+              "lm_compat_level": {
+                "type": "integer"
+              },
+              "lockout_policy": {
+                "type": "boolean"
+              },
+              "ntlm": {
+                "enum": [
+                  "allow",
+                  "deny"
+                ],
+                "type": "string"
+              },
+              "protected_users": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "os": {
+            "additionalProperties": false,
+            "properties": {
+              "distro": {
+                "type": "string"
+              },
+              "family": {
+                "enum": [
+                  "debian",
+                  "rhel",
+                  "suse",
+                  "arch",
+                  "alpine",
+                  "windows"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "family",
+              "version"
+            ],
+            "type": "object"
+          },
+          "public": {
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "enum": [
+                "controller",
+                "relay",
+                "device_proxy",
+                "check_runner",
+                "scanner",
+                "canary",
+                "decoys",
+                "capture",
+                "vantage"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "segment": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment",
+          "ip",
+          "os"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "hosts"
+  ],
+  "title": "Phylax hosts.yml",
+  "type": "object"
+}
