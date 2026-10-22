@@ -247,29 +247,3 @@ func TestServiceConfigTransactionAndRestart(t *testing.T) {
 		t.Fatalf("rollback must restart the service again, restarts=%d", n)
 	}
 }
-
-func TestAgentOptSetWindowsPath(t *testing.T) {
-	f := newFixture(t)
-	path := `C:\Program Files (x86)\ossec-agent\local_internal_options.conf`
-	f.write(t, "Program Files (x86)/ossec-agent/local_internal_options.conf", "# local\nwazuh_command.remote_commands=1\n", 0o640)
-	keys := "wazuh_command.remote_commands=0,logcollector.remote_commands=0,sca.remote_commands=0"
-	f.ok(t, "agentopt.set", map[string]any{"path": path, "keys": keys}, func(r *Request) { r.Deadman = NoDeadman })
-	got := f.read(t, "Program Files (x86)/ossec-agent/local_internal_options.conf")
-	if got != "# local\nwazuh_command.remote_commands=0\nlogcollector.remote_commands=0\nsca.remote_commands=0\n" {
-		t.Fatalf("got:\n%s", got)
-	}
-	o := f.ok(t, "agentopt.set", map[string]any{"path": path, "keys": keys})
-	if !o.Plan.Done {
-		t.Fatal("second run not Done")
-	}
-	for _, bad := range []map[string]any{
-		{"path": "/etc/passwd", "keys": keys},
-		{"path": "relative/local_internal_options.conf", "keys": keys},
-		{"path": path, "keys": "no_equals"},
-		{"path": path, "keys": "a.b=1\nc.d=2\x00"},
-	} {
-		if _, err := f.run(t, "agentopt.set", bad); err == nil {
-			t.Fatalf("accepted %v", bad)
-		}
-	}
-}

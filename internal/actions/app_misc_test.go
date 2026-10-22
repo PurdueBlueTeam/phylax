@@ -20,7 +20,7 @@ import (
 
 // ---- firewall.allow ----
 
-type fakeFW struct {
+type fakeNftFW struct {
 	mu       sync.Mutex
 	policy   *render.HostPolicy
 	drop     bool // Apply silently installs nothing (verification must catch it)
@@ -28,18 +28,18 @@ type fakeFW struct {
 	restored int
 }
 
-func newFakeFW() *fakeFW {
-	return &fakeFW{policy: &render.HostPolicy{Host: "rocky-web", DefaultIn: render.Drop, DefaultOut: render.Drop,
+func newFakeNftFW() *fakeNftFW {
+	return &fakeNftFW{policy: &render.HostPolicy{Host: "rocky-web", DefaultIn: render.Drop, DefaultOut: render.Drop,
 		Rules: []render.Rule{{Group: render.GroupMgmt, Kind: render.KindAgentLink, Dir: render.Out, Action: render.Accept, Proto: "tcp", RemotePorts: []uint16{9443}}}}}
 }
-func (f *fakeFW) Policy(context.Context) (*render.HostPolicy, error) {
+func (f *fakeNftFW) Policy(context.Context) (*render.HostPolicy, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := *f.policy
 	cp.Rules = append([]render.Rule(nil), f.policy.Rules...)
 	return &cp, nil
 }
-func (f *fakeFW) Apply(_ context.Context, hp *render.HostPolicy) error {
+func (f *fakeNftFW) Apply(_ context.Context, hp *render.HostPolicy) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.applied++
@@ -48,12 +48,12 @@ func (f *fakeFW) Apply(_ context.Context, hp *render.HostPolicy) error {
 	}
 	return nil
 }
-func (f *fakeFW) Snapshot(context.Context) (json.RawMessage, error) {
+func (f *fakeNftFW) Snapshot(context.Context) (json.RawMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return json.Marshal(f.policy)
 }
-func (f *fakeFW) Restore(_ context.Context, raw json.RawMessage) error {
+func (f *fakeNftFW) Restore(_ context.Context, raw json.RawMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.restored++
@@ -64,11 +64,11 @@ func (f *fakeFW) Restore(_ context.Context, raw json.RawMessage) error {
 	f.policy = &hp
 	return nil
 }
-func (f *fakeFW) nrules() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.policy.Rules) }
+func (f *fakeNftFW) nrules() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.policy.Rules) }
 
 func TestFirewallAllow(t *testing.T) {
 	f := newFixture(t)
-	fw := newFakeFW()
+	fw := newFakeNftFW()
 	f.linux(t).Firewall = fw
 	p := map[string]any{"ports": "1514,1515,55000,443", "proto": "tcp", "from": "10.0.0.0/24", "name": "wazuh"}
 	o, err := f.run(t, "firewall.allow", p, func(r *Request) { r.DryRun = true })
@@ -120,7 +120,7 @@ func TestFirewallAllow(t *testing.T) {
 
 func TestFirewallAllowVerifyFailureFiresDeadman(t *testing.T) {
 	f := newFixture(t)
-	fw := newFakeFW()
+	fw := newFakeNftFW()
 	fw.drop = true
 	f.linux(t).Firewall = fw
 	_, err := f.run(t, "firewall.allow", map[string]any{"ports": "443", "from": "any"})

@@ -177,17 +177,16 @@ func readFileIfExists(path string) ([]byte, bool, error) {
 	return b, true, nil
 }
 
-// linuxHandlers returns the dead-man rollback handlers of this file group.
-func linuxHandlers(env *Env) map[string]deadman.Handler {
-	return map[string]deadman.Handler{
-		kindSysctlRestore: func(ctx context.Context, e deadman.Entry) error { return undoSysctl(ctx, env, e) },
-		kindAttrUndo:      func(ctx context.Context, e deadman.Entry) error { return undoAttr(ctx, env, e) },
-		kindRenameUndo:    undoRename,
-		kindMySQLUnlock:   func(ctx context.Context, e deadman.Entry) error { return undoMySQLLock(ctx, env, e) },
-		kindFWAllowUndo:   func(ctx context.Context, e deadman.Entry) error { return undoFirewallAllow(ctx, env, e) },
-		kindRestoreThen:   func(ctx context.Context, e deadman.Entry) error { return undoRestoreThen(ctx, env, e) },
-		kindMultiService:  func(ctx context.Context, e deadman.Entry) error { return undoMultiService(ctx, env, e) },
-	}
+// linuxUndos are the dead-man rollback handlers of this file group,
+// registered from init (registry_linux.go).
+var linuxUndos = map[string]func(ctx context.Context, env *Env, e deadman.Entry) error{
+	kindSysctlRestore: undoSysctl,
+	kindAttrUndo:      undoAttr,
+	kindRenameUndo:    func(ctx context.Context, _ *Env, e deadman.Entry) error { return undoRename(ctx, e) },
+	kindMySQLUnlock:   undoMySQLLock,
+	kindFWAllowUndo:   undoFirewallAllow,
+	kindRestoreThen:   undoRestoreThen,
+	kindMultiService:  undoMultiService,
 }
 
 // restoreSnapshots puts snapshotted files back (idempotent), like the

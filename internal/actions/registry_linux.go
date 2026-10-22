@@ -1,12 +1,17 @@
 package actions
 
 // Linux and application-level actions (linux_*.go, app_*.go).
-func init() { extraActionSets = append(extraActionSets, linuxActions) }
+func init() {
+	registerExtra(linuxActions)
+	for k, fn := range linuxUndos {
+		registerUndo(k, fn)
+	}
+}
 
 func linuxActions() []Action {
 	return []Action{
 		confSet{name: "ini.set", style: styleINI}, confSet{name: "conf.set"},
-		xmlSet{}, agentOptSet{},
+		xmlSet{},
 		sysctlSet{}, kernelModuleBlock{}, systemdDropin{}, serviceConfig{}, cockpitDisable{},
 		cronDisable{name: "cron.disable"}, cronDisable{name: "at.disable", at: true},
 		fileAttr{},
