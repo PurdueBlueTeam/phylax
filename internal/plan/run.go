@@ -245,6 +245,48 @@ func (r *Run) set(id string, s State) error {
 	return r.move(id, s)
 }
 
+// Restore replaces the run's node states, reasons and approvals with persisted
+// ones (controller restart). Every node must be known; states are taken as is.
+func (r *Run) Restore(states map[string]State, reasons map[string]string, approvals map[string]Approval) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, st := range states {
+		if _, ok := r.node(id); !ok {
+			return fmt.Errorf("plan: restore: unknown node %q", id)
+		}
+		switch st {
+		case StatePending, StateApproved, StateRunning, StateApplied, StateVerified, StateFailed, StateRolledBack, StateSkipped:
+		default:
+			return fmt.Errorf("plan: restore: node %q has unknown state %q", id, st)
+		}
+		r.state[id] = st
+	}
+	for id, why := range reasons {
+		r.reason[id] = why
+	}
+	for id, a := range approvals {
+		r.approvals[id] = a
+	}
+	return nil
+}
+
+// Lost records that an applied or verified node's change was undone outside
+// the run (its dead-man switch fired while the controller was away): the node
+// becomes rolled back and the failure policy applies to nodes not yet started.
+func (r *Run) Lost(id, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.node(id); !ok {
+		return fmt.Errorf("plan: unknown node %q", id)
+	}
+	if err := r.move(id, StateRolledBack); err != nil {
+		return err
+	}
+	r.reason[id] = reason
+	r.applyPolicy(id)
+	return nil
+}
+
 // Fail marks a node failed and applies the plan's failure policy to the
 // nodes that have not started.
 func (r *Run) Fail(id, reason string) error {
@@ -257,6 +299,11 @@ func (r *Run) Fail(id, reason string) error {
 		return err
 	}
 	r.reason[id] = reason
+	r.applyPolicy(id)
+	return nil
+}
+
+func (r *Run) applyPolicy(id string) {
 	switch r.plan.policy() {
 	case StopDependents:
 		dep := r.dependentsOf(id)
@@ -272,7 +319,6 @@ func (r *Run) Fail(id, reason string) error {
 			}
 		}
 	}
-	return nil
 }
 
 func (r *Run) dependentsOf(id string) map[string]bool {

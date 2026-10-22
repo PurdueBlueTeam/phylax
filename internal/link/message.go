@@ -17,6 +17,15 @@ import (
 // Within a version, JSON fields may be added; receivers ignore unknown fields.
 const ProtoVersion = 1
 
+// ProtoMinor is the minor revision within ProtoVersion. Minor 1 introduced the
+// typed signed envelopes of step, step_result and control (docs/protocol.md,
+// "Versioning"). Peers announce theirs in hello/welcome; a controller sends
+// steps and controls only to agents that announce at least MinSignedMinor.
+const (
+	ProtoMinor     = 1
+	MinSignedMinor = 1
+)
+
 // Type is the message type byte (bit 0x40 is reserved for the compression flag).
 type Type uint8
 
@@ -105,6 +114,23 @@ type Hello struct {
 	Caps    map[string]any `json:"caps,omitempty"`
 	LastSeq uint64         `json:"last_seq"`
 	Token   string         `json:"token,omitempty"` // one-time enrollment token, first contact only
+	// Minor is the sender's protocol minor revision (absent = 0).
+	Minor int `json:"minor,omitempty"`
+	// Deadman reports the agent's dead-man journal entries that belong to a
+	// plan node (pending ones and recently finished), so a controller that
+	// restarted can reconcile what happened while it was away.
+	Deadman []DeadmanEntry `json:"deadman,omitempty"`
+}
+
+// MaxDeadmanEntries bounds Hello.Deadman.
+const MaxDeadmanEntries = 256
+
+// DeadmanEntry is one dead-man journal entry as reported in hello.
+type DeadmanEntry struct {
+	ID       string `json:"id"`
+	Node     string `json:"node"`  // "<plan>:<node>"
+	State    string `json:"state"` // armed|confirmed|cancelled|rolled_back|rollback_failed
+	Deadline int64  `json:"deadline"`
 }
 
 func (*Hello) MsgType() Type { return TypeHello }
@@ -118,8 +144,19 @@ func (m *Hello) Validate() error {
 	if err := checkStr("version", m.Version, 64, false); err != nil {
 		return err
 	}
-	if len(m.Roles) > 32 || len(m.Caps) > 256 {
-		return invalid("hello: too many roles/caps")
+	if len(m.Roles) > 32 || len(m.Caps) > 256 || len(m.Deadman) > MaxDeadmanEntries || m.Minor < 0 {
+		return invalid("hello: too many roles/caps/dead-man entries")
+	}
+	for _, d := range m.Deadman {
+		if err := checkStr("deadman id", d.ID, 128, true); err != nil {
+			return err
+		}
+		if err := checkStr("deadman node", d.Node, 2*maxStr+1, false); err != nil {
+			return err
+		}
+		if err := checkStr("deadman state", d.State, 32, true); err != nil {
+			return err
+		}
 	}
 	return checkStr("token", m.Token, 256, false)
 }
@@ -129,6 +166,7 @@ type Welcome struct {
 	Proto    int     `json:"proto"`
 	Enrolled bool    `json:"enrolled"`
 	Config   *Config `json:"config,omitempty"`
+	Minor    int     `json:"minor,omitempty"`
 }
 
 func (*Welcome) MsgType() Type { return TypeWelcome }
@@ -184,17 +222,30 @@ func (m *Events) Validate() error {
 	return nil
 }
 
-// StepResult reports a plan action outcome. Before/After are opaque JSON.
+// StepResult reports a plan action outcome. Its fields are the typed form of
+// the signed result body (internal/plan.ResultBody): Status is the signed
+// outcome, and Sig is the agent's ECDSA P-256 signature over the canonical body
+// (empty for the unsigned statuses `rejected`, `unknown`, `lost`, `running`).
+// Detail is an optional detail object (diff, notes) whose SHA-256 is the
+// signed AfterDigest.
 type StepResult struct {
-	Plan   string          `json:"plan"`
-	Node   string          `json:"node"`
-	Epoch  uint64          `json:"epoch"`
-	Seq    uint64          `json:"seq"`
-	Phase  string          `json:"phase"` // check|apply|verify|rollback
-	Status string          `json:"status"`
-	Error  string          `json:"error,omitempty"`
-	Before json.RawMessage `json:"before,omitempty"`
-	After  json.RawMessage `json:"after,omitempty"`
+	V                int             `json:"v,omitempty"`
+	Plan             string          `json:"plan"`
+	Node             string          `json:"node"`
+	Host             string          `json:"host,omitempty"`
+	Epoch            uint64          `json:"epoch"`
+	Seq              uint64          `json:"seq"`
+	Phase            string          `json:"phase"` // check|apply|verify|rollback
+	Status           string          `json:"status"`
+	Error            string          `json:"error,omitempty"`
+	StepDigest       string          `json:"step_digest,omitempty"`
+	RollbackDataHash string          `json:"rollback_data_hash,omitempty"`
+	BeforeDigest     string          `json:"before_digest,omitempty"`
+	AfterDigest      string          `json:"after_digest,omitempty"`
+	StartedMS        int64           `json:"started_ms,omitempty"`
+	FinishedMS       int64           `json:"finished_ms,omitempty"`
+	Detail           json.RawMessage `json:"detail,omitempty"`
+	Sig              []byte          `json:"sig,omitempty"`
 }
 
 func (*StepResult) MsgType() Type { return TypeStepResult }
@@ -202,34 +253,74 @@ func (m *StepResult) Validate() error {
 	for _, f := range []struct {
 		n, v string
 		max  int
-	}{{"plan", m.Plan, maxStr}, {"node", m.Node, maxStr}, {"phase", m.Phase, 32}, {"status", m.Status, 32}} {
-		if err := checkStr(f.n, f.v, f.max, true); err != nil {
+	}{{"plan", m.Plan, maxStr}, {"node", m.Node, maxStr}, {"phase", m.Phase, 32}, {"status", m.Status, 32},
+		{"host", m.Host, maxHostLen}, {"step_digest", m.StepDigest, 128}, {"rollback_data_hash", m.RollbackDataHash, 128},
+		{"before_digest", m.BeforeDigest, 128}, {"after_digest", m.AfterDigest, 128}} {
+		if err := checkStr(f.n, f.v, f.max, f.n == "plan" || f.n == "node" || f.n == "phase" || f.n == "status"); err != nil {
 			return err
 		}
+	}
+	if len(m.Sig) > 128 {
+		return invalid("step_result: sig too long")
 	}
 	return checkStr("error", m.Error, 8192, false)
 }
 
-// Step is a signed plan step. The link layer only carries it; signature
-// verification and canonicalisation belong to the executor.
+// Approval is the approval record carried inside a signed step.
+type Approval struct {
+	By   string `json:"by"`
+	At   int64  `json:"at"` // unix seconds
+	Note string `json:"note,omitempty"`
+}
+
+// Step is a signed plan step. Its fields are the typed form of the signed step
+// body (internal/plan.StepBody) plus the per-host secrets blob and the
+// signature; the link layer only carries it, verification and canonicalisation
+// belong to the executor. Params is the action's parameter object.
 type Step struct {
-	Plan     string          `json:"plan"`
-	Node     string          `json:"node"`
-	Host     string          `json:"host"`
-	Epoch    uint64          `json:"epoch"`
-	Seq      uint64          `json:"seq"`
-	Action   string          `json:"action"`
-	Phase    string          `json:"phase,omitempty"`
-	Params   json.RawMessage `json:"params,omitempty"`
-	Secrets  json.RawMessage `json:"secrets,omitempty"`
-	DeadmanS int             `json:"deadman,omitempty"`
-	Sig      string          `json:"sig"`
+	V              int             `json:"v"`
+	Plan           string          `json:"plan"`
+	PlanHash       string          `json:"plan_hash"`
+	Node           string          `json:"node"`
+	Host           string          `json:"host"`
+	Action         string          `json:"action"`
+	Phase          string          `json:"phase"`
+	Params         json.RawMessage `json:"params"`
+	Risk           string          `json:"risk"`
+	Approval       *Approval       `json:"approval,omitempty"`
+	RollbackPolicy string          `json:"rollback_policy"`
+	RollbackDigest string          `json:"rollback_digest,omitempty"`
+	SecretsDigest  string          `json:"secrets_digest,omitempty"`
+	Epoch          uint64          `json:"epoch"`
+	Seq            uint64          `json:"seq"`
+	NotBefore      int64           `json:"not_before"`
+	NotAfter       int64           `json:"not_after"`
+	DeadmanS       int             `json:"deadman,omitempty"`
+	Secrets        []byte          `json:"secrets,omitempty"` // this host's secrets only; covered by SecretsDigest
+	Sig            []byte          `json:"sig"`
 }
 
 func (*Step) MsgType() Type { return TypeStep }
 func (m *Step) Validate() error {
-	for _, f := range []struct{ n, v string }{{"plan", m.Plan}, {"node", m.Node}, {"host", m.Host}, {"action", m.Action}, {"sig", m.Sig}} {
+	for _, f := range []struct{ n, v string }{{"plan", m.Plan}, {"node", m.Node}, {"host", m.Host}, {"action", m.Action}, {"phase", m.Phase}} {
 		if err := checkStr(f.n, f.v, maxStr, true); err != nil {
+			return err
+		}
+	}
+	for _, f := range []struct{ n, v string }{{"plan_hash", m.PlanHash}, {"risk", m.Risk}, {"rollback_policy", m.RollbackPolicy},
+		{"rollback_digest", m.RollbackDigest}, {"secrets_digest", m.SecretsDigest}} {
+		if err := checkStr(f.n, f.v, 128, false); err != nil {
+			return err
+		}
+	}
+	if len(m.Sig) == 0 || len(m.Sig) > 128 {
+		return invalid("step: sig is required")
+	}
+	if m.Approval != nil {
+		if err := checkStr("approval.by", m.Approval.By, maxStr, false); err != nil {
+			return err
+		}
+		if err := checkStr("approval.note", m.Approval.Note, 8192, false); err != nil {
 			return err
 		}
 	}
@@ -267,15 +358,36 @@ func (m *Fetch) Validate() error {
 	return checkStr("kind", m.Kind, 32, true)
 }
 
-// Control carries safe mode, freeze capture, patch window, dead-man confirm.
+// Control is a signed controller command: safe mode, freeze capture, patch
+// window, dead-man confirm, step status query. Its fields are the typed form of
+// the signed control body (internal/plan.ControlBody) plus the signature. The
+// agent refuses any control that does not verify.
 type Control struct {
-	Kind string          `json:"kind"`
-	On   bool            `json:"on"`
-	Args json.RawMessage `json:"args,omitempty"`
+	V         int             `json:"v"`
+	Host      string          `json:"host"`
+	Kind      string          `json:"kind"`
+	On        bool            `json:"on"`
+	Args      json.RawMessage `json:"args,omitempty"`
+	Epoch     uint64          `json:"epoch"`
+	Seq       uint64          `json:"seq"`
+	NotBefore int64           `json:"not_before"`
+	NotAfter  int64           `json:"not_after"`
+	Sig       []byte          `json:"sig"`
 }
 
-func (*Control) MsgType() Type     { return TypeControl }
-func (m *Control) Validate() error { return checkStr("kind", m.Kind, 64, true) }
+func (*Control) MsgType() Type { return TypeControl }
+func (m *Control) Validate() error {
+	if err := checkStr("kind", m.Kind, 64, true); err != nil {
+		return err
+	}
+	if err := checkStr("host", m.Host, maxHostLen, true); err != nil {
+		return err
+	}
+	if len(m.Sig) == 0 || len(m.Sig) > 128 {
+		return invalid("control: sig is required")
+	}
+	return nil
+}
 
 // Ack acknowledges the highest contiguous event sequence stored.
 type Ack struct {

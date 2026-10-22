@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
 
@@ -59,6 +62,7 @@ type Agent struct {
 	dm     *deadman.Manager
 	sup    *Supervisor
 	exec   *execState
+	ctlVer *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
 	execWG sync.WaitGroup
 	// runCtx is the agent's run context; steps execute under it, not under
 	// the (per-connection) handler context.
@@ -108,6 +112,15 @@ func New(cfg Config) (*Agent, error) {
 		notify: make(chan struct{}, 1), runCtx: context.Background()}
 	if err := a.initExec(); err != nil {
 		return nil, err
+	}
+	key := cfg.PlanKeyOverride()
+	if len(key) == 0 {
+		if key, err = b.PlanPublicKey(); err != nil {
+			return nil, err
+		}
+	}
+	if len(key) > 0 {
+		a.ctlVer = &plan.ControlVerifier{Key: key, HostID: b.Host, Store: plan.FileSeqStore{Path: cfg.Layout.ControlSeq()}}
 	}
 	return a, nil
 }
@@ -292,14 +305,14 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 		case *link.Fetch:
 			return pick3(h.Fetch, a.placeholderFetch)(hc, v, reply)
 		case *link.Control:
-			return a.controlHandler()(hc, v)
+			return a.handleControl(hc, v, reply)
 		default:
 			a.log.Debug("ignoring message", "type", m.MsgType())
 		}
 		return nil
 	}})
 
-	hello := &link.Hello{Proto: link.ProtoVersion, Host: a.bundle.Host, Version: a.cfg.Version,
+	hello := &link.Hello{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Deadman: a.deadmanReport(), Host: a.bundle.Host, Version: a.cfg.Version,
 		Roles: a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH}}
 	hello.LastSeq, _ = a.sp.Head()
 	if !enrolled {
@@ -423,4 +436,33 @@ func (a *Agent) heartbeat(s *link.Session) {
 	if err := s.TrySend(link.PrioCritical, hb); err != nil {
 		a.log.Debug("heartbeat not queued", "err", err)
 	}
+}
+
+// PlanKeyOverride is Exec.PlanKey when set.
+func (c Config) PlanKeyOverride() ed25519.PublicKey {
+	if c.Exec != nil {
+		return c.Exec.PlanKey
+	}
+	return nil
+}
+
+// deadmanReport lists the dead-man entries that belong to plan nodes, newest
+// first and bounded, for hello: a restarted controller reconciles with it.
+func (a *Agent) deadmanReport() []link.DeadmanEntry {
+	if a.dm == nil {
+		return nil
+	}
+	entries, err := a.dm.List()
+	if err != nil {
+		a.log.Warn("dead-man list for hello", "err", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ArmedAt.After(entries[j].ArmedAt) })
+	var out []link.DeadmanEntry
+	for _, e := range entries {
+		if e.NodeID == "" || len(out) >= link.MaxDeadmanEntries || len(e.NodeID) > 2*1024+1 {
+			continue
+		}
+		out = append(out, link.DeadmanEntry{ID: e.ID, Node: e.NodeID, State: string(e.State), Deadline: e.Deadline.Unix()})
+	}
+	return out
 }

@@ -1,4 +1,4 @@
-# Phylax wire protocol v3 (protocol version 1)
+# Phylax wire protocol v3 (protocol version 1, minor 1)
 
 Written protocol spec, M0 deliverable. It is the contract between
 `phylax agent`, relays and `phylax serve`. `internal/link` implements it and
@@ -125,42 +125,62 @@ error and closes the connection.
 
 | Code | Name | Direction | Fields |
 | --- | --- | --- | --- |
-| 0x01 | `hello` | agent to controller | `proto` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only) |
-| 0x18 | `welcome` | controller to agent | `proto`, `enrolled` (bool), `config` (optional signed config) |
+| 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
+| 0x18 | `welcome` | controller to agent | `proto`, `minor`, `enrolled` (bool), `config` (optional signed config) |
 | 0x02 | `heartbeat` | agent to controller | `seq`, `host_clock` (RFC 3339), `spool_depth`, `congestion` (`ok`/`warning`/`full`/`flood`/`recovered`), `modules{name:status}`, `safe_mode`, `drops` |
 | 0x03 | `events` | agent to controller | `events[]`: `internal/event` records (`agent`, `seq`, `time`, `kind`, `prio`, `fields`, `prev`, `hash`), 1..5000 per batch |
-| 0x04 | `step_result` | agent to controller | `plan`, `node`, `epoch`, `seq`, `phase` (`check`/`apply`/`verify`/`rollback`), `status`, `error`, `before`, `after` |
+| 0x04 | `step_result` | agent to controller | `v`, `plan`, `node`, `host`, `epoch`, `seq`, `phase` (`check`/`apply`/`verify`/`rollback`), `status`, `error`, `step_digest`, `rollback_data_hash`, `before_digest`, `after_digest`, `started_ms`, `finished_ms`, `detail`, `sig` |
 | 0x05 | `chunk` | both | `sha256` (object digest, hex), `offset`, `total`, `data` (base64, 1..262144 bytes) |
 | 0x06 | `chunk_have` | both | `sha256`, `ranges[]` of `[offset,end)` the receiver already holds |
 | 0x10 | `ack` | controller to agent | `seq`: highest contiguous event sequence stored |
-| 0x11 | `step` | controller to agent | `plan`, `node`, `host`, `epoch`, `seq`, `action`, `phase`, `params`, `secrets`, `deadman`, `sig` |
+| 0x11 | `step` | controller to agent | `v`, `plan`, `plan_hash`, `node`, `host`, `action`, `phase`, `params`, `risk`, `approval{by,at,note}`, `rollback_policy`, `rollback_digest`, `secrets_digest`, `epoch`, `seq`, `not_before`, `not_after`, `deadman`, `secrets` (base64), `sig` (base64) |
 | 0x12 | `config` | controller to agent | `version`, `epoch`, `body`, `sig` |
 | 0x13 | `fetch` | controller to agent | `id`, `kind` (`pcap`/`file`/`telemetry`), `args` |
-| 0x15 | `control` | controller to agent | `kind` (`safe_mode`, `freeze_capture`, `patch_window`, `deadman_confirm`, ...), `on`, `args` |
+| 0x15 | `control` | controller to agent | `v`, `host`, `kind` (`safe_mode`, `freeze_capture`, `patch_window`, `deadman_confirm`, `step_status`, ...), `on`, `args`, `epoch`, `seq`, `not_before`, `not_after`, `sig` |
 | 0x16 | `relay_request` | controller to relay | `target` (`host:port`), `class` (`device-proxy`/`bootstrap`), `id` |
 | 0x17 | `token_issue` | controller internal (bootstrap handler) | `host`, `token`, `ttl_s` (1..3600; 600 for enrollment) |
 
 `0x14` is reserved (v2 controller-to-agent chunk; `chunk` is now one type used
 in both directions).
 
-`step` and `config` are carried opaquely by the link layer: `params`,
-`secrets`, `body`, `before`, `after` are arbitrary JSON; signature
-verification, RFC 8785 canonicalisation, plan id and `(epoch, seq)`
-monotonicity are enforced by the executor, not the transport. `step.secrets`
-holds only this host's secrets.
+`config` is carried opaquely by the link layer (`body` is arbitrary JSON).
+`step`, `step_result` and `control` have typed fields; since minor 1 nothing is
+tunnelled through a generic field.
 
-### Plan steps on the wire
+### Plan steps, results and controls on the wire
 
-The link messages carry the signed `plan.Step` opaquely. `step`: `plan`, `node`,
-`host`, `epoch`, `seq`, `action`, `phase`, `deadman`, `sig` (base64) are copies
-for routing and logs; `params` holds the complete wire-encoded `plan.Step`
-(signed body, secrets, signature), and the agent refuses a step whose copies do
-not match the signed body. `step_result`: `status` is the outcome
-(`checked|applied|verified|failed|rolled_back`, or the unsigned `rejected` for a
-step refused before verification); `after` is the signed `plan.StepResult`
-(ECDSA P-256, the agent's identity key); `before` is an optional detail object
-(diff, notes) whose SHA-256 is the signed `after_digest`. `control`
-`deadman_confirm` args: `{"id"}` or `{"plan","node"}`.
+All three are the typed form of a signed body. The receiver rebuilds the body
+from the message fields and verifies the signature over its RFC 8785 canonical
+JSON, so there are no separate "copies" that could disagree with the signed
+content: changing any field fails verification.
+
+- **`step`**: the fields are `plan.StepBody` (`plan` = plan id, `node` = node
+  id, `params` = the action's parameter object, `deadman` = `deadman_sec`, ...)
+  plus `secrets` (this host's secrets only; covered by `secrets_digest`) and
+  `sig` (Ed25519, plan key). Executor checks: signature, host binding, window,
+  `(epoch, seq)` monotonic (durable mark), approval record for non-check phases.
+- **`step_result`**: the fields are `plan.ResultBody`; `status` is the signed
+  outcome (`checked|applied|verified|failed|rolled_back`), `sig` is the agent's
+  ECDSA P-256 identity signature. `detail` is an optional object (diff, notes)
+  whose SHA-256 is the signed `after_digest`. Four statuses are **unsigned**
+  (no `sig`) and never accepted as an outcome: `rejected` (step refused before
+  verification), and the answers to a `step_status` query: `unknown` (the
+  agent never accepted `(epoch, seq)`: nothing was applied), `lost` (accepted
+  but no result on record, e.g. the agent restarted mid-step) and `running`.
+- **`control`**: signed with the same Ed25519 plan key (domain-separated from
+  steps) over `v, host, kind, on, args, epoch, seq, not_before, not_after`.
+  Mandatory: an agent without a plan key accepts no control. The agent checks
+  signature, `host`, a validity window of at most 5 minutes (controller default
+  60 s, clock skew 60 s), and a per-host **control sequence** that must be
+  above the agent's durable control mark. The control sequence is a counter
+  parallel to the step sequence (steps and controls travel on different queues
+  and may overtake each other, so one shared mark would refuse legitimate
+  messages); the controller signs and queues controls under one lock so they
+  are ordered. A refused control raises `agent.control_refused`. Kinds:
+  `safe_mode` (`on`), `deadman_confirm` (`args` `{"id"}` or `{"plan","node"}`),
+  `step_status` (`args` `{"plan","node","phase","epoch","seq"}`): the agent
+  re-sends the stored signed `step_result` for that step (the agent keeps the
+  last 256 durably) or an unsigned `unknown`/`lost`/`running` one.
 
 ### Inbound types per role
 
@@ -196,6 +216,14 @@ step refused before verification); `after` is the signed `plan.StepResult`
    keepalive too). Silence for the read-idle window (20 s) ends the session.
 
 ### Versioning
+
+`proto` is the major version. The **minor** revision (`hello.minor`,
+`welcome.minor`, absent = 0) marks additive changes that older peers can
+ignore; a sender uses a feature only with peers announcing the minor that
+introduced it. Minor 1 (2026-10-22) replaced the step/result envelopes tunnelled
+in `step.params` / `step_result.after`, and the unsigned `control`, with the
+typed signed forms above, and added `hello.deadman`. A controller sends steps
+and controls only to agents announcing minor >= 1.
 
 `hello.proto` and `welcome.proto` carry the major protocol version (now 1). A
 controller that does not support the agent's `proto` MUST close the connection

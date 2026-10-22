@@ -47,9 +47,19 @@ type StepEvent struct {
 	Host, Plan, Node, Phase, Outcome, Error string
 }
 
+// inflightRec identifies the step a node is waiting on. It is persisted before
+// the step is sent so a restarted controller can ask the agent what became of it.
+type inflightRec struct {
+	Phase  string `json:"phase"`
+	Epoch  uint64 `json:"epoch"`
+	Seq    uint64 `json:"seq"`
+	Digest string `json:"step_digest"`
+}
+
 type nodeRT struct {
 	want      string // phase to dispatch next ("" = none)
 	inflight  bool
+	cur       *inflightRec // the step in flight (set with inflight)
 	failedIn  string
 	confirmed bool
 	reason    string
@@ -89,6 +99,10 @@ type planRT struct {
 
 	created time.Time
 	done    chan struct{}
+
+	// holdUntil: after a controller restart, apply steps for hosts that have
+	// not reconnected yet wait (instead of failing) until this time.
+	holdUntil time.Time
 }
 
 type stepKey struct {
@@ -97,12 +111,14 @@ type stepKey struct {
 }
 
 type pending struct {
-	step  *plan.Step
-	rt    *planRT
-	node  string
-	phase string
-	timer *time.Timer
-	check chan checkResult // check phase only
+	step    *plan.Step  // nil for a step recovered from the store after a restart
+	exp     plan.Expect // what a result must answer
+	queried bool        // a step_status query is outstanding
+	rt      *planRT
+	node    string
+	phase   string
+	timer   *time.Timer
+	check   chan checkResult // check phase only
 }
 
 type checkResult struct {
@@ -257,7 +273,11 @@ func (c *Controller) DryRun(ctx context.Context, planID string) (plan.DryRun, er
 		if err != nil {
 			return plan.DryRun{}, err
 		}
-		pd := &pending{step: st, rt: rt, node: n.ID, phase: plan.PhaseCheck, check: make(chan checkResult, 1)}
+		exp, err := st.Expect()
+		if err != nil {
+			return plan.DryRun{}, err
+		}
+		pd := &pending{step: st, exp: exp, rt: rt, node: n.ID, phase: plan.PhaseCheck, check: make(chan checkResult, 1)}
 		if err := c.sendStep(ctx, ag, n.Target, pd); err != nil {
 			continue
 		}
@@ -425,11 +445,11 @@ func (c *Controller) sessionFor(host string) *agentConn {
 // sendStep registers the pending step, then sends it. Registering first means
 // a fast result can never beat the bookkeeping.
 func (c *Controller) sendStep(ctx context.Context, ag *agentConn, host string, pd *pending) error {
-	w, err := phyagent.StepToWire(pd.step)
-	if err != nil {
-		return err
+	if ag.minor < link.MinSignedMinor {
+		return fmt.Errorf("controller: agent %q speaks protocol minor %d; typed signed steps need %d", host, ag.minor, link.MinSignedMinor)
 	}
-	key := stepKey{host, pd.step.Epoch, pd.step.Seq}
+	w := plan.StepToWire(pd.step)
+	key := stepKey{host, pd.exp.Epoch, pd.exp.Seq}
 	c.pmu.Lock()
 	c.pend[key] = pd
 	pd.timer = time.AfterFunc(c.opt.StepTimeout, func() { c.stepTimedOut(key) })
@@ -444,6 +464,47 @@ func (c *Controller) sendStep(ctx context.Context, ag *agentConn, host string, p
 		c.opt.OnStepSent(host, w)
 	}
 	return nil
+}
+
+// SendControl signs a control with the plan key (per-host control sequence,
+// current epoch, short validity window) and sends it to a connected agent.
+// Unsigned controls are refused by agents, so this is the only way to deliver one.
+func (c *Controller) SendControl(ctx context.Context, host, kind string, on bool, args []byte) error {
+	ag := c.sessionFor(host)
+	if ag == nil {
+		return fmt.Errorf("controller: agent %q is not connected", host)
+	}
+	return c.sendControl(ctx, ag, host, kind, on, args, false)
+}
+
+// sendControl signs and queues a control. Signing and queueing happen under one
+// lock so controls reach the (FIFO) critical queue in sequence order; the agent
+// refuses a control whose sequence number is not above the last it accepted.
+func (c *Controller) sendControl(ctx context.Context, ag *agentConn, host, kind string, on bool, args []byte, try bool) error {
+	if ag.minor < link.MinSignedMinor {
+		return fmt.Errorf("controller: agent %q speaks protocol minor %d; signed controls need %d", host, ag.minor, link.MinSignedMinor)
+	}
+	c.ctlMu.Lock()
+	defer c.ctlMu.Unlock()
+	ep, err := c.st.Epoch(ctx)
+	if err != nil {
+		return err
+	}
+	sg := &plan.ControlSigner{Key: c.planKey, Epoch: ep, Seqs: ctlSeq{c.st}, Now: c.now, Validity: c.opt.ControlValidity}
+	ctl, err := sg.Issue(host, kind, on, args)
+	if err != nil {
+		return err
+	}
+	w := plan.ControlToWire(ctl)
+	if try {
+		err = ag.sess.TrySend(link.PrioCritical, w)
+	} else {
+		err = ag.sess.Send(ctx, link.PrioCritical, w)
+	}
+	if err == nil && c.opt.OnControlSent != nil {
+		c.opt.OnControlSent(host, w)
+	}
+	return err
 }
 
 // SendRaw sends a message to a connected agent as is. It is the low-level
@@ -463,12 +524,17 @@ func (c *Controller) takePending(key stepKey) *pending {
 	pd := c.pend[key]
 	if pd != nil {
 		delete(c.pend, key)
-		pd.timer.Stop()
+		if pd.timer != nil {
+			pd.timer.Stop()
+		}
 	}
 	return pd
 }
 
 func (c *Controller) stepTimedOut(key stepKey) {
+	if c.closed.Load() {
+		return
+	}
 	pd := c.takePending(key)
 	if pd == nil {
 		return
@@ -490,9 +556,13 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 	}
 	var out checkResult
 	var rec *plan.StepResult
-	if m.Status == "rejected" {
+	switch m.Status {
+	case phyagent.StatusRejected:
 		out = checkResult{outcome: plan.OutcomeFailed, err: "agent refused the step: " + m.Error}
-	} else {
+	case phyagent.StatusRunning, phyagent.StatusUnknown, phyagent.StatusLost:
+		c.onStatusAnswer(ag, host, key, pd, m.Status)
+		return
+	default:
 		res, err := c.verifyResult(ag, pd, m)
 		if err != nil {
 			c.alert(host, "plan.bad_result", fmt.Sprintf("%s/%s: %v", m.Plan, m.Node, err))
@@ -500,16 +570,16 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 		} else {
 			rec = res
 			out = checkResult{outcome: res.Outcome, err: res.Error}
-			if len(m.Before) > 0 {
-				if h := sha256.Sum256(m.Before); hex.EncodeToString(h[:]) == res.AfterDigest {
-					out.detail = m.Before
+			if len(m.Detail) > 0 {
+				if h := sha256.Sum256(m.Detail); hex.EncodeToString(h[:]) == res.AfterDigest {
+					out.detail = m.Detail
 				}
 			}
 		}
 	}
 	if c.opt.OnStepResult != nil && c.opt.OnStepResult(StepEvent{host, m.Plan, m.Node, pd.phase, out.outcome, out.err}) {
 		// Fault injection: lose this result and the link. The pending step
-		// stays registered and will time out.
+		// stays registered and will be recovered by a query or time out.
 		ag.sess.Close()
 		return
 	}
@@ -519,21 +589,115 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 	c.deliver(pd, out, rec)
 }
 
+// onStatusAnswer handles the unsigned answers to a step_status query.
+func (c *Controller) onStatusAnswer(ag *agentConn, host string, key stepKey, pd *pending, status string) {
+	c.pmu.Lock()
+	queried := pd.queried
+	c.pmu.Unlock()
+	if !queried || pd.phase != plan.PhaseApply {
+		c.log.Debug("unsolicited step status", "host", host, "node", pd.node, "status", status)
+		return
+	}
+	switch status {
+	case phyagent.StatusRunning:
+		// Still executing: look again shortly (the step timeout still bounds this).
+		time.AfterFunc(500*time.Millisecond, func() { c.queryPending(key) })
+	case phyagent.StatusUnknown:
+		// The agent never accepted (epoch, seq): nothing was applied, so the
+		// apply can be issued afresh with a new sequence number.
+		if c.takePending(key) == nil {
+			return
+		}
+		rt := pd.rt
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		if nr := rt.nodes[pd.node]; nr != nil && nr.inflight {
+			nr.inflight, nr.cur, nr.want = false, nil, plan.PhaseApply
+		}
+		_ = rt.persistLocked(context.Background())
+		rt.advanceLocked()
+	case phyagent.StatusLost:
+		// The agent accepted the step but has no result (it restarted mid-step).
+		// Its dead-man journal says whether the change happened.
+		if c.takePending(key) == nil {
+			return
+		}
+		st := deadmanState(ag.dm, nodeKey(pd.rt.p.ID, pd.node))
+		out := checkResult{outcome: plan.OutcomeFailed, err: "apply outcome lost: the agent restarted mid-step and has no record; its dead-man switch covers the change"}
+		if st == dmArmed {
+			out = checkResult{outcome: plan.OutcomeApplied, detail: []byte(`{"recovered":"result lost; dead-man entry armed; verify decides"}`)}
+		}
+		c.deliver(pd, out, nil)
+	}
+}
+
+// queryPending asks the agent for the outcome of a step still pending.
+func (c *Controller) queryPending(key stepKey) {
+	if c.closed.Load() {
+		return
+	}
+	c.pmu.Lock()
+	pd := c.pend[key]
+	c.pmu.Unlock()
+	if pd == nil {
+		return
+	}
+	ag := c.sessionFor(key.host)
+	if ag == nil {
+		return // asked again when the agent reconnects
+	}
+	args, _ := json.Marshal(map[string]any{"plan": pd.rt.p.ID, "node": pd.node, "phase": pd.phase, "epoch": key.epoch, "seq": key.seq})
+	c.pmu.Lock()
+	pd.queried = true
+	c.pmu.Unlock()
+	if err := c.sendControl(context.Background(), ag, key.host, plan.ControlStepStatus, false, args, true); err != nil {
+		c.log.Warn("step status query failed", "host", key.host, "node", pd.node, "err", err)
+	}
+}
+
+func nodeKey(planID, node string) string { return planID + ":" + node }
+
+const (
+	dmNone  = ""
+	dmArmed = "armed"
+	dmDone  = "confirmed"
+	dmFired = "rolled_back"
+)
+
+// deadmanState summarises the agent's dead-man entries for one plan node: fired
+// if any rolled back (or failed to), armed if any is still pending, else confirmed.
+func deadmanState(entries []link.DeadmanEntry, key string) string {
+	st := dmNone
+	for _, e := range entries {
+		if e.Node != key {
+			continue
+		}
+		switch e.State {
+		case "rolled_back", "rollback_failed":
+			return dmFired
+		case "armed":
+			st = dmArmed
+		case "confirmed":
+			if st == dmNone {
+				st = dmDone
+			}
+		}
+	}
+	return st
+}
+
 func (c *Controller) verifyResult(ag *agentConn, pd *pending, m *link.StepResult) (*plan.StepResult, error) {
 	if ag.pub == nil {
 		return nil, errors.New("no agent key")
 	}
-	var res plan.StepResult
-	if err := json.Unmarshal(m.After, &res); err != nil {
-		return nil, fmt.Errorf("result not decodable: %w", err)
-	}
-	if err := res.Verify(ag.pub, pd.step); err != nil {
+	res, err := plan.ResultFromWire(m)
+	if err != nil {
 		return nil, err
 	}
-	if m.Status != res.Outcome {
-		return nil, errors.New("status does not match the signed outcome")
+	if err := res.VerifyExpect(ag.pub, pd.exp); err != nil {
+		return nil, err
 	}
-	return &res, nil
+	return res, nil
 }
 
 func (c *Controller) deliver(pd *pending, out checkResult, rec *plan.StepResult) {
@@ -544,7 +708,7 @@ func (c *Controller) deliver(pd *pending, out checkResult, rec *plan.StepResult)
 	rt := pd.rt
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	pr := phaseRec{Phase: pd.phase, Outcome: out.outcome, Error: out.err, Epoch: pd.step.Epoch, Seq: pd.step.Seq,
+	pr := phaseRec{Phase: pd.phase, Outcome: out.outcome, Error: out.err, Epoch: pd.exp.Epoch, Seq: pd.exp.Seq,
 		AtMS: c.now().UnixMilli(), Detail: string(out.detail)}
 	if rec != nil {
 		pr.Digest, pr.Signed = rec.StepDigest, true
@@ -552,18 +716,33 @@ func (c *Controller) deliver(pd *pending, out checkResult, rec *plan.StepResult)
 	rt.onResultLocked(pd.node, pr)
 }
 
-// resume re-sends steps that were in flight when a host's link dropped and
-// lets nodes waiting for a connection proceed. Apply steps are not re-sent: a
-// lost apply is failed by its timeout (the agent's dead-man covers it).
+// resume runs when a host's agent (re)connects. It re-queues steps that were
+// in flight when the link dropped (verify, rollback: idempotent; apply: asks the
+// agent for the outcome instead of re-sending, so a change is never applied
+// twice), reconciles plan nodes with the agent's dead-man state reported in
+// hello, and lets nodes waiting for a connection proceed.
 func (c *Controller) resume(host string) {
+	ag := c.sessionFor(host)
 	c.pmu.Lock()
 	var stale []*pending
+	var asks []stepKey
 	for k, pd := range c.pend {
-		if k.host == host && pd.phase != plan.PhaseApply && pd.phase != plan.PhaseCheck {
-			delete(c.pend, k)
-			pd.timer.Stop()
-			stale = append(stale, pd)
+		if k.host != host || pd.phase == plan.PhaseCheck {
+			continue
 		}
+		if pd.phase == plan.PhaseApply {
+			if pd.step == nil && !pd.queried && pd.timer != nil {
+				// Recovered after a restart: the clock starts now that the agent is back.
+				pd.timer.Reset(c.opt.StepTimeout)
+			}
+			asks = append(asks, k)
+			continue
+		}
+		delete(c.pend, k)
+		if pd.timer != nil {
+			pd.timer.Stop()
+		}
+		stale = append(stale, pd)
 	}
 	rts := make([]*planRT, 0, len(c.plans))
 	for _, rt := range c.plans {
@@ -573,9 +752,24 @@ func (c *Controller) resume(host string) {
 	for _, pd := range stale {
 		pd.rt.mu.Lock()
 		if nr := pd.rt.nodes[pd.node]; nr != nil && nr.inflight {
-			nr.inflight, nr.want = false, pd.phase
+			nr.inflight, nr.cur, nr.want = false, nil, pd.phase
 		}
 		pd.rt.mu.Unlock()
+	}
+	for _, k := range asks {
+		c.queryPending(k)
+	}
+	var dm []link.DeadmanEntry
+	if ag != nil {
+		dm = ag.dm
+	}
+	if ag != nil {
+		for _, rt := range rts {
+			rt.mu.Lock()
+			rt.reconcileLocked(host, dm)
+			rt.mu.Unlock()
+		}
+		ag.reconciled.Store(true)
 	}
 	for _, rt := range rts {
 		rt.mu.Lock()
@@ -603,7 +797,7 @@ func (rt *planRT) node(id string) plan.Node {
 }
 
 func (rt *planRT) advanceLocked() {
-	if rt.state != PlanRunning {
+	if rt.state != PlanRunning || rt.c.closed.Load() {
 		return
 	}
 	if !rt.draining {
@@ -661,11 +855,14 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 	n := rt.node(id)
 	phase := nr.want
 	ag := c.sessionFor(n.Target)
+	if ag != nil && !ag.reconciled.Load() {
+		return // resume reconciles the new session, then advances every plan
+	}
 	if ag == nil {
-		if phase == plan.PhaseApply {
+		if phase == plan.PhaseApply && !c.now().Before(rt.holdUntil) {
 			rt.failLocked(id, "agent "+n.Target+" is not connected", plan.PhaseApply)
 		}
-		return // verify and rollback wait for the reconnect
+		return // verify and rollback (and, just after a restart, apply) wait for the reconnect
 	}
 	ctx := context.Background()
 	sg, err := c.signer(ctx)
@@ -677,10 +874,23 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 		rt.failLocked(id, "cannot issue step: "+err.Error(), phase)
 		return
 	}
-	pd := &pending{step: st, rt: rt, node: id, phase: phase}
+	exp, err := st.Expect()
+	if err != nil {
+		rt.failLocked(id, "cannot describe step: "+err.Error(), phase)
+		return
+	}
+	pd := &pending{step: st, exp: exp, rt: rt, node: id, phase: phase}
 	nr.inflight, nr.want = true, ""
+	nr.cur = &inflightRec{Phase: phase, Epoch: exp.Epoch, Seq: exp.Seq, Digest: exp.Digest}
+	// Durable before the step leaves: a crash after this point is recovered by
+	// asking the agent about (epoch, seq).
+	if err := rt.persistLocked(ctx); err != nil {
+		nr.inflight, nr.cur = false, nil
+		rt.failLocked(id, "cannot persist the plan: "+err.Error(), phase)
+		return
+	}
 	if err := c.sendStep(ctx, ag, n.Target, pd); err != nil {
-		nr.inflight = false
+		nr.inflight, nr.cur = false, nil
 		if phase == plan.PhaseApply {
 			rt.failLocked(id, "cannot send step: "+err.Error(), phase)
 		} else {
@@ -691,7 +901,7 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 
 func (rt *planRT) onResultLocked(id string, pr phaseRec) {
 	nr := rt.nodes[id]
-	nr.inflight = false
+	nr.inflight, nr.cur = false, nil
 	nr.results = append(nr.results, pr)
 	ok := pr.Outcome
 	switch pr.Phase {
@@ -728,7 +938,7 @@ func (rt *planRT) onResultLocked(id string, pr phaseRec) {
 
 func (rt *planRT) failLocked(id, reason, phase string) {
 	nr := rt.nodes[id]
-	nr.inflight, nr.want = false, ""
+	nr.inflight, nr.cur, nr.want = false, nil, ""
 	if err := rt.run.Fail(id, reason); err != nil {
 		rt.c.log.Error("plan: cannot fail node", "plan", rt.p.ID, "node", id, "err", err)
 		return
@@ -743,7 +953,8 @@ func (rt *planRT) failLocked(id, reason, phase string) {
 	_ = rt.persistLocked(context.Background())
 }
 
-// confirmLocked tells the agent to disarm the node's dead-man switch.
+// confirmLocked tells the agent to disarm the node's dead-man switch (a signed
+// control).
 func (rt *planRT) confirmLocked(id string) {
 	n := rt.node(id)
 	nr := rt.nodes[id]
@@ -752,11 +963,75 @@ func (rt *planRT) confirmLocked(id string) {
 	}
 	args, _ := json.Marshal(map[string]string{"plan": rt.p.ID, "node": id})
 	ag := rt.c.sessionFor(n.Target)
-	if ag == nil || ag.sess.TrySend(link.PrioCritical, &link.Control{Kind: "deadman_confirm", On: true, Args: args}) != nil {
+	if ag == nil || rt.c.sendControl(context.Background(), ag, n.Target, plan.ControlDeadmanConfirm, true, args, true) != nil {
 		rt.c.alert(n.Target, "plan.confirm_failed", fmt.Sprintf("%s/%s: could not send dead-man confirm; the agent will roll back", rt.p.ID, id))
 		return
 	}
 	nr.confirmed = true
+}
+
+// reconcileLocked compares this plan's nodes on host with the dead-man entries
+// the agent reported in hello. A change whose dead-man switch fired while the
+// controller was away is lost (rolled back) and the failure policy applies; an
+// entry still armed for a verified node gets its confirm (again).
+func (rt *planRT) reconcileLocked(host string, entries []link.DeadmanEntry) {
+	if rt.state != PlanRunning {
+		return
+	}
+	for _, n := range rt.p.Nodes {
+		if n.Gate || n.Target != host {
+			continue
+		}
+		id := n.ID
+		nr := rt.nodes[id]
+		st := deadmanState(entries, nodeKey(rt.p.ID, id))
+		switch rt.run.State(id) {
+		case plan.StateApplied, plan.StateVerified:
+			switch {
+			case st == dmFired:
+				rt.lostLocked(id, "dead-man switch fired while the controller was not looking: the change was rolled back by the agent")
+			case st == dmDone:
+				nr.confirmed = true
+			case st == dmArmed && rt.run.State(id) == plan.StateVerified && rt.policy() != plan.RollbackPlan:
+				rt.confirmLocked(id)
+			}
+		}
+	}
+}
+
+// lostLocked records that a node's change was undone behind the controller's
+// back (its dead-man fired) and applies the plan's failure policy.
+func (rt *planRT) lostLocked(id, reason string) {
+	nr := rt.nodes[id]
+	if nr.cur != nil {
+		rt.c.dropPending(rt.p.ID, id)
+	}
+	nr.inflight, nr.cur, nr.want = false, nil, ""
+	if err := rt.run.Lost(id, reason); err != nil {
+		rt.c.log.Error("plan: cannot mark node lost", "plan", rt.p.ID, "node", id, "err", err)
+		return
+	}
+	nr.failedIn, nr.reason = "deadman", reason
+	rt.failed = true
+	if rt.policy() == plan.RollbackPlan {
+		rt.draining = true
+	}
+	rt.c.alert(rt.node(id).Target, "plan.deadman_fired", fmt.Sprintf("%s/%s: %s", rt.p.ID, id, reason))
+	_ = rt.persistLocked(context.Background())
+}
+
+// dropPending forgets any pending step of a node.
+func (c *Controller) dropPending(planID, node string) {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	for k, pd := range c.pend {
+		if pd.rt.p.ID == planID && pd.node == node {
+			delete(c.pend, k)
+			if pd.timer != nil {
+				pd.timer.Stop()
+			}
+		}
+	}
 }
 
 func (rt *planRT) maybeFinishLocked() {
@@ -777,7 +1052,8 @@ func (rt *planRT) maybeFinishLocked() {
 	case rt.failed || rt.draining:
 		rt.state = PlanFailed
 	default:
-		rt.state = PlanSucceeded
+		// Confirm before the final state is stored: a crash in between leaves
+		// the plan running, and the restart sends the confirms again.
 		if rt.policy() == plan.RollbackPlan {
 			for _, n := range rt.p.Nodes {
 				if !n.Gate && !rt.nodes[n.ID].confirmed {
@@ -785,6 +1061,7 @@ func (rt *planRT) maybeFinishLocked() {
 				}
 			}
 		}
+		rt.state = PlanSucceeded
 	}
 	_ = rt.persistLocked(context.Background())
 	close(rt.done)
@@ -799,16 +1076,50 @@ type planBody struct {
 	Approvals map[string]plan.Approval `json:"approvals,omitempty"`
 	DryRun    *plan.DryRun             `json:"dry_run,omitempty"`
 	Failed    map[string]string        `json:"failed,omitempty"`
+	Runtime   *runtimeSnap             `json:"runtime,omitempty"`
+}
+
+// runtimeSnap is the executor state persisted with the plan so a restarted
+// controller can pick the run up where it was.
+type runtimeSnap struct {
+	Failed   bool                `json:"failed,omitempty"`
+	Draining bool                `json:"draining,omitempty"`
+	RbQueue  []string            `json:"rb_queue,omitempty"`
+	RbBuilt  bool                `json:"rb_built,omitempty"`
+	RbBusy   bool                `json:"rb_busy,omitempty"`
+	RbFailed bool                `json:"rb_failed,omitempty"`
+	Nodes    map[string]nodeSnap `json:"nodes"`
+}
+
+type nodeSnap struct {
+	State     plan.State   `json:"state"`
+	Want      string       `json:"want,omitempty"`
+	Cur       *inflightRec `json:"in_flight,omitempty"`
+	FailedIn  string       `json:"failed_in,omitempty"`
+	Confirmed bool         `json:"confirmed,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	Results   []phaseRec   `json:"results,omitempty"`
 }
 
 func (rt *planRT) persistLocked(ctx context.Context) error {
 	c := rt.c
+	if c.closed.Load() {
+		return errors.New("controller: closed")
+	}
 	body := planBody{Plan: rt.p, Hash: rt.hash, By: rt.by, DryRun: rt.dry, Approvals: map[string]plan.Approval{}}
 	for _, n := range rt.p.Nodes {
 		if a, ok := rt.run.Approval(n.ID); ok {
 			body.Approvals[n.ID] = a
 		}
 	}
+	snap := &runtimeSnap{Failed: rt.failed, Draining: rt.draining, RbQueue: rt.rbQueue, RbBuilt: rt.rbBuilt,
+		RbBusy: rt.rbBusy, RbFailed: rt.rbFailed, Nodes: map[string]nodeSnap{}}
+	for _, n := range rt.p.Nodes {
+		nr := rt.nodes[n.ID]
+		snap.Nodes[n.ID] = nodeSnap{State: rt.run.State(n.ID), Want: nr.want, Cur: nr.cur, FailedIn: nr.failedIn,
+			Confirmed: nr.confirmed, Reason: nr.reason, Results: nr.results}
+	}
+	body.Runtime = snap
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err

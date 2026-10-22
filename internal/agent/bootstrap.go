@@ -106,6 +106,13 @@ func (l Layout) SpoolDir() string  { return filepath.Join(l.Root, "spool") }
 // PlanSeq is the persisted (epoch, seq) high-water mark of accepted steps.
 func (l Layout) PlanSeq() string { return filepath.Join(l.Root, "planseq.json") }
 
+// ControlSeq is the persisted (epoch, seq) high-water mark of accepted signed
+// controls (separate from the step mark).
+func (l Layout) ControlSeq() string { return filepath.Join(l.Root, "controlseq.json") }
+
+// Results is the durable log of recent signed step results (re-sent on request).
+func (l Layout) Results() string { return filepath.Join(l.Root, "results.json") }
+
 // SafeModeFile is the marker file whose presence means safe mode is on.
 func (l Layout) SafeModeFile() string { return filepath.Join(l.Root, "safe_mode") }
 func (l Layout) DeadmanDir() string {

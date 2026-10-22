@@ -89,6 +89,33 @@ func (r *StepResult) Sign(key *ecdsa.PrivateKey) error {
 // Verify checks the signature against the host's enrolled key and that the
 // result answers the given step.
 func (r *StepResult) Verify(pub *ecdsa.PublicKey, step *Step) error {
+	e, err := step.Expect()
+	if err != nil {
+		return err
+	}
+	return r.VerifyExpect(pub, e)
+}
+
+// Expect is what a result must answer: enough of a step to verify a result
+// without holding the step itself (a controller that restarted keeps only this).
+type Expect struct {
+	Host, PlanID, NodeID, Phase string
+	Epoch, Seq                  uint64
+	Digest                      string // step digest
+}
+
+// Expect describes the result this step should get.
+func (s *Step) Expect() (Expect, error) {
+	d, err := s.Digest()
+	if err != nil {
+		return Expect{}, err
+	}
+	return Expect{Host: s.Host, PlanID: s.PlanID, NodeID: s.NodeID, Phase: s.Phase, Epoch: s.Epoch, Seq: s.Seq, Digest: d}, nil
+}
+
+// VerifyExpect checks the signature against the host's enrolled key and that
+// the result answers the described step.
+func (r *StepResult) VerifyExpect(pub *ecdsa.PublicKey, step Expect) error {
 	if pub == nil || pub.Curve != elliptic.P256() {
 		return errors.New("result: need a P-256 key")
 	}
@@ -99,11 +126,7 @@ func (r *StepResult) Verify(pub *ecdsa.PublicKey, step *Step) error {
 	if !ecdsa.VerifyASN1(pub, h[:], r.Sig) {
 		return errors.New("result: bad signature")
 	}
-	d, err := step.Digest()
-	if err != nil {
-		return err
-	}
-	if r.StepDigest != d || r.Host != step.Host || r.PlanID != step.PlanID || r.NodeID != step.NodeID ||
+	if r.StepDigest != step.Digest || r.Host != step.Host || r.PlanID != step.PlanID || r.NodeID != step.NodeID ||
 		r.Phase != step.Phase || r.Epoch != step.Epoch || r.Seq != step.Seq {
 		return fmt.Errorf("result: does not answer step (%s,%d,%d)", step.NodeID, step.Epoch, step.Seq)
 	}

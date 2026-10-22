@@ -83,7 +83,12 @@ type agentConn struct {
 	sess  *link.Session
 	ready chan struct{}              // closed once hello was accepted
 	stp   atomic.Pointer[agentState] // set by hello; read after Run without other synchronisation
-	pub   *ecdsa.PublicKey           // the peer's key (its pin was matched at enrollment); verifies step results
+	// reconciled is set once resume has compared the agent's dead-man report
+	// with the running plans; no step is dispatched to the session before.
+	reconciled atomic.Bool
+	minor      int                 // protocol minor announced in hello
+	dm         []link.DeadmanEntry // dead-man entries the agent reported in hello
+	pub        *ecdsa.PublicKey    // the peer's key (its pin was matched at enrollment); verifies step results
 }
 
 func (c *Controller) handleAgent(ctx context.Context, conn *link.Conn) {
@@ -169,6 +174,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if pcs := a.conn.ConnectionState().PeerCertificates; len(pcs) > 0 {
 		a.pub, _ = pcs[0].PublicKey.(*ecdsa.PublicKey)
 	}
+	a.minor, a.dm = h.Minor, h.Deadman
 	enrolled, err := c.authorize(ctx, h, pin)
 	if err != nil {
 		return err
@@ -193,7 +199,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	}
 	st.mu.Unlock()
 	a.stp.Store(st)
-	if err := a.sess.Send(ctx, link.PrioCritical, &link.Welcome{Proto: link.ProtoVersion, Enrolled: enrolled}); err != nil {
+	if err := a.sess.Send(ctx, link.PrioCritical, &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: enrolled}); err != nil {
 		return err
 	}
 	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: ag.LastSeq}); err != nil {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
@@ -53,6 +54,14 @@ type Options struct {
 	OnStepResult func(StepEvent) bool
 	// OnStepSent observes every signed step handed to an agent session.
 	OnStepSent func(host string, s *link.Step)
+	// OnControlSent observes every signed control handed to an agent session.
+	OnControlSent func(host string, c *link.Control)
+	// ControlValidity is how long a signed control stays valid (default 60s).
+	ControlValidity time.Duration
+	// ResumeGrace is how long, after a restart, a resumed plan waits for the
+	// agents of its nodes to reconnect before it fails applies for absent
+	// hosts (default StepTimeout).
+	ResumeGrace time.Duration
 }
 
 const alertRing = 256
@@ -77,6 +86,8 @@ type Controller struct {
 	pmu     sync.Mutex // guards plans and pend
 	plans   map[string]*planRT
 	pend    map[stepKey]*pending
+	ctlMu   sync.Mutex // serialises control signing and queueing
+	closed  atomic.Bool
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -117,16 +128,17 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	if opt.StepValidity <= 0 {
 		opt.StepValidity = 5 * time.Minute
 	}
+	if opt.ResumeGrace <= 0 {
+		opt.ResumeGrace = opt.StepTimeout
+	}
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
-	// Plans cannot be resumed across a restart: mark them so the operator
-	// sees what happened. Agents' dead-man switches cover applied changes.
-	if n, err := st.InterruptPlans(ctx, PlanDraft, PlanDryRun, PlanApproved, PlanRunning); err != nil {
+	// Unfinished plans come back from the store; running ones resume when
+	// their agents reconnect (restore.go).
+	if err := c.loadPlans(ctx); err != nil {
 		st.Close()
 		return nil, err
-	} else if n > 0 {
-		c.log.Warn("plans interrupted by controller restart", "count", n)
 	}
 	ags, err := st.Agents(ctx)
 	if err != nil {
@@ -211,5 +223,28 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 	return err
 }
 
-// Close closes the store.
-func (c *Controller) Close() error { return c.st.Close() }
+// Close stops plan timers and closes the store. Plans stay as persisted; a new
+// controller on the same data dir resumes them.
+func (c *Controller) Close() error {
+	c.closed.Store(true)
+	c.pmu.Lock()
+	for k, pd := range c.pend {
+		if pd.timer != nil {
+			pd.timer.Stop()
+		}
+		delete(c.pend, k)
+	}
+	c.pmu.Unlock()
+	// Wait out any plan code still holding a plan lock.
+	c.pmu.Lock()
+	rts := make([]*planRT, 0, len(c.plans))
+	for _, rt := range c.plans {
+		rts = append(rts, rt)
+	}
+	c.pmu.Unlock()
+	for _, rt := range rts {
+		rt.mu.Lock()
+		rt.mu.Unlock()
+	}
+	return c.st.Close()
+}

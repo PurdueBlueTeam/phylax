@@ -71,9 +71,8 @@ epoch) makes agents accept the new controller's lower sequence numbers.
 `PlanStatus`, `StoredPlans`, `DropAgent`, `SendRaw`.
 
 **Lifecycle.** draft -> `DryRun` -> dryrun -> `ApprovePlan` -> approved ->
-`Apply` -> running -> succeeded | failed | rolled_back (interrupted after a
-controller restart; plans are not resumed, the agents' dead-man switches cover
-anything applied).
+`Apply` -> running -> succeeded | failed | rolled_back. A controller restart does not end a
+plan: see "Restart and resume" below.
 
 1. **Dry run.** The controller lints every node with `Options.Guard(host)`
    (the manifest-backed `actions.GuardFromManifest`), then sends a signed
@@ -84,7 +83,7 @@ anything applied).
 2. **Apply.** `plan.Run.Next` yields ready nodes (4 per host); each gets a
    signed `apply` step. `applied` -> a `verify` step -> `verified` unlocks the
    dependents. After `verified` the controller sends
-   `control{deadman_confirm, args:{plan,node}}` for nodes with a dead-man
+   a signed `control{deadman_confirm, args:{plan,node}}` for nodes with a dead-man
    window. A `verify` step re-runs the action's own post-condition on the agent.
 3. **Failure.** `stop_dependents` / `continue` follow `plan.Run.Fail`; a node
    that fails verify is also rolled back individually. `rollback_plan` waits
@@ -99,8 +98,43 @@ anything applied).
    key) and against the step it answers, then applied. Unsigned `rejected`
    results fail the phase. No result within `Options.StepTimeout` (2 min)
    fails the phase; on reconnect lost verify/rollback steps are re-issued
-   (fresh sequence number), lost applies are not.
+   (fresh sequence number); a pending apply is never re-sent but queried
+   (`step_status`), so a lost apply result is recovered: the agent re-sends the
+   signed result, or says `unknown` (never accepted: the apply is issued afresh)
+   or `lost` (accepted, no record: an armed dead-man entry means applied and
+   verify decides, otherwise the node fails and the dead-man covers it).
 
 Persistence: `plans` (state, epoch, body = plan + hash + approvals + dry run)
 and `plan_steps` (state, per-phase result history with signed flag, digests,
 failure reason) are written on every transition. No secret appears in either.
+
+## Signed controls
+
+`SendControl` / internal confirms are signed with the plan key (see
+docs/protocol.md): per-host control sequence from `store.NextStepSeq("control/"+host)`,
+current epoch, `Options.ControlValidity` (60 s). Agents refuse unsigned, forged,
+replayed or expired controls. `SendRaw` remains for tests (replays, forgeries).
+
+## Restart and resume
+
+Every plan transition stores a runtime snapshot with the plan (node states,
+wanted phase, the `(epoch, seq, step digest)` of the step in flight, confirm and
+rollback progress). The in-flight record is written before the step is sent.
+At start `loadPlans` reloads draft/dryrun/approved plans as they were and
+running (or legacy `interrupted`) plans as running; a stored plan whose hash no
+longer matches is refused with an alert.
+
+When an agent reconnects (`resume`): in-flight verify/rollback steps are
+re-issued (idempotent); an in-flight apply is queried; then the agent's
+`hello.deadman` report is reconciled with each node on that host: an
+applied/verified node whose dead-man entry fired is marked rolled back
+(`plan.deadman_fired`, failure policy applies: dependents skipped, or
+`rollback_plan` rolls the rest back); a verified node whose entry is still armed
+gets its confirm sent again (unless `rollback_plan` defers it to plan end);
+a confirmed entry sets `confirmed`. Nothing is dispatched to a session until
+this reconciliation ran. After a restart, applies for hosts that have not
+reconnected wait `Options.ResumeGrace` (default `StepTimeout`) before failing.
+Sequence numbers are durable, so no number is signed twice and a change is
+never applied twice (except the `unknown` answer, which proves it was not
+accepted). `Controller.Close` stops timers; the plan stays as persisted.
+Dead-man fires while connected are not yet reconciled until the next reconnect.
