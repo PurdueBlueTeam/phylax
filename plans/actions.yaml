@@ -27,47 +27,6 @@ actions:
     risk: service
     todo: set element text at an xpath (Wazuh ossec.conf)
     params: {path: {required: true}, xpath: {required: true}, value: {required: true}}
-  registry.set:
-    risk: service
-    todo: Windows registry value with prior-value capture
-    params: {key: {required: true}, name: {required: true}, type: {required: true}, value: {required: true}}
-  windows.smb1:
-    risk: service
-    todo: disable SMBv1 server and client
-    params: {enabled: {required: true}}
-  ad.secure_channel:
-    risk: lockout
-    todo: enforce Netlogon FullSecureChannelProtection=1 (Zerologon), report build and patch level
-    params: {enforce: {required: true}, report_only: {}}
-  ad.zerologon_check:
-    risk: none
-    todo: read-only build and registry check for CVE-2020-1472
-    params: {}
-  windows.hotfix:
-    risk: service
-    locks: [packages]
-    todo: apply cached MSU; needs reboot, DNS and WinRM briefly down
-    params: {kb: {required: true}, reboot: {}}
-  palo.permitted_ips:
-    risk: lockout
-    todo: additive permitted-IP entry, commit alone (no commit-confirm on PAN-OS)
-    params: {add: {required: true}, remove: {}}
-  palo.commit:
-    risk: lockout
-    todo: management-path commit, verified with a new connection
-    params: {description: {}}
-  splunk.rest:
-    risk: none
-    todo: read-only splunkd REST (apps, inputs, users) for review
-    params: {path: {required: true}}
-  splunk.password:
-    risk: lockout
-    todo: change a Splunk local user's password, keep the scored user
-    params: {user: {required: true}, password: {}}
-  splunk.hec_setup:
-    risk: service
-    todo: create HEC token and phylax index without touching scored indexes
-    params: {index: {required: true}, token_name: {required: true}}
   web.remove_dir:
     risk: service
     todo: move a directory to quarantine (never delete)
@@ -112,11 +71,3 @@ actions:
     risk: none
     todo: write a marker line to a monitored log so a test alert fires
     params: {path: {required: true}, marker: {required: true}}
-  vyos.snapshot:
-    risk: none
-    todo: show configuration commands to evidence
-    params: {out: {required: true}}
-  agentopt.set:
-    risk: service
-    todo: write key=value lines to a Windows/Linux local_internal_options.conf atomically (file.write only validates POSIX paths on the controller)
-    params: {path: {required: true}, keys: {required: true}}
