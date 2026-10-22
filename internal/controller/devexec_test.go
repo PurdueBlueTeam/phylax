@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/creds"
 	"github.com/PurdueBlueTeam/phylax/internal/devices"
 	"github.com/PurdueBlueTeam/phylax/internal/devices/palo"
@@ -460,5 +461,48 @@ func TestAckConsoleFromCLIStore(t *testing.T) {
 	}
 	if !x.acked(ctx, "cli-ack", "acl") || x.acked(ctx, "cli-ack", "other") || x.acked(ctx, "other", "acl") {
 		t.Fatal("ack scope wrong")
+	}
+}
+
+// Every registered action is routed by its Spec: API-only actions (palo, vyos,
+// splunk REST) run on the controller, everything else (including the Splunk
+// host filesystem action splunk.sidecar_off) on the target's agent.
+func TestActionRoutingTable(t *testing.T) {
+	want := map[string]bool{
+		"palo.permitted_ips": true, "palo.snapshot": true, "vyos.snapshot": true, "palo.commit": true, "palo.apply": true, "vyos.apply": true,
+		"splunk.rest": true, "splunk.password": true, "splunk.hec_setup": true,
+	}
+	reg := actions.Core()
+	c := &Controller{reg: reg}
+	for _, name := range reg.Names() {
+		a, _ := reg.Get(name)
+		if got := c.isLocalAction(name); got != want[name] || a.Spec().OnController() != want[name] {
+			t.Errorf("%s: controller-run=%v, want %v", name, got, want[name])
+		}
+		ack := strings.HasPrefix(name, "palo.") || strings.HasPrefix(name, "vyos.")
+		if needsConsoleAck(reg, name) != ack {
+			t.Errorf("%s: console ack=%v, want %v", name, !ack, ack)
+		}
+	}
+	for n := range want {
+		if _, err := reg.Get(n); err != nil {
+			t.Errorf("table names unregistered action %s", n)
+		}
+	}
+	if c.isLocalAction("splunk.sidecar_off") {
+		t.Fatal("splunk.sidecar_off must run on the agent")
+	}
+}
+
+func TestSidecarOffDispatchedToAgent(t *testing.T) {
+	f := newDevFixture(t) // device exec enabled
+	if f.c.dx.Load() == nil {
+		t.Fatal("device exec not enabled")
+	}
+	if f.c.isLocalNode(plan.Node{ID: "s", Action: "splunk.sidecar_off", Target: "debian-splunk"}) {
+		t.Fatal("splunk.sidecar_off routed to the controller")
+	}
+	if !f.c.isLocalNode(plan.Node{ID: "h", Action: "splunk.hec_setup", Target: "debian-splunk"}) {
+		t.Fatal("splunk.hec_setup not routed to the controller")
 	}
 }
