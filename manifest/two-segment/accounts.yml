@@ -1,0 +1,2 @@
+accounts:
+  mail-users: { scope: domain, scored: true, credlist: mail, rotation: pcr_transaction, learn_from: scorer }

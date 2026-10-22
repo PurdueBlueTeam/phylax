@@ -1,0 +1,6 @@
+# 2027 reference manifest: accounts.
+accounts:
+  sysadmin@linux:  { scope: local, hosts: [rocky-ecom, ubuntu-email, debian-splunk], scored: unknown, credlist: linux, rotation: pcr_transaction, ssh_auth: password, shell: /bin/bash }
+  sysadmin@windows: { scope: local, hosts: [ad, mssql], scored: unknown, credlist: windows, rotation: pcr_transaction }
+  mail-users:      { scope: domain, scored: true, credlist: mail, rotation: pcr_transaction, learn_from: scorer }
+  ecom-admin:      { scope: service, hosts: [rocky-ecom], scored: false, rotation: free, embedded_in: [/var/www/html/config.php, /var/www/html/admin/config.php] }

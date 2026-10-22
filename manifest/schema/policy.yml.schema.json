@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "policy": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_tiers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "egress": {
+          "additionalProperties": false,
+          "properties": {
+            "allow": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "host": {
+                    "type": "string"
+                  },
+                  "ports": {
+                    "items": {
+                      "maximum": 65535,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "proto": {
+                    "enum": [
+                      "tcp",
+                      "udp"
+                    ],
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "to",
+                  "ports",
+                  "reason"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "canary_ports": {
+              "items": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "deny_log_group": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "sinkhole": {
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "port": {
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "enabled"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "firewall": {
+          "additionalProperties": false,
+          "properties": {
+            "dhcp": {
+              "enum": [
+                "allow",
+                "drop"
+              ],
+              "type": "string"
+            },
+            "icmp": {
+              "enum": [
+                "allow",
+                "drop"
+              ],
+              "type": "string"
+            },
+            "ipv6": {
+              "enum": [
+                "allow",
+                "drop"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "limits": {
+          "additionalProperties": false,
+          "properties": {
+            "packet_ring_free_pct": {
+              "type": "integer"
+            },
+            "packet_ring_max_bytes": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "patch_windows": {
+          "additionalProperties": false,
+          "properties": {
+            "allowlist": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "default_minutes": {
+              "type": "integer"
+            },
+            "max_minutes": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "protected_processes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "response": {
+          "additionalProperties": false,
+          "properties": {
+            "alert_only": {
+              "type": "boolean"
+            },
+            "tiers": {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "retention": {
+          "additionalProperties": false,
+          "properties": {
+            "events": {
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+              "type": "string"
+            },
+            "pcap": {
+              "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "policy"
+  ],
+  "title": "Phylax policy.yml",
+  "type": "object"
+}

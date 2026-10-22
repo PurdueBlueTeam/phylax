@@ -1,0 +1,20 @@
+# 2027 reference manifest: decoys. Never on a scored port; SSH decoys only where SSH is
+# not scored (the Windows hosts), WinRM and RDP decoys only where those are not scored
+# (the Linux hosts). Token values and banners are generated at competition time.
+decoys:
+  rocky-ecom:
+    listeners: [{ kind: winrm, port: 5985 }, { kind: rdp, port: 3389 }, { kind: redis, port: 6379 }, { kind: http_admin, port: 8081 }]
+    honey_files: [/root/passwords.xlsx, /var/backups/backup.sql, /root/.ssh/id_rsa_old]
+    honeytokens: [{ kind: ssh_key, at: /root/.ssh/id_rsa_backup }, { kind: db_credential, at: /var/www/html/.env }]
+    exposure: both
+  ubuntu-email:
+    listeners: [{ kind: winrm, port: 5985 }, { kind: rdp, port: 3389 }, { kind: telnet, port: 23 }]
+    honey_files: [/root/passwords.xlsx]
+    honeytokens: [{ kind: ssh_key, at: /root/.ssh/id_rsa_backup }, { kind: shell_history, at: /root/.bash_history }]
+  debian-splunk:
+    listeners: [{ kind: winrm, port: 5985 }, { kind: rdp, port: 3389 }, { kind: mysql, port: 3306 }]
+    honeytokens: [{ kind: ssh_key, at: /root/.ssh/id_rsa_backup }]
+  mssql:
+    listeners: [{ kind: ssh, port: 22 }, { kind: telnet, port: 23 }]
+    honey_files: ['D:\Backups\passwords.xlsx']
+    honeytokens: [{ kind: sql_login, at: mssql }, { kind: lsass_session, at: lsass }]
