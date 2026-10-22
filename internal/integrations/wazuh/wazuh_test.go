@@ -3,8 +3,10 @@ package wazuh
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,7 @@ import (
 type fake struct {
 	version string
 	agents  []Agent
+	groups  []Group
 	auths   atomic.Int32
 	expire  atomic.Bool // next authenticated call returns 401 once
 	alerts  []map[string]any
@@ -45,6 +48,19 @@ func (f *fake) handler() http.Handler {
 	}))
 	mux.HandleFunc("/agents", authed(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"affected_items": f.agents, "total_affected_items": len(f.agents)}})
+	}))
+	mux.HandleFunc("/groups", authed(func(w http.ResponseWriter, r *http.Request) {
+		off, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		lim, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		all := f.groups
+		if off > len(all) {
+			off = len(all)
+		}
+		end := off + lim
+		if lim <= 0 || end > len(all) {
+			end = len(all)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"affected_items": all[off:end], "total_affected_items": len(all)}})
 	}))
 	mux.HandleFunc("/wazuh-alerts-*/_search", func(w http.ResponseWriter, r *http.Request) {
 		if u, p, _ := r.BasicAuth(); u != "idx" || p != "ipw" {
@@ -197,5 +213,20 @@ func TestParseVersion(t *testing.T) {
 		if _, err := ParseVersion(in); err == nil {
 			t.Fatalf("%q accepted", in)
 		}
+	}
+}
+
+func TestGroupsPaged(t *testing.T) {
+	f := &fake{}
+	for i := 0; i < 1200; i++ {
+		f.groups = append(f.groups, Group{Name: fmt.Sprintf("g%d", i), Count: i % 7, ConfigSum: "abc"})
+	}
+	c := newClient(t, f)
+	gs, err := c.Groups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gs) != 1200 || gs[1199].Name != "g1199" || gs[3].Count != 3 || gs[0].ConfigSum != "abc" {
+		t.Fatalf("got %d groups, last %+v", len(gs), gs[len(gs)-1])
 	}
 }

@@ -453,6 +453,9 @@ type fakeWazuh struct {
 
 func (w *fakeWazuh) Health(context.Context) (*wazuh.Health, error) { return w.h, w.herr }
 func (w *fakeWazuh) Agents(context.Context) ([]wazuh.Agent, error) { return w.agents, nil }
+func (w *fakeWazuh) Groups(context.Context) ([]wazuh.Group, error) {
+	return []wazuh.Group{{Name: "default", Count: 1, ConfigSum: "c1"}, {Name: "phylax-fim", Count: 2}, {Name: "empty-group"}}, nil
+}
 func (w *fakeWazuh) install(f *fixture, t *testing.T) {
 	f.linux(t).Wazuh = func(_ context.Context, api, min string) (WazuhAPI, error) {
 		w.gotAPI, w.gotMin = api, min
@@ -503,6 +506,13 @@ func TestWazuhHealthCaptureAndTestAlert(t *testing.T) {
 	_ = json.Unmarshal([]byte(f.read(t, "var/lib/phylax/inject-kit/wazuh/groups.json")), &groups)
 	if len(groups["phylax-fim"]) != 2 {
 		t.Fatalf("groups: %v", groups)
+	}
+	if g, ok := groups["empty-group"]; !ok || len(g) != 0 {
+		t.Fatalf("group without agents must still be listed: %v", groups)
+	}
+	var gd []wazuh.Group
+	if err := json.Unmarshal([]byte(f.read(t, "var/lib/phylax/inject-kit/wazuh/group_details.json")), &gd); err != nil || len(gd) != 3 || gd[0].ConfigSum != "c1" {
+		t.Fatalf("group_details.json: %v %v", gd, err)
 	}
 	if !strings.Contains(f.read(t, "var/lib/phylax/inject-kit/wazuh/health.json"), `"manager_version": "4.14.9"`) {
 		t.Fatal("health.json")
