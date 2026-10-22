@@ -15,6 +15,8 @@ require (
 )
 
 require (
+	filippo.io/age v1.3.1 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/elastic/go-licenser v0.4.1 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
