@@ -36,6 +36,8 @@ type Env struct {
 	Tags     TagSink
 	Accounts AccountBackend
 	Services ServiceManager
+	// Win carries the Windows, AD, network-device and Splunk backends (win_env.go).
+	Win WinEnv
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
 	QuarantineDir string
 	Now           func() time.Time
@@ -54,8 +56,8 @@ func (e *Env) Resolve(p string) string {
 		return filepath.Clean(p)
 	}
 	p = filepath.ToSlash(p)
-	if len(p) > 1 && p[1] == ':' { // drive letter
-		p = p[2:]
+	if len(p) > 1 && p[1] == ':' { // drive letter (also on a Linux test host)
+		p = strings.ReplaceAll(p[2:], `\`, "/")
 	}
 	return filepath.Join(e.Root, filepath.FromSlash(filepath.Clean("/"+p)))
 }
@@ -70,11 +72,15 @@ func (e *Env) guard() ScoringGuard {
 // DeadmanHandlers returns the rollback handlers for the kinds this package
 // arms; pass them in deadman.Options.Handlers.
 func DeadmanHandlers(env *Env) map[string]deadman.Handler {
-	return map[string]deadman.Handler{
+	m := map[string]deadman.Handler{
 		kindQuarantineUndo: undoQuarantine,
 		kindPerms:          undoPerms,
 		kindServiceState:   func(ctx context.Context, en deadman.Entry) error { return restoreServices(ctx, env, en) },
 	}
+	for kind, fn := range extraHandlers {
+		m[kind] = func(ctx context.Context, en deadman.Entry) error { return fn(ctx, env, en) }
+	}
+	return m
 }
 
 // Request is one action invocation.
@@ -271,5 +277,5 @@ func IsWindows() bool { return runtime.GOOS == "windows" }
 // service backends. root is "/" (or "") on a real host.
 func NewEnv(host, root string) *Env {
 	return &Env{Host: host, Root: root, Registry: Core(), Locks: NewLocks(), Guard: AllowAll{},
-		Accounts: defaultAccounts(root), Services: defaultServices()}
+		Accounts: defaultAccounts(root), Services: defaultServices(), Win: defaultWinEnv()}
 }

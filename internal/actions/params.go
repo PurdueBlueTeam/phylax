@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,7 +113,7 @@ func coerce(ps ParamSpec, v any) (any, error) {
 			if s == "" || strings.ContainsRune(s, 0) || len(s) > 4096 {
 				return nil, fmt.Errorf("invalid path")
 			}
-			if !filepath.IsAbs(s) && !strings.HasPrefix(s, "/") {
+			if !filepath.IsAbs(s) && !IsAbsPath(s) {
 				return nil, fmt.Errorf("path must be absolute")
 			}
 		}
@@ -213,6 +214,18 @@ func coerce(ps ParamSpec, v any) (any, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("unsupported parameter type")
+}
+
+var winAbsRe = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|\\\\[^\\/?*:]+[\\/][^\\/?*:]+)`)
+
+// IsAbsPath is the platform-independent absolute-path check the controller
+// uses to validate file-action parameters for any target: a POSIX absolute
+// path, a Windows drive path (C:\x or C:/x) or a UNC path (\\server\share).
+// The controller may run on Linux while the target is Windows (and vice
+// versa), so filepath.IsAbs of the controller's own OS is not enough. Paths
+// with a ".." segment are accepted here; the target resolves them.
+func IsAbsPath(s string) bool {
+	return strings.HasPrefix(s, "/") || winAbsRe.MatchString(s)
 }
 
 // Has reports whether the parameter was supplied (or defaulted).
