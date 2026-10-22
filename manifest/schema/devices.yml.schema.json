@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "devices": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "adapter": {
+            "type": "string"
+          },
+          "external_ip": {
+            "type": "string"
+          },
+          "mgmt": {
+            "type": "string"
+          },
+          "ports": {
+            "items": {
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "proxy": {
+            "type": "string"
+          },
+          "segment": {
+            "type": "string"
+          },
+          "vendor": {
+            "enum": [
+              "panos",
+              "vyos",
+              "ftd"
+            ],
+            "type": "string"
+          },
+          "via": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "vendor",
+          "mgmt",
+          "segment"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "devices"
+  ],
+  "title": "Phylax devices.yml",
+  "type": "object"
+}

@@ -1,0 +1,13 @@
+# 2027 reference manifest: scorer (Quotient).
+scorer:
+  engine: quotient
+  portal: https://quotient.ccdc.events/
+  identifier: "{{ 20 + team }}"
+  delay: 60s                             # upstream defaults until measured
+  jitter: 5s
+  sla_threshold: 5
+  credlists:                             # PCR calls use the path, never the display name
+    linux:   { path: linux.credlist }
+    windows: { path: windows.credlist }
+    mail:    { path: mail.credlist }
+  poll_portal: ask_organizers            # off | operator_paste | cookie_poll | ask_organizers

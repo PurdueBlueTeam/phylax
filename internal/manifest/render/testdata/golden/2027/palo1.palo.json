@@ -1,0 +1,496 @@
+{
+  "device": "palo1",
+  "tag": "phylax-managed",
+  "inside_zone": "lan",
+  "outside_zone": "outside",
+  "addresses": [
+    {
+      "name": "phylax-ad-public",
+      "value": "172.25.21.100/32"
+    },
+    {
+      "name": "phylax-debian-splunk-public",
+      "value": "172.25.21.20/32"
+    },
+    {
+      "name": "phylax-mssql-public",
+      "value": "172.25.21.120/32"
+    },
+    {
+      "name": "phylax-rocky-ecom-public",
+      "value": "172.25.21.10/32"
+    },
+    {
+      "name": "phylax-ubuntu-email-public",
+      "value": "172.25.21.15/32"
+    },
+    {
+      "name": "phylax-controller-public",
+      "value": "172.25.21.30/32"
+    }
+  ],
+  "static_nat": [
+    {
+      "name": "phylax-nat-ad",
+      "original": {
+        "host": "ad",
+        "value": "172.25.21.100"
+      },
+      "translated": {
+        "host": "ad",
+        "value": "172.20.240.100"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-debian-splunk",
+      "original": {
+        "host": "debian-splunk",
+        "value": "172.25.21.20"
+      },
+      "translated": {
+        "host": "debian-splunk",
+        "value": "172.20.240.20"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-mssql",
+      "original": {
+        "host": "mssql",
+        "value": "172.25.21.120"
+      },
+      "translated": {
+        "host": "mssql",
+        "value": "172.20.240.120"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-rocky-ecom",
+      "original": {
+        "host": "rocky-ecom",
+        "value": "172.25.21.10"
+      },
+      "translated": {
+        "host": "rocky-ecom",
+        "value": "172.20.240.10"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-ubuntu-email",
+      "original": {
+        "host": "ubuntu-email",
+        "value": "172.25.21.15"
+      },
+      "translated": {
+        "host": "ubuntu-email",
+        "value": "172.20.240.15"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-controller-kali_leg",
+      "original": {
+        "host": "ubuntu-wkst",
+        "value": "172.25.21.30"
+      },
+      "translated": {
+        "host": "ubuntu-wkst",
+        "unresolved": true
+      },
+      "commit": "policy",
+      "comment": "controller static NAT for kali_leg; needs a DHCP reservation"
+    }
+  ],
+  "rules": [
+    {
+      "name": "phylax-svc-ad",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "ad",
+          "value": "172.25.21.100"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            53,
+            5985
+          ]
+        },
+        {
+          "proto": "udp",
+          "ports": [
+            53
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-svc-debian-splunk",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "debian-splunk",
+          "value": "172.25.21.20"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            8000,
+            8089
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-debian-splunk",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "debian-splunk",
+          "value": "172.25.21.20"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            3306,
+            3389,
+            5985
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-svc-mssql",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "mssql",
+          "value": "172.25.21.120"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            445,
+            1433,
+            3389
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-mssql",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "mssql",
+          "value": "172.25.21.120"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            23
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-svc-rocky-ecom",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "rocky-ecom",
+          "value": "172.25.21.10"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            80,
+            443
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-rocky-ecom",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "rocky-ecom",
+          "value": "172.25.21.10"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            3389,
+            5985,
+            6379,
+            8081
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-svc-ubuntu-email",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "ubuntu-email",
+          "value": "172.25.21.15"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            25,
+            80,
+            110,
+            143
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-ubuntu-email",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "destinations": [
+        {
+          "host": "ubuntu-email",
+          "value": "172.25.21.15"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            23,
+            3389,
+            5985
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-icmp",
+      "phase": "icmp",
+      "from_zone": "any",
+      "to_zone": "any",
+      "services": [
+        {
+          "proto": "icmp"
+        }
+      ],
+      "action": "allow",
+      "log_end": false,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "ICMP stays on every device (ping is scored); no zone protection that drops ping"
+    },
+    {
+      "name": "phylax-kali_leg-to-controller",
+      "phase": "kali_path",
+      "from_zone": "outside",
+      "to_zone": "lan",
+      "sources": [
+        {
+          "host": "kali",
+          "value": "172.31.21.2"
+        }
+      ],
+      "destinations": [
+        {
+          "host": "ubuntu-wkst",
+          "value": "172.25.21.30"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            7443
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "agent link from kali: only its translated source address, only the agent port"
+    },
+    {
+      "name": "phylax-mgmt-vyos1",
+      "phase": "device_access",
+      "from_zone": "lan",
+      "to_zone": "outside",
+      "sources": [
+        {
+          "host": "ubuntu-wkst",
+          "value": "172.20.240.0/24",
+          "approx": true,
+          "unresolved": true
+        }
+      ],
+      "destinations": [
+        {
+          "host": "vyos1",
+          "value": "172.16.0.254"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            443
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "lockout",
+      "comment": "device management of vyos1 from the controller"
+    },
+    {
+      "name": "phylax-egress-deny-servers",
+      "phase": "egress",
+      "from_zone": "lan",
+      "to_zone": "outside",
+      "sources": [
+        {
+          "host": "ad",
+          "value": "172.20.240.100/32"
+        },
+        {
+          "host": "debian-splunk",
+          "value": "172.20.240.20/32"
+        },
+        {
+          "host": "mssql",
+          "value": "172.20.240.120/32"
+        },
+        {
+          "host": "rocky-ecom",
+          "value": "172.20.240.10/32"
+        },
+        {
+          "host": "ubuntu-email",
+          "value": "172.20.240.15/32"
+        }
+      ],
+      "services": [
+        {
+          "proto": "any"
+        }
+      ],
+      "action": "deny",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "network-layer default-deny egress for servers; still holds if a host implant disables the host firewall"
+    }
+  ],
+  "mgmt_lockdown": {
+    "permitted_from": [
+      {
+        "host": "ubuntu-wkst",
+        "value": "172.20.240.0/24",
+        "approx": true,
+        "unresolved": true
+      }
+    ],
+    "commit": "management",
+    "risk": "lockout",
+    "additive": true
+  }
+}

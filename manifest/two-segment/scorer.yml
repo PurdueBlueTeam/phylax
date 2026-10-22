@@ -1,0 +1,6 @@
+scorer:
+  engine: quotient
+  identifier: "{{ 20 + team }}"
+  credlists:
+    mail: { path: mail.credlist }
+  poll_portal: off

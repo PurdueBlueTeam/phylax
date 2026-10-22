@@ -1,0 +1,149 @@
+{
+  "host": "win11-wkst",
+  "default_inbound": "Block",
+  "default_outbound": "Allow",
+  "rules": [
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcp 1",
+      "description": "DHCP client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcp 1",
+      "description": "DHCP server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcpv6 1",
+      "description": "DHCPv6 client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcpv6 1",
+      "description": "DHCPv6 server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Canary",
+      "name": "Phylax Canary outbound canary 1",
+      "description": "egress canary to kali: expected to be blocked, logged separately",
+      "direction": "Outbound",
+      "action": "Block",
+      "protocol": "TCP",
+      "remote_ports": [
+        4444,
+        8888,
+        9001
+      ],
+      "remote_addresses": [
+        "172.17.0.2/32"
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Mgmt",
+      "name": "Phylax Mgmt outbound agent_link 1",
+      "description": "agent link to the controller",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "remote_ports": [
+        7443
+      ],
+      "remote_addresses": [
+        "172.20.240.0/24"
+      ],
+      "profiles": "Any",
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+decoys:
+  web:
+    listeners: [{ kind: telnet, port: 23 }, { kind: http_admin, port: 8081 }]
+    exposure: both
+  mail:
+    listeners: [{ kind: redis, port: 6379 }]

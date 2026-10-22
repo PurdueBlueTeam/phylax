@@ -1,0 +1,82 @@
+# 2027 reference manifest: services. Scored: SSH (Linux), ping, IMAP/webmail/SMTP/POP3,
+# Splunk query and 8089, SMB share, RDP, MSSQL 1433, WinRM, plus HTTP/DNS/FTP (PKT 3).
+services:
+  ecom-http:
+    host: rocky-ecom
+    kind: http
+    scored: true
+    listen: [{ proto: tcp, port: 80 }, { proto: tcp, port: 443 }]
+    process: { unit: httpd.service, binaries: [/usr/sbin/httpd], pin: true }
+    transport: { plaintext: true, tls_verify: false }
+    content:
+      roots: [/var/www/html]
+      upload_dirs: [/var/www/html/image/catalog]
+      normalize: [opencart_token, csrf, session_cookie, timestamps]
+    data: [{ kind: mysql, database: opencart }]
+    outbound: none
+    health: [{ http_get: "/", expect_status: 200, track_content: true }]
+  ecom-ssh:
+    host: rocky-ecom
+    kind: ssh
+    scored: true                         # SSH is scored on the Linux hosts: never disabled
+    listen: [{ proto: tcp, port: 22 }]
+    process: { unit: sshd.service, binaries: [/usr/sbin/sshd], pin: true }
+    transport: { auth: password, pty: true, shell: true }   # what the scorer does
+  ecom-ping:
+    { host: rocky-ecom, kind: icmp, scored: true }
+  email-mail:
+    host: ubuntu-email
+    kind: mail
+    scored: true
+    listen: [{ proto: tcp, port: 25 }, { proto: tcp, port: 110 }, { proto: tcp, port: 143 }]
+    process: { units: [postfix.service, dovecot.service], binaries: [/usr/lib/postfix/sbin/master, /usr/sbin/dovecot], pin: true }
+    transport: { plaintext: true, starttls: never }
+    depends_on: [{ egress: ldap, to: ad, ports: [389] }, { egress: kerberos, to: ad, ports: [88] }]
+    outbound: [ad]
+  email-webmail:
+    host: ubuntu-email
+    kind: http
+    scored: true
+    listen: [{ proto: tcp, port: 80 }]
+    transport: { plaintext: true, tls_verify: false }
+    health: [{ http_get: "/", expect_status: 200 }]
+  email-ssh:
+    host: ubuntu-email
+    kind: ssh
+    scored: true
+    listen: [{ proto: tcp, port: 22 }]
+    process: { unit: ssh.service, binaries: [/usr/sbin/sshd], pin: true }
+    transport: { auth: password, pty: true, shell: true }
+  email-ping:
+    { host: ubuntu-email, kind: icmp, scored: true }
+  splunk:
+    { host: debian-splunk, kind: splunk, scored: true, listen: [{ proto: tcp, port: 8000 }, { proto: tcp, port: 8089 }] }
+  splunk-ssh:
+    host: debian-splunk
+    kind: ssh
+    scored: true
+    listen: [{ proto: tcp, port: 22 }]
+    process: { unit: ssh.service, binaries: [/usr/sbin/sshd], pin: true }
+    transport: { auth: password, pty: true, shell: true }
+  splunk-ping:
+    { host: debian-splunk, kind: icmp, scored: true }
+  ad-winrm:
+    host: ad
+    kind: winrm
+    scored: true
+    listen: [{ proto: tcp, port: 5985 }]
+    transport: { auth: ntlm, encryption: none }
+  ad-dns:
+    { host: ad, kind: dns, scored: true, listen: [{ proto: udp, port: 53 }, { proto: tcp, port: 53 }] }
+  ad-ldap:
+    { host: ad, kind: ldap, scored: false, listen: [{ proto: tcp, port: 389 }, { proto: tcp, port: 88 }] }
+  ad-ping:
+    { host: ad, kind: icmp, scored: true }
+  mssql-sql:
+    { host: mssql, kind: mssql, scored: true, listen: [{ proto: tcp, port: 1433 }] }
+  mssql-rdp:
+    { host: mssql, kind: rdp, scored: true, listen: [{ proto: tcp, port: 3389 }] }
+  mssql-smb:
+    { host: mssql, kind: smb, scored: true, listen: [{ proto: tcp, port: 445 }], content: { roots: ['D:\SOPs'] } }
+  mssql-ping:
+    { host: mssql, kind: icmp, scored: true }

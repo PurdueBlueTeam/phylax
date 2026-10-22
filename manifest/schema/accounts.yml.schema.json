@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accounts": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "credlist": {
+            "type": "string"
+          },
+          "embedded_in": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hosts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "learn_from": {
+            "type": "string"
+          },
+          "rotation": {
+            "enum": [
+              "pcr_transaction",
+              "free",
+              "manual"
+            ],
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "local",
+              "domain",
+              "service",
+              "device"
+            ],
+            "type": "string"
+          },
+          "scored": {
+            "enum": [
+              true,
+              false,
+              "unknown"
+            ]
+          },
+          "shell": {
+            "type": "string"
+          },
+          "ssh_auth": {
+            "enum": [
+              "password",
+              "both",
+              "key_only"
+            ],
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "scored",
+          "rotation"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "accounts"
+  ],
+  "title": "Phylax accounts.yml",
+  "type": "object"
+}
