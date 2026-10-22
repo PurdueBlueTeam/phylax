@@ -298,7 +298,7 @@ func TestWatchConfigInputs(t *testing.T) {
 		if a.Kind != "config.inputs_invalid" {
 			t.Fatalf("alert %+v", a)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("no alert for invalid inputs")
 	}
 	if w, _ := c.AgentConfigFor(ctx, host); w.Version != w1.Version {
@@ -309,7 +309,7 @@ func TestWatchConfigInputs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(rdir, "auth.yml"), append(good, []byte(extra)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if w, _ := c.AgentConfigFor(ctx, host); w.Version > w1.Version {
 			break

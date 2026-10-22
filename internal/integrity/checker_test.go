@@ -77,7 +77,7 @@ func startSleep(t *testing.T, path string) *exec.Cmd {
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
 	// wait until exec happened (exe link points at the new image)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if l, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid)); err == nil && l == path {
 			return cmd

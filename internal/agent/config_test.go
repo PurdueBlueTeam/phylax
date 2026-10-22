@@ -335,12 +335,24 @@ func TestConfigMarkSurvivesRestart(t *testing.T) {
 	e.waitConfig(t, "ok/1.7")
 	r.stop()
 
+	// Heartbeats from the first run are still in the fake controller's log
+	// and its previous session may linger, so wait for a heartbeat from the
+	// restarted agent itself before sending on the (now current) session.
+	_, _, old := e.ctl.snapshot()
 	e.start(t)
-	eventually(t, 5*time.Second, "reconnected", func() bool { return e.ctl.send(&link.Ack{}) == nil })
-	e.waitConfig(t, "ok/1.7")
+	eventually(t, 5*time.Second, "restarted agent heartbeat", func() bool {
+		_, _, hbs := e.ctl.snapshot()
+		return len(hbs) > len(old) && hbs[len(hbs)-1].Modules[ConfigStatusModule] == "ok/1.7"
+	})
 	before := strings.Count(e.rejections(), "|")
-	e.ctl.send(e.sign(t, cfgBody("h", 1, 6, "stale")))
-	eventually(t, 5*time.Second, "replay refused after restart", func() bool { return strings.Count(e.rejections(), "|") > before })
+	stale := e.sign(t, cfgBody("h", 1, 6, "stale"))
+	eventually(t, 5*time.Second, "replay refused after restart", func() bool {
+		if strings.Count(e.rejections(), "|") > before {
+			return true
+		}
+		e.ctl.send(stale) // resend: a send racing the reconnect can be lost
+		return false
+	})
 }
 
 // Supervisor.Add/Remove while running.

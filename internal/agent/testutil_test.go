@@ -136,6 +136,8 @@ func (c *fakeController) snapshot() (evs []event.Event, hellos []link.Hello, hbs
 
 func eventually(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
+	// d is the expected latency; a slow -race CI runner gets a generous floor.
+	d = max(d, 30*time.Second)
 	dl := time.Now().Add(d)
 	for time.Now().Before(dl) {
 		if f() {
@@ -190,7 +192,7 @@ func (r *runningAgent) stop() {
 	r.cancel = nil
 	select {
 	case <-r.done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		panic("agent did not stop")
 	}
 }

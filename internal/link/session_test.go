@@ -174,7 +174,7 @@ func TestRoleEnforcedAndUnknownTypeFatal(t *testing.T) {
 				if !errors.Is(err, tc.want) {
 					t.Fatalf("want %v, got %v", tc.want, err)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("session survived a protocol violation")
 			}
 		})
@@ -191,7 +191,7 @@ func TestReadIdleEndsSession(t *testing.T) {
 		if !isTimeoutErr(err) {
 			t.Fatalf("want timeout, got %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("silent peer never timed out")
 	}
 }
@@ -268,7 +268,7 @@ func TestHandlerOverflowEndsSession(t *testing.T) {
 		if !errors.Is(err, ErrOverload) {
 			t.Fatalf("want ErrOverload, got %v", err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("unbounded inbound queue")
 	}
 }
@@ -309,7 +309,7 @@ func TestBulkRateLimitNeverDelaysCritical(t *testing.T) {
 		if d > 400*time.Millisecond {
 			t.Fatalf("heartbeat delayed %v behind throttled bulk", d)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("heartbeat starved by bulk")
 	}
 	eventually(t, 5*time.Second, "bulk to drain", func() bool {

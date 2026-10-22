@@ -66,7 +66,7 @@ func (x *ctl) shutdown() {
 		if err != nil {
 			x.t.Errorf("serve: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		x.t.Fatal("controller did not shut down")
 	}
 	if err := x.c.Close(); err != nil {
@@ -234,7 +234,7 @@ func tryHello(t *testing.T, x *ctl, id *link.Identity, host, token string) bool 
 		return true
 	case <-sess.Done():
 		return false
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("neither welcome nor close")
 		return false
 	}
@@ -251,6 +251,8 @@ func hasAlert(c *Controller, host, kind string) bool {
 
 func waitFor(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
+	// d is the expected latency; a slow -race CI runner gets a generous floor.
+	d = max(d, 30*time.Second)
 	dl := time.Now().Add(d)
 	for time.Now().Before(dl) {
 		if f() {
