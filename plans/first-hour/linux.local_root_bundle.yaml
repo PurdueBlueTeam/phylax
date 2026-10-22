@@ -1,0 +1,11 @@
+id: fh.linux.local_root_bundle
+name: Linux local-root bundle (pkexec, algif_aead, sudo, userns)
+on_failure: continue
+scoring_note: Breaks polkit GUI auth only.
+vars:
+  linux_hosts: [rocky-web, fedora-mail, debian-splunk, ubuntu-wkst]
+nodes:
+  - {id: pkexec, each: linux_hosts, action: file.perms, target: "${host}", params: {path: /usr/bin/pkexec, mode: "0755"}}
+  - {id: algif-aead, each: linux_hosts, action: kernel.module_block, target: "${host}", params: {module: algif_aead}}
+  - {id: sudo-version, each: linux_hosts, action: command.check, target: "${host}", params: {probe: sudo_version}}
+  - {id: userns, each: linux_hosts, action: sysctl.set, target: "${host}", needs: [pkexec], params: {key: user.max_user_namespaces, value: "0"}, note: Only where unprivileged user namespaces are unused (check first)}

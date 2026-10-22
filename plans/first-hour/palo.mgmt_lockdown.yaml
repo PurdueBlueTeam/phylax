@@ -1,0 +1,14 @@
+id: fh.palo.mgmt_lockdown
+name: Palo management lockdown to the controller (additive)
+on_failure: stop_dependents
+scoring_note: Management plane is not scored. Add, commit, verify with a NEW connection, then remove the old entry in a separate commit. Never combined with service rules.
+vars:
+  palo: palo-fw
+  controller_ip: 10.0.0.5
+  old_permitted: 0.0.0.0/0
+nodes:
+  - {id: add, action: palo.permitted_ips, target: "${palo}", params: {add: "${controller_ip}"}}
+  - {id: commit-add, action: palo.commit, target: "${palo}", needs: [add], params: {description: "phylax: add controller to permitted IPs"}}
+  - {id: verify-new-conn, action: net.tcp_probe, target: "${palo}", needs: [commit-add], params: {host: "${controller_ip}", port: 443}}
+  - {id: remove-old, action: palo.permitted_ips, target: "${palo}", needs: [verify-new-conn], params: {add: "${controller_ip}", remove: "${old_permitted}"}}
+  - {id: commit-remove, action: palo.commit, target: "${palo}", needs: [remove-old], params: {description: "phylax: drop broad permitted IP"}}
