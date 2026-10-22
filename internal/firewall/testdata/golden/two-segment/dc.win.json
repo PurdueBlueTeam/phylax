@@ -1,0 +1,185 @@
+{
+ "profiles": [
+  {
+   "name": "Domain",
+   "enabled": true,
+   "default_inbound": "Block",
+   "default_outbound": "Block"
+  },
+  {
+   "name": "Private",
+   "enabled": true,
+   "default_inbound": "Block",
+   "default_outbound": "Block"
+  },
+  {
+   "name": "Public",
+   "enabled": true,
+   "default_inbound": "Block",
+   "default_outbound": "Block"
+  }
+ ],
+ "rules": [
+  {
+   "name": "Phylax Base inbound dhcp 1",
+   "description": "DHCP server reply",
+   "group": "Phylax Base",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "68",
+   "remote_ports": "67",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base inbound dhcpv6 1",
+   "description": "DHCPv6 server reply",
+   "group": "Phylax Base",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "546",
+   "remote_ports": "547",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base inbound icmp 1",
+   "description": "ICMP stays (ping is scored; rules require ICMP)",
+   "group": "Phylax Base",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "ICMPv4",
+   "icmp_types": "*",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base inbound icmpv6 1",
+   "description": "ICMPv6: neighbour discovery, PMTU, echo",
+   "group": "Phylax Base",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "ICMPv6",
+   "icmp_types": "*",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base outbound dhcp 1",
+   "description": "DHCP client request",
+   "group": "Phylax Base",
+   "direction": "Outbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "68",
+   "remote_ports": "67",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base outbound dhcpv6 1",
+   "description": "DHCPv6 client request",
+   "group": "Phylax Base",
+   "direction": "Outbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "546",
+   "remote_ports": "547",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base outbound icmp 1",
+   "description": "ICMP stays (ping is scored; rules require ICMP)",
+   "group": "Phylax Base",
+   "direction": "Outbound",
+   "action": "Allow",
+   "protocol": "ICMPv4",
+   "icmp_types": "*",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Base outbound icmpv6 1",
+   "description": "ICMPv6: neighbour discovery, PMTU, echo",
+   "group": "Phylax Base",
+   "direction": "Outbound",
+   "action": "Allow",
+   "protocol": "ICMPv6",
+   "icmp_types": "*",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Domain inbound domain 1",
+   "description": "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (members: mail)",
+   "group": "Phylax Domain",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "TCP",
+   "local_ports": "53,88,135,389,445,464,636,3268,3269,50000-50199",
+   "remote_addresses": "10.10.2.20/32",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Domain inbound domain 2",
+   "description": "AD udp: DNS, Kerberos, NTP, CLDAP (members: mail)",
+   "group": "Phylax Domain",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "53,88,123,389,464",
+   "remote_addresses": "10.10.2.20/32",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Mgmt outbound agent_link 1",
+   "description": "agent link to the controller",
+   "group": "Phylax Mgmt",
+   "direction": "Outbound",
+   "action": "Allow",
+   "protocol": "TCP",
+   "remote_ports": "7443",
+   "remote_addresses": "10.10.1.50/32",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Service inbound service dc-dns 1",
+   "description": "dc-dns (dns)",
+   "group": "Phylax Service",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "TCP",
+   "local_ports": "53",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Service inbound service dc-dns 2",
+   "description": "dc-dns (dns)",
+   "group": "Phylax Service",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "UDP",
+   "local_ports": "53",
+   "profiles": "Any",
+   "enabled": true
+  },
+  {
+   "name": "Phylax Service inbound service dc-ldap 1",
+   "description": "dc-ldap (ldap)",
+   "group": "Phylax Service",
+   "direction": "Inbound",
+   "action": "Allow",
+   "protocol": "TCP",
+   "local_ports": "389",
+   "profiles": "Any",
+   "enabled": true
+  }
+ ]
+}
