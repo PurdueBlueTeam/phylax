@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"sort"
 	"time"
 
@@ -106,4 +108,30 @@ func (h *healthModule) report(emit Emit, now time.Time) {
 func gap(source, reason string, count uint64, from, to string) event.Event {
 	return event.Event{Kind: "telemetry_gap", Priority: event.PriorityHigh,
 		Fields: map[string]any{"source": source, "reason": reason, "count": count, "from": from, "to": to}}
+}
+
+const healthDefaultFP = "default"
+
+func init() {
+	RegisterFactory(Factory{
+		Name: "health",
+		Section: func(c *plan.AgentConfig) (string, bool) {
+			if h := c.Modules.Health; h != nil && h.IntervalSec > 0 {
+				return fmt.Sprintf("%d/%d/%d", h.IntervalSec, h.RatePerSec, h.Burst), true
+			}
+			return healthDefaultFP, true
+		},
+		Build: func(env Env, c *plan.AgentConfig) (ModuleSpec, error) {
+			iv := env.a.cfg.HealthInterval
+			spec := ModuleSpec{}
+			if h := c.Modules.Health; h != nil {
+				if h.IntervalSec > 0 {
+					iv = time.Duration(h.IntervalSec) * time.Second
+				}
+				spec.Rate, spec.Burst = float64(h.RatePerSec), h.Burst
+			}
+			spec.Module = NewHealthModule(env.Health, iv)
+			return spec, nil
+		},
+	})
 }

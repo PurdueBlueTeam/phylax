@@ -26,9 +26,14 @@ type AgentStatus struct {
 	SpoolDepth uint64
 	Congestion string
 	Modules    map[string]string
-	SafeMode   bool
-	Drops      uint64
-	Buffered   int
+	// ConfigState/ConfigEpoch/ConfigVersion are what the agent last reported
+	// about its signed config ("none" until it applies one).
+	ConfigState   string
+	ConfigEpoch   uint64
+	ConfigVersion uint64
+	SafeMode      bool
+	Drops         uint64
+	Buffered      int
 }
 
 type agentState struct {
@@ -42,6 +47,10 @@ type agentState struct {
 	lastSeen time.Time
 	silent   bool
 	hb       AgentStatus
+	// config push bookkeeping (agentconfig.go)
+	cfgSess   *agentConn
+	cfgSent   *link.Config
+	cfgPushed time.Time
 }
 
 // stateLocked returns the state for host, creating it. Caller must hold c.mu
@@ -199,7 +208,17 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	}
 	st.mu.Unlock()
 	a.stp.Store(st)
-	if err := a.sess.Send(ctx, link.PrioCritical, &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: enrolled}); err != nil {
+	welcome := &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: enrolled}
+	if wc, err := c.AgentConfigFor(ctx, h.Host); err != nil {
+		// The agent keeps running its last good config; say why it got none.
+		c.alert(h.Host, "config.generate_failed", err.Error())
+	} else if wc != nil {
+		welcome.Config = wc
+		st.mu.Lock()
+		st.cfgSess, st.cfgSent, st.cfgPushed = a, wc, c.now()
+		st.mu.Unlock()
+	}
+	if err := a.sess.Send(ctx, link.PrioCritical, welcome); err != nil {
 		return err
 	}
 	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: ag.LastSeq}); err != nil {
@@ -265,6 +284,7 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	acked := st.acked
 	st.mu.Unlock()
 	a.sess.TrySend(link.PrioCritical, &link.Ack{Seq: acked}) // keepalive; a full queue means a newer ack is coming
+	a.c.noteConfigStatus(st, hb)
 	return nil
 }
 

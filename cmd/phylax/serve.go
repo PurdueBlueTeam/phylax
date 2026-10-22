@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
@@ -56,6 +57,18 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer c.Close()
+	if cfg.ManifestPath != "" {
+		// Agent configs are generated from the manifest (and rules) and pushed
+		// on connect and whenever those files change.
+		if err := c.LoadAndSetConfigInputs(ctx); err != nil {
+			return fmt.Errorf("agent config inputs: %w", err)
+		}
+		go func() {
+			if err := c.WatchConfigInputs(ctx, 5*time.Second); err != nil {
+				log.Error("config watcher stopped", "err", err)
+			}
+		}()
+	}
 	log.Info("plan-signing public key (bootstrap plan_key)", "plan_key", hex.EncodeToString(c.PlanPublicKey()))
 	log.Info("controller key pin", "pin", c.Pin().String(), "curl", c.Pin().Curl())
 	return c.Run(ctx)

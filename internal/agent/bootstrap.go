@@ -110,6 +110,12 @@ func (l Layout) PlanSeq() string { return filepath.Join(l.Root, "planseq.json") 
 // controls (separate from the step mark).
 func (l Layout) ControlSeq() string { return filepath.Join(l.Root, "controlseq.json") }
 
+// Config is the last good signed config (the verbatim link.Config message).
+func (l Layout) Config() string { return filepath.Join(l.Root, "config.json") }
+
+// ConfigSeq is the persisted (epoch, version) high-water mark of accepted configs.
+func (l Layout) ConfigSeq() string { return filepath.Join(l.Root, "configseq.json") }
+
 // Results is the durable log of recent signed step results (re-sent on request).
 func (l Layout) Results() string { return filepath.Join(l.Root, "results.json") }
 
