@@ -4,7 +4,7 @@ GOOS    ?= linux
 GOARCH  ?= amd64
 CGO     ?= 0
 
-.PHONY: build build-windows test vet size gate clean
+.PHONY: build build-windows test race vet size gate clean
 
 build:
 	CGO_ENABLED=$(CGO) $(GO) build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/phylax
@@ -15,8 +15,12 @@ build-windows:
 test:
 	$(GO) test ./...
 
+race:
+	$(GO) test -race ./...
+
 vet:
 	$(GO) vet ./...
+	GOOS=windows $(GO) vet ./...
 
 size: build
 	@actual=$$(stat -c%s $(BIN)); max=41943040; \

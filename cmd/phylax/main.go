@@ -1,5 +1,5 @@
-// Command phylax is the single Phylax binary: controller (serve), host agent,
-// and operator commands (init, set-controller, version).
+// Command phylax is the single Phylax binary: the controller (serve), the host
+// agent (agent), and the operator tools. See phylax_design.md.
 package main
 
 import (
@@ -7,41 +7,30 @@ import (
 	"os"
 )
 
+var version = "dev"
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `usage: phylax <command> [flags]
+
+commands:
+  serve     run the controller
+  agent     run the host agent
+  version   print the version`)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
+		os.Exit(2)
 	}
 	switch os.Args[1] {
-	case "serve":
-		cmdServe(os.Args[2:])
-	case "agent":
-		cmdAgent(os.Args[2:])
-	case "init":
-		cmdInit(os.Args[2:])
-	case "set-controller":
-		cmdSetController(os.Args[2:])
-	case "plan":
-		cmdPlan(os.Args[2:])
 	case "version":
-		fmt.Println("phylax " + version)
-	case "help", "-h", "--help":
-		usage()
+		fmt.Println(version)
+	case "serve", "agent":
+		fmt.Fprintf(os.Stderr, "phylax %s: not implemented yet\n", os.Args[1])
+		os.Exit(1)
 	default:
-		fmt.Fprintln(os.Stderr, "unknown command:", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
-}
-
-var version = "0.1.0-dev"
-
-func usage() {
-	fmt.Fprintln(os.Stderr, `phylax - blue-team platform (see phylax_design.md)
-
-Usage:
-  phylax serve      run the controller (event store, plans, UI)
-  phylax agent      run the host agent from a bootstrap bundle
-  phylax init       verify and lay down the release bundle on the controller
-  phylax set-controller <addr:port>
-  phylax version`)
 }

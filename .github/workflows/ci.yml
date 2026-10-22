@@ -16,7 +16,9 @@ jobs:
         run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/phylax-windows-amd64.exe ./cmd/phylax
       - name: Size gate (40 MB / 15 MB gz)
         run: make size
-      - name: Vet
-        run: go vet ./...
+      - name: Vet (linux, windows)
+        run: make vet
       - name: Tests
         run: go test ./...
+      - name: Race
+        run: go test -race ./...
