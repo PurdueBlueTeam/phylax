@@ -655,6 +655,8 @@ The sender drains its queues in strict order, and every message is sent at its r
 
 
 Implementation notes (2026-10-22): the controller's per-agent reorder buffer understands spool gap records (a gap covers `from..to`, so plain contiguous-sequence tracking would stall), and acks only after the store commit. `welcome` and `ack` carry no epoch or hash; the epoch travels in the signed config and steps. See docs/protocol.md §6 and §9.
+
+Implementation notes (2026-10-22, agent config): the signed config is the typed `AgentConfig` (docs/protocol.md §8a), generated per host by the controller from the manifest and rules, signed with the plan key, host-bound and replay-protected by a durable `(epoch, version)` mark on the agent. Versions only move when a host's content changes. The agent persists the last good config and runs it on restart without a controller; modules start, stop and reconfigure through a factory registry, and local detection runs on the agent's own event stream with alerts as Critical `detect.alert` events and tier-0 responses off. The config status travels in heartbeats under the reserved module name `config`. See docs/agent.md and docs/controller.md.
 ### The spool
 
 The spool is segment files, not one file [CR §3.10, OA §5.8]:

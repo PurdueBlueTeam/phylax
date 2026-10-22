@@ -9,11 +9,46 @@ Package `internal/controller`, command `cmd/phylax/serve.go`.
 (optional; when set, tokens can only be minted for manifest hosts),
 `silence_threshold` (default `30s`), `hello_timeout` (10s), `read_idle` (20s),
 `max_handshakes`, `max_conns`, `reorder_window` (65536), `max_buffered_events`
-(16384), `max_live_tokens` (1024). Durations are strings. Run:
+(16384), `max_live_tokens` (1024), `rules_path` (detection rules directory) and
+`ledger_path` (signed integrity ledger; agents get its sha256), see "Agent config". Durations are strings. Run:
 `phylax serve -config controller.json` (or `-data-dir DIR`). The controller key
 pin is logged at start.
 
 Files in `data_dir`: `phylax.db` (store), `tokens.json` (hashed tokens), identity.
+
+## Agent config (`agentconfig.go`, `genconfig.go`)
+
+With `manifest_path` set, `phylax serve` generates every host's `plan.AgentConfig`
+from the manifest (`BuildAgentConfig`): roles (vantage expanded), and per OS the
+modules and their settings.
+
+| Module | Hosts | Settings from the manifest |
+| --- | --- | --- |
+| health | all | 60 s interval |
+| audit | Linux | service content roots and upload dirs (web roots), declared service binaries |
+| net | Linux | listeners as `proto/port` to service id (ranges up to 64 ports; decoy listeners as `decoy-<kind>`), NFLOG groups and canary targets from `render.BuildHostPolicy`, exe hashing |
+| winevt | Windows | built-in default channels |
+| integrity | Linux | pinned service binaries (`process.pin`), ledger reference (sha256 of `ledger_path`) |
+| detect | all (when `rules_path` is set) | rule files as YAML text, manifest-seeded profiles (`accounts.scored`, `rotation.pending`, `scored.service_comms`, `service.dependencies`), `act_enabled: false` |
+
+The scorer exemption is behavioural, as the design requires: accounts and service
+processes, never addresses. `rotation.pending` seeds the accounts on hosts that have a
+default credential and whose rotation is `pcr_transaction` or `free`.
+
+Signing: Ed25519 with the plan key, canonical JSON, host-bound, epoch from the store,
+`version` per host. Versions are kept in `data_dir/agentconfigs.json` and move only
+when a host's content digest or the epoch changes, so a reconnect re-sends the
+identical message (the signature is deterministic and `issued_at` is kept). The file
+is a durable record: a corrupt one stops the controller starting (fail closed).
+
+Delivery: in `welcome` on every connect; as a `config` message to connected agents
+whenever the inputs change (`SetConfigInputs`); and again when a heartbeat reports an
+older config than wanted (at most every 15 s). `phylax serve` loads the inputs at
+start (an invalid manifest or rule set stops it) and polls the manifest, rules and
+ledger files every 5 s (`WatchConfigInputs`); a change that does not load or does
+not pass strict rule validation raises `config.inputs_invalid` and the previous
+inputs stay in force. `AgentStatus` carries `ConfigState`, `ConfigEpoch`,
+`ConfigVersion` from the heartbeat.
 
 ## Session flow (`phylax/agent`)
 

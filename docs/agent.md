@@ -25,6 +25,9 @@ Implementation notes for the agent runtime (`internal/agent`, `internal/svcinsta
 <state-dir>/state.json       {"enrolled": bool}, written only after `welcome`
 <state-dir>/spool/           internal/spool
 <state-dir>/deadman/         internal/deadman journal
+<state-dir>/config.json      last good signed config (verbatim `config` message)
+<state-dir>/configseq.json   (epoch, version) high-water mark of accepted configs
+<state-dir>/ledger.plx       integrity ledger (hash pinned by the config)
 ```
 
 ## Run loop
@@ -42,8 +45,8 @@ Implementation notes for the agent runtime (`internal/agent`, `internal/svcinsta
 
 ## Handlers
 
-`Config.Handlers` plugs `Config`, `Step`, `Fetch`, `Control`. Defaults: config is logged and an
-`agent.config_rejected` event is emitted; steps get a `step_result` with status `rejected`; fetch is
+`Config.Handlers` plugs `Config`, `Step`, `Fetch`, `Control`. Defaults: config is verified and
+applied (below); steps get a `step_result` with status `rejected`; fetch is
 logged; controls are verified first (below), then `safe_mode`, `deadman_confirm` and `step_status` are implemented.
 
 ## Modules
@@ -55,6 +58,38 @@ stops the module; it restarts after backoff, state `over_budget`). The built-in 
 `agent.health` (spool stats, module states, link state) and `telemetry_gap` events (`rate_limit`,
 `spool_refused`, `module_down`).
 
+## Signed config and the module registry
+
+`Factory{Name, Section, Build}` (`registry.go`) is how a module becomes configurable:
+`Section` returns a fingerprint of the module's settings in the signed config and
+whether it should run, `Build` returns its `ModuleSpec` (rate limits from the config) or an
+error wrapping `ErrUnavailable` (wrong platform, no privilege). Factories register from `init`
+into a process-wide registry (`RegisterFactory`; `Config.Factories` adds or overrides for
+tests). The sensor packages import `internal/agent`, so the registrations live in
+`internal/agent/mods` (blank-imported by `cmd/phylax`): `net` (Linux), `audit` (Linux, root),
+`winevt` (Windows), `integrity`, `detect`; `health` registers in the agent package.
+
+The Config handler is mandatory-verify (`plan.ConfigVerifier`, see protocol section 8a), persists the
+config to `<state>/config.json` (atomic), and wakes a reconciler goroutine that, per factory:
+removes a module whose section went away, leaves an unchanged fingerprint alone, builds and
+replaces a changed one (`Supervisor.Remove` waits for the old module), and records
+`running` / `disabled` / `unavailable: why` / `error: why` per module (`Agent.ConfigStatus`).
+An unavailable module makes the state `degraded`, not a crash loop. A module supplied
+statically in `Config.Modules` under the same name is never replaced. At start-up the persisted
+config (signature re-verified) is applied before the link comes up.
+`budgets.memory_limit_mb` lowers the Go memory limit.
+
+`Env.Subscribe` is the agent's event stream: every event a module emits (after its rate limit,
+before the spool, so shedding cannot blind a consumer) goes to bounded subscriber channels that
+drop rather than block. The `detect` module subscribes, runs `detect.Engine` (AlertOnly unless the
+signed config sets `act_enabled`, which the controller leaves off: tier-0 responses stay disabled) and
+emits each alert as a `detect.alert` event at Critical priority (`rule`, `title`, `severity`, `tier`,
+`mode`, `message`, `attack`, `collect`, `entities`, `evidence`). It ignores `detect.*` events (no
+feedback) and hands its learned profiles to its replacement through `Env.Keep`, so a rules update does
+not forget baselines. The `integrity` module judges exec events, pinned service processes (`/proc`
+scan, Linux) and periodic sweeps against the signed ledger in `<state>/ledger.plx` whose sha256 the
+config pins; until the file is present it emits `integrity.ledger_unavailable` and retries every 30 s.
+
 ## Service install
 
 systemd unit: `Restart=always`, `RestartSec=1`, `StartLimitIntervalSec=0`, `Type=notify` +
@@ -65,7 +100,8 @@ Names are configurable; `--secret` derives stable randomised service/binary/dir 
 
 ## Not done yet
 
-Signed config verification, step execution, fetch, the real sensor modules, the decoy process,
+Fetch, the decoy process, delivery of the integrity ledger file (the config only pins its hash),
+persisting learned detection baselines across agent restarts, tier-0 automatic responses,
 Job Object hard caps, a protected service DACL.
 
 ## Plan steps (`internal/agent/exec.go`)
