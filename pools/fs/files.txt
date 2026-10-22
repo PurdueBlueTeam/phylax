@@ -1,0 +1,28 @@
+# path<TAB>kind<TAB>content-name   (kind: d directory, f file). Content is looked up in fs/content/NAME.
+/	d	
+/bin	d	
+/etc	d	
+/etc/passwd	f	passwd
+/etc/hostname	f	hostname
+/etc/hosts	f	hosts
+/etc/os-release	f	os-release
+/etc/issue	f	issue
+/home	d	
+/home/backup	d	
+/home/backup/.bash_history	f	bash_history
+/home/backup/notes.txt	f	notes
+/root	d	
+/root/.bash_history	f	bash_history
+/root/.ssh	d	
+/root/.ssh/authorized_keys	f	authorized_keys
+/root/backup.sh	f	backup_sh
+/tmp	d	
+/var	d	
+/var/log	d	
+/var/log/auth.log	f	auth_log
+/var/www	d	
+/var/www/html	d	
+/var/www/html/index.html	f	index_html
+/opt	d	
+/opt/backup	d	
+/opt/backup/README	f	readme

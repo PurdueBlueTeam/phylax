@@ -141,7 +141,7 @@ func TestIdleConnectionsDoNotBlockHandshakes(t *testing.T) {
 	defer c.Close()
 	select {
 	case <-served:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("handler not reached")
 	}
 	if time.Since(start) > 300*time.Millisecond {

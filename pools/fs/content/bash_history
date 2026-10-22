@@ -1,0 +1,4 @@
+ls -la
+cd /opt/backup
+./backup.sh
+exit

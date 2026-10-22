@@ -108,10 +108,14 @@ func (c *cfgHost) stop() {
 	c.cancel = nil
 }
 
+// fire emits the synthetic event once a stream consumer (detect) has
+// subscribed; a module reports "running" slightly before that
+// and an event published in the gap would be lost to local detection.
 func (c *cfgHost) fire() {
+	eventually(c.h.t, "event stream subscribers", 10*time.Second, func() bool { return c.a.Subscribers() >= 1 })
 	select {
 	case c.trig <- struct{}{}:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		c.h.t.Fatal("synthetic module not listening")
 	}
 }

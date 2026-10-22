@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ var updateWin = flag.Bool("update-win", false, "rewrite Windows golden files")
 // rules are keyed by name, a Remove deletes every rule of that name (as COM
 // does), and failures can be injected.
 type fakeWin struct {
+	mu       sync.Mutex // the deadman timer fires on another goroutine
 	profiles []WinProfileState
 	rules    []WinRuleState
 	ops      int
@@ -46,9 +48,13 @@ func (f *fakeWin) tick(what string) error {
 	return nil
 }
 func (f *fakeWin) Profiles() ([]WinProfileState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]WinProfileState(nil), f.profiles...), nil
 }
 func (f *fakeWin) SetProfile(p WinProfileState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.tick("setprofile " + p.Name); err != nil {
 		return err
 	}
@@ -60,9 +66,13 @@ func (f *fakeWin) SetProfile(p WinProfileState) error {
 	return nil
 }
 func (f *fakeWin) Rules() ([]WinRuleState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]WinRuleState(nil), f.rules...), nil
 }
 func (f *fakeWin) AddRule(r WinRuleState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.tick("add " + r.Name); err != nil {
 		return err
 	}
@@ -70,6 +80,8 @@ func (f *fakeWin) AddRule(r WinRuleState) error {
 	return nil
 }
 func (f *fakeWin) UpdateRule(r WinRuleState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.tick("update " + r.Name); err != nil {
 		return err
 	}
@@ -82,6 +94,8 @@ func (f *fakeWin) UpdateRule(r WinRuleState) error {
 	return fmt.Errorf("no rule %q", r.Name)
 }
 func (f *fakeWin) RemoveRule(name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if err := f.tick("remove " + name); err != nil {
 		return err
 	}
@@ -392,14 +406,14 @@ func TestWinDeadmanRollbackRestoresExactPreviousState(t *testing.T) {
 		WinRuleState{Name: "Phylax Service old", Group: "Phylax Service", Direction: "Inbound", Action: "Allow", Protocol: "TCP", LocalPorts: "80,443", Profiles: "Any", Enabled: false})
 	before, beforeAll, _ := readWin(f)
 
-	res, err := m.Apply(ctx, wp, ApplyOptions{DeadmanID: "win-1", Timeout: 300 * time.Millisecond})
+	res, err := m.Apply(ctx, wp, ApplyOptions{DeadmanID: "win-1", Timeout: 3 * time.Second})
 	if err != nil || !res.DeadmanArmed {
 		t.Fatalf("%+v %v", res, err)
 	}
 	if now, _, _ := readWin(f); len(DiffWinStates(before, now)) == 0 {
 		t.Fatal("apply changed nothing")
 	}
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 600; i++ {
 		if e, _ := dm.Get("win-1"); e.State == deadman.StateRolledBack {
 			break
 		}

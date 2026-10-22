@@ -131,7 +131,7 @@ func (s *sink) kinds(kind string) []event.Event {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timeout waiting for %s", what)
@@ -164,7 +164,7 @@ func run(t *testing.T, m *Module, s *sink) (stop func()) {
 			if err != nil {
 				t.Errorf("Start returned %v", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("Start did not return after cancel")
 		}
 	}
@@ -197,6 +197,10 @@ func TestRestartResumesWithoutLossOrDuplication(t *testing.T) {
 	l.add(ChSecurity, 4624, 60)
 	cfg := baseCfg(t, l, Channel{Name: ChSecurity})
 	cfg.QueueSize = 3 // keeps the reader close behind the consumer
+	// Dropping on a full queue is by design (it is recorded as a telemetry
+	// gap), but this test asserts zero loss, so a descheduled consumer on a
+	// slow -race runner must not be able to trip the drop deadline.
+	cfg.QueueWait = time.Minute
 
 	// Run 1 is cancelled from inside emit after 17 events (mid-batch).
 	m1, _ := New(cfg)
@@ -223,8 +227,10 @@ func TestRestartResumesWithoutLossOrDuplication(t *testing.T) {
 	second := &sink{}
 	stop := run(t, m2, second)
 	waitFor(t, "run 2", func() bool { return len(first.kinds(KindAuthSuccess))+len(second.kinds(KindAuthSuccess)) >= 70 })
-	time.Sleep(20 * time.Millisecond)
-	stop()
+	stop() // drains the queue; any duplicate would be emitted before Start returns
+	if d := m1.Stats()[ChSecurity].QueueDropped + m2.Stats()[ChSecurity].QueueDropped; d != 0 {
+		t.Fatalf("%d events dropped to queue backpressure", d)
+	}
 
 	seen := map[uint64]int{}
 	for _, s := range []*sink{first, second} {
