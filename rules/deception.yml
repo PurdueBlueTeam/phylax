@@ -1,0 +1,198 @@
+# Deception rules (design D15). Producers: internal/decoys (decoy.hit),
+# internal/honeytokens (honey.read), winevt (auth_*, 4768/4769/4771/4776 and
+# 4663 as sec_event) and the log parsers. The static profiles below are seeded
+# from the controller's honeytoken registry (honeytokens.Registry.Seeds): they
+# hold honey account names, honey SPNs, honey file paths and canary AWS key ids.
+# A honeytoken sighting is critical wherever it shows up. The origin host (the
+# host that was looted) is carried by decoy.hit and honey.read as token_origin;
+# for DC and service events the controller resolves it with Registry.Attribute.
+profiles:
+  - name: honeytoken.accounts   # honey AD accounts, honey DB/app logins, AWS-style key ids
+  - name: honeytoken.spns       # honey service principal names (kerberoast bait)
+  - name: honeytoken.paths      # honey file paths (4663 object_name)
+  - name: honeytoken.aws_keys   # canary AWS access key ids
+---
+id: D15a.decoy-touch
+title: Connection to a decoy service
+description: Information only. A bare connection is also what noisy traffic generators and scans produce, so it is not an alert on its own; blocking stays one click.
+severity: low
+tier: 1
+attack: [T1046]
+entities: [source, protocol]
+message: "{source} connected to the {protocol} decoy on port {dest_port}"
+when:
+  event: decoy.hit
+  all:
+    - stage: connect
+tests:
+  - name: connect
+    should_match: true
+    event: {kind: decoy.hit, fields: {stage: connect, protocol: ssh, source: 203.0.113.9, dest_port: 2222, severity: info}}
+  - name: login is a different rule
+    should_match: false
+    event: {kind: decoy.hit, fields: {stage: login, protocol: ssh, source: 203.0.113.9, dest_port: 2222, severity: high}}
+---
+id: D15b.decoy-login-or-command
+title: Login attempt or command on a decoy service
+severity: high
+tier: 1
+attack: [T1110, T1021, T1059]
+collect: [auth_window_10m]
+entities: [source, protocol, account]
+message: "{source} tried {account} / ran {command} on the {protocol} decoy"
+when:
+  event: decoy.hit
+  all:
+    - stage: [login, command]
+tests:
+  - name: ssh login attempt
+    should_match: true
+    event: {kind: decoy.hit, fields: {stage: login, protocol: ssh, source: 203.0.113.9, account: root, dest_port: 2222, severity: high}}
+  - name: shell command
+    should_match: true
+    event: {kind: decoy.hit, fields: {stage: command, protocol: ssh, source: 203.0.113.9, command: "cat /etc/shadow", dest_port: 2222, severity: high}}
+  - name: connect only
+    should_match: false
+    event: {kind: decoy.hit, fields: {stage: connect, protocol: ssh, source: 203.0.113.9, severity: info}}
+  - name: session summary of a bare connect
+    should_match: false
+    event: {kind: decoy.hit, fields: {stage: end, depth: connect, protocol: redis, source: 203.0.113.9, severity: info}}
+---
+id: D15c.honeytoken-at-decoy
+title: Honey credential or key used against a decoy; the origin host was looted
+severity: critical
+tier: 1
+attack: [T1552.001, T1552.004, T1078]
+collect: [process_tree, auth_window_10m]
+entities: [source, honeytoken, token_origin]
+message: "honeytoken {honeytoken} (planted on {token_origin}) used from {source} at the {protocol} decoy"
+when:
+  event: decoy.hit
+  all:
+    - honeytoken: {present: true}
+    - stage: [login, end]
+tests:
+  - name: honey key used on the ssh decoy
+    should_match: true
+    event: {kind: decoy.hit, fields: {stage: login, protocol: ssh, source: 203.0.113.9, honeytoken: ht-aa11, token_origin: rocky-ecom, token_kind: ssh_key, severity: critical}}
+  - name: ordinary credential
+    should_match: false
+    event: {kind: decoy.hit, fields: {stage: login, protocol: ssh, source: 203.0.113.9, account: root, severity: high}}
+---
+id: D15d.honeytoken-auth
+title: Logon attempt for a honey account or key id
+description: Any authentication event, success or failure, naming a honey account. No legitimate user or service knows these names.
+severity: critical
+tier: 1
+attack: [T1078, T1110]
+collect: [process_tree, auth_window_10m]
+entities: [account, source, service]
+message: "{source} authenticated as honey account {account} via {service}"
+when:
+  event: [auth_success, auth_fail]
+  all:
+    - account: {in_profile: honeytoken.accounts}
+tests:
+  - name: failed logon for the honey admin
+    should_match: true
+    seed: {honeytoken.accounts: [adm_helpdesk41]}
+    event: {kind: auth_fail, fields: {account: adm_helpdesk41, source: 10.0.0.77, service: windows}}
+  - name: honey db login succeeded
+    should_match: true
+    seed: {honeytoken.accounts: [svc_report07]}
+    event: {kind: auth_success, fields: {account: SVC_REPORT07, source: 10.0.0.77, service: mysqld}}
+  - name: real account
+    should_match: false
+    seed: {honeytoken.accounts: [adm_helpdesk41]}
+    event: {kind: auth_fail, fields: {account: azul, source: 10.0.0.77, service: sshd}}
+---
+id: D15e.honey-kerberos
+title: Kerberos ticket requested for a honey SPN or honey account
+description: 4769 for the honey SPN (kerberoasting bait), 4768 AS-REQ for the AS-REP roastable account, 4771 pre-auth failure, 4776 NTLM validation. The honey accounts are in their own OU and own no rights.
+severity: critical
+tier: 1
+attack: [T1558.003, T1558.004]
+collect: [process_tree]
+entities: [account, service_name, source]
+message: "kerberos event {event_id} for honey object {service_name}{account} from {source}"
+when:
+  event: [sec_event, auth_success, auth_fail]
+  all:
+    - any:
+        - all:
+            - event_id: 4769
+            - service_name: {in_profile: honeytoken.spns}
+        - all:
+            - event_id: [4768, 4771, 4776]
+            - account: {in_profile: honeytoken.accounts}
+tests:
+  - name: tgs for the honey spn
+    should_match: true
+    seed: {honeytoken.spns: ["MSSQLSvc/sql07.corp.example:1433"]}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4769, account: jsmith@CORP.EXAMPLE, service_name: "MSSQLSvc/sql07.corp.example:1433", source: 10.0.0.77, ticket_encryption_type: "0x17"}}
+  - name: as-req for the asrep account
+    should_match: true
+    seed: {honeytoken.accounts: [tchen12]}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4768, account: tchen12, source: 10.0.0.77}}
+  - name: ordinary tgs
+    should_match: false
+    seed: {honeytoken.spns: ["MSSQLSvc/sql07.corp.example:1433"]}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4769, account: jsmith@CORP.EXAMPLE, service_name: "cifs/fs01.corp.example", source: 10.0.0.77}}
+  - name: honey spn name but wrong event id
+    should_match: false
+    seed: {honeytoken.spns: ["MSSQLSvc/sql07.corp.example:1433"]}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4624, service_name: "MSSQLSvc/sql07.corp.example:1433"}}
+---
+id: D15f.honey-file-read
+title: Honey file opened or read
+description: fanotify (honey.read, Linux) or SACL file auditing (4663 object access, Windows). Nothing legitimate touches these files; the agent's own sweeps exclude them.
+severity: critical
+tier: 1
+attack: [T1552.001, T1005, T1083]
+collect: [process_tree]
+entities: [path, exe]
+message: "honey file {path}{object_name} opened by {exe}{process_name}"
+when:
+  event: [honey.read, sec_event]
+  all:
+    - any:
+        - all:
+            - path: {present: true}
+            - honeytoken: {present: true}
+        - all:
+            - event_id: 4663
+            - object_name: {in_profile: honeytoken.paths}
+tests:
+  - name: fanotify read attributed to its token
+    should_match: true
+    event: {kind: honey.read, fields: {path: /root/passwords.txt, pid: 4121, exe: /usr/bin/cat, honeytoken: ht-bb22, token_origin: ubuntu-email}}
+  - name: windows 4663 on the honey share file
+    should_match: true
+    seed: {honeytoken.paths: ['C:\Shares\SOP\passwords.xlsx']}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4663, object_name: 'C:\Shares\SOP\passwords.xlsx', process_name: 'C:\Windows\System32\notepad.exe'}}
+  - name: 4663 on an ordinary file
+    should_match: false
+    seed: {honeytoken.paths: ['C:\Shares\SOP\passwords.xlsx']}
+    event: {kind: sec_event, fields: {channel: Security, event_id: 4663, object_name: 'C:\Shares\SOP\policy.docx'}}
+---
+id: D15g.canary-aws-key
+title: Canary AWS access key id seen in egress or a log
+description: The key id (AKIA...) planted in a credentials file appeared in an HTTP request, sinkhole capture or DNS name. Producers set aws_access_key_id when a payload contains the AKIA pattern.
+severity: critical
+tier: 1
+attack: [T1552.001, T1567]
+entities: [aws_access_key_id, source]
+message: "canary AWS key {aws_access_key_id} used from {source}"
+when:
+  event: [http_request, net.sinkhole_capture, dns_query]
+  all:
+    - aws_access_key_id: {in_profile: honeytoken.aws_keys}
+tests:
+  - name: planted key in an http request
+    should_match: true
+    seed: {honeytoken.aws_keys: [AKIAXXXXXXXXXXXXXXXX]}
+    event: {kind: http_request, fields: {aws_access_key_id: AKIAXXXXXXXXXXXXXXXX, source: 10.0.0.23}}
+  - name: other key
+    should_match: false
+    seed: {honeytoken.aws_keys: [AKIAXXXXXXXXXXXXXXXX]}
+    event: {kind: http_request, fields: {aws_access_key_id: AKIAYYYYYYYYYYYYYYYY, source: 10.0.0.23}}

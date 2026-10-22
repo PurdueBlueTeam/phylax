@@ -1,0 +1,3 @@
+#!/bin/bash
+# nightly backup
+tar czf /opt/backup/nightly.tgz /var/www/html
