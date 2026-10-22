@@ -109,7 +109,20 @@ func (a *Agent) subscribe(buf int) (<-chan event.Event, func()) {
 	}
 	t := &tap{ch: make(chan event.Event, buf)}
 	a.tapMu.Lock()
+	if a.subWait > 0 {
+		a.subWait--
+	}
+	// Replay what was published while the consumer was starting (bounded by
+	// the tap's capacity: the newest events win).
+	h := a.held
+	if len(h) > buf {
+		h = h[len(h)-buf:]
+	}
+	for _, e := range h {
+		t.ch <- e
+	}
 	a.taps = append(a.taps, t)
+	a.settleLocked()
 	a.tapMu.Unlock()
 	return t.ch, func() {
 		a.tapMu.Lock()
@@ -121,6 +134,61 @@ func (a *Agent) subscribe(buf int) (<-chan event.Event, func()) {
 		}
 		a.tapMu.Unlock()
 	}
+}
+
+// Start-up window: a module is reported running before it has subscribed to
+// the event stream, so events published locally in between would be lost to
+// local detection. The agent therefore holds a bounded buffer of published
+// events while a module marked ModuleSpec.Subscriber has not yet subscribed
+// (or a reconfiguration is in progress), and replays it to each subscriber as
+// it arrives. The hold is bounded in size and time so a subscriber that never
+// shows up cannot make the agent hoard events.
+const (
+	heldMax     = 4096
+	holdTimeout = 15 * time.Second
+)
+
+// expectSubscriber records that spec's module will call Subscribe soon.
+func (a *Agent) expectSubscriber(spec ModuleSpec) {
+	if !spec.Subscriber {
+		return
+	}
+	a.tapMu.Lock()
+	a.subWait++
+	a.holdUntil = time.Now().Add(holdTimeout)
+	a.tapMu.Unlock()
+}
+
+// holdBegin / holdEnd bracket a reconfiguration, during which modules are
+// being built and added in arbitrary order.
+func (a *Agent) holdBegin() {
+	a.tapMu.Lock()
+	a.holds++
+	a.holdUntil = time.Now().Add(holdTimeout)
+	a.tapMu.Unlock()
+}
+
+func (a *Agent) holdEnd() {
+	a.tapMu.Lock()
+	if a.holds > 0 {
+		a.holds--
+	}
+	a.settleLocked()
+	a.tapMu.Unlock()
+}
+
+// settleLocked drops the buffer once nobody is awaited any more.
+func (a *Agent) settleLocked() {
+	if a.holds == 0 && a.subWait == 0 {
+		a.held = nil
+	}
+}
+
+// Held reports how many events are buffered awaiting a subscriber (tests).
+func (a *Agent) Held() int {
+	a.tapMu.Lock()
+	defer a.tapMu.Unlock()
+	return len(a.held)
 }
 
 // Subscribers reports how many modules currently listen to the event stream.
@@ -136,7 +204,11 @@ func (a *Agent) Subscribers() int {
 func (a *Agent) publish(e event.Event) {
 	a.tapMu.Lock()
 	defer a.tapMu.Unlock()
-	if len(a.taps) == 0 {
+	waiting := a.holds > 0 || a.subWait > 0
+	if waiting && !a.holdUntil.IsZero() && time.Now().After(a.holdUntil) {
+		a.holds, a.subWait, a.held, waiting = 0, 0, nil, false // give up waiting
+	}
+	if len(a.taps) == 0 && !waiting {
 		return
 	}
 	if e.Agent == "" {
@@ -144,6 +216,12 @@ func (a *Agent) publish(e event.Event) {
 	}
 	if e.Time.IsZero() {
 		e.Time = time.Now()
+	}
+	if waiting {
+		if len(a.held) >= heldMax {
+			a.held = append(a.held[:0], a.held[1:]...)
+		}
+		a.held = append(a.held, e)
 	}
 	for _, t := range a.taps {
 		select {

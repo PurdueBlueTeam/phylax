@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -19,10 +20,24 @@ type fieldRef struct {
 	name  string
 	parts []string
 	alts  []string
+	// netBits/base derive an address prefix field: "raddr_net16" is the /16
+	// network of raddr (IPv6: twice the bits, so net16 is a /32). Used to key
+	// counts by source network (rotating-source scanners). An event that
+	// carries the flat key itself wins.
+	netBits int
+	base    *fieldRef
 }
+
+var netSuffixes = map[string]int{"_net8": 8, "_net16": 16, "_net24": 24}
 
 func newFieldRef(name string) fieldRef {
 	r := fieldRef{name: name, alts: aliases[name]}
+	for suf, bits := range netSuffixes {
+		if b, ok := strings.CutSuffix(name, suf); ok && b != "" {
+			br := newFieldRef(b)
+			r.netBits, r.base = bits, &br
+		}
+	}
 	if strings.Contains(name, ".") {
 		r.parts = strings.Split(name, ".")
 	}
@@ -63,6 +78,22 @@ func (r fieldRef) get(c *evalCtx) (any, bool) {
 	for _, a := range r.alts {
 		if v, ok := f[a]; ok && v != nil {
 			return v, true
+		}
+	}
+	if r.base != nil {
+		if v, ok := r.base.get(c); ok {
+			if str, ok := toStr(v); ok {
+				if a, err := netip.ParseAddr(str); err == nil {
+					a = a.Unmap()
+					bits := r.netBits
+					if a.Is6() {
+						bits *= 2
+					}
+					if p, err := a.Prefix(bits); err == nil {
+						return p.String(), true
+					}
+				}
+			}
 		}
 	}
 	return nil, false

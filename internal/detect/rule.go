@@ -46,11 +46,11 @@ type whenDoc struct {
 }
 
 type countDoc struct {
-	Window   string   `yaml:"window"`
-	Gte      int      `yaml:"gte"`
-	By       []string `yaml:"by"`
-	Distinct string   `yaml:"distinct"`
-	Cooldown string   `yaml:"cooldown"`
+	Window   string    `yaml:"window"`
+	Gte      int       `yaml:"gte"`
+	By       []string  `yaml:"by"`
+	Distinct yaml.Node `yaml:"distinct"`
+	Cooldown string    `yaml:"cooldown"`
 }
 
 type sequenceDoc struct {
@@ -111,7 +111,7 @@ type countSpec struct {
 	window   time.Duration
 	gte      int
 	by       []fieldRef
-	distinct *fieldRef
+	distinct []fieldRef // composite: the tuple of values is counted
 	cooldown time.Duration
 }
 
@@ -285,12 +285,24 @@ func (env *compileEnv) compileRule(d *ruleDoc, file string) (*Rule, error) {
 		if cs.by, err = refs(c.By, where+".when.count.by"); err != nil {
 			return nil, err
 		}
-		if c.Distinct != "" {
-			rs, err := refs([]string{c.Distinct}, where+".when.count.distinct")
-			if err != nil {
+		if c.Distinct.Kind != 0 {
+			var names []string
+			switch {
+			case c.Distinct.Kind == yaml.ScalarNode && !isNull(&c.Distinct) && c.Distinct.Value != "":
+				names = []string{c.Distinct.Value}
+			case c.Distinct.Kind == yaml.SequenceNode && len(c.Distinct.Content) > 0:
+				for i, n := range c.Distinct.Content {
+					if n.Kind != yaml.ScalarNode || isNull(n) || n.Value == "" {
+						return nil, fmt.Errorf("%s.when.count.distinct[%d]: want a field name (dangling item?)", where, i)
+					}
+					names = append(names, n.Value)
+				}
+			default:
+				return nil, fmt.Errorf("%s.when.count.distinct: want a field name or a non-empty list of them", where)
+			}
+			if cs.distinct, err = refs(names, where+".when.count.distinct"); err != nil {
 				return nil, err
 			}
-			cs.distinct = &rs[0]
 		}
 		r.count = cs
 	}
