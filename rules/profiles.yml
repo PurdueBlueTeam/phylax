@@ -1,0 +1,32 @@
+# Shared baselines. Learned profiles opt in with a learning window per key;
+# static lists are filled by the agent from the manifest and plan engine
+# (Engine.Seed). See docs/rules.md "Profiles".
+profiles:
+  # Children each scored service legitimately runs (learned from its first 15 minutes).
+  - name: svc.children
+    event: process_start
+    key: [parent.comm]
+    value: image
+    learn: 15m
+    where:   # shells and download tools are never learned as normal
+      - not: {image: {endswith_any: [/sh, /bash, /dash, /zsh, /ash, /busybox, /python3, /python, /perl, /nc, /ncat, /socat, /curl, /wget]}}
+  # Listening sockets seen at start-up, per protocol (value: port).
+  - name: listeners.seen
+    event: net.listener_added
+    key: [proto]
+    value: port
+    learn: 5m
+  # Executables that made outbound connections during the first 15 minutes (patch cache, updaters, agent).
+  - name: egress.exes
+    event: net.connection_opened
+    where:
+      - dir: outbound
+    value: exe
+    learn: 15m
+  # Static lists seeded from the manifest / plan engine.
+  - name: scored.service_comms     # comm of every scored service's main process
+  - name: rotation.pending         # accounts whose credential has not been rotated yet
+  - name: accounts.scored          # accounts the scorer logs in with
+  - name: service.dependencies     # declared outbound peers of the host's services
+  - name: device.admins            # admin logins allowed on network devices
+  - name: reference.windows_tasks  # stock scheduled task names

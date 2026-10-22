@@ -1,0 +1,251 @@
+# Rules whose event producer does not exist yet. They parse and validate (the
+# test suite loads them) but their inline tests are not run, and the agent does
+# not load this directory. Each rule's `needs:` names the missing producer.
+id: D11c.bpf-program
+title: New hooking BPF program not in the host baseline
+needs: "inventory module BPF program lister (bpf_prog_new: id, type, name, baseline)"
+severity: high
+tier: 1
+attack: [T1014, T1547.006]
+collect: [process_tree]
+when:
+  event: bpf_prog_new
+  all:
+    - type: [kprobe, tracepoint, raw_tracepoint, fentry, fexit, lsm, perf_event, xdp, sched_cls]
+    - baseline: {present: false}
+---
+id: D5d.binary-integrity
+title: Installed binary differs from its package/reference hash or signature
+needs: "integrity module (binary_integrity: path, pkg, expected_sha256, actual_sha256, signer_ok, service)"
+severity: critical
+tier: 1
+attack: [T1036.005, T1554, T1574]
+collect: [process_tree, content_changes, binary_copy]
+exempt_tagged: true
+when:
+  event: binary_integrity
+  all:
+    - actual_sha256: {present: true}
+---
+id: D2b.mount-over-content
+title: New mount on or under a content root or persistence directory
+needs: "inventory module mountinfo differ (mount_new: source, target, fstype, options)"
+severity: high
+tier: 1
+attack: [T1564.005, T1222.002]
+collect: [process_tree, content_changes]
+when:
+  event: mount_new
+  all:
+    - target: {re: '^/(var/www|srv|usr/share/nginx|etc/(postfix|dovecot|systemd|cron\.d|pam\.d)|var/lib/mysql)'}
+---
+id: D19b.promisc-iface
+title: Interface flags show promiscuous mode on a non-bridge device
+needs: "inventory module netlink interface differ (net_iface: name, flags, promisc, kind, setter)"
+severity: high
+tier: 1
+attack: [T1040]
+collect: [process_tree]
+when:
+  event: net_iface
+  all:
+    - promisc: true
+    - not: {kind: [bridge, veth, tun, macvlan]}
+    - not: {setter: phylax}
+---
+id: D20.allowed-protocol-abuse
+title: NTP/ICMP/DNS flows far above request norm
+needs: "capture module flows with proto, bytes_out, payload_max, qname_len (controller-side)"
+scope: controller
+severity: medium
+tier: 1
+attack: [T1095, T1071.004, T1048.003]
+collect: [transactions_window_10m]
+when:
+  event: flow
+  any:
+    - all:
+        - proto: ntp
+        - bytes_out: {gt: 480}
+    - all:
+        - proto: icmp
+        - payload_max: {gt: 100}
+    - all:
+        - proto: dns
+        - qname_len: {gt: 100}
+---
+id: D2c.php-ini-semantics
+title: Effective PHP configuration lost a hardening entry or gained a loader/prepend hook
+needs: "fim content parser for php.ini (php_config: disable_functions_removed, new_extensions, auto_prepend_file, ...)"
+severity: critical
+tier: 1
+attack: [T1505.003, T1546, T1574]
+collect: [content_changes, process_tree]
+when:
+  event: php_config
+  any:
+    - disable_functions_removed: {present: true}
+    - new_extensions: {present: true}
+    - auto_prepend_file: {present: true}
+    - auto_append_file: {present: true}
+    - extension_dir_changed: true
+---
+id: D2d.app-admin-row
+title: Application or DB admin row added or changed outside plans
+needs: "SQL row poller (app_admin_row: db, table, key, change)"
+severity: high
+tier: 1
+attack: [T1136, T1098, T1505]
+collect: [content_changes]
+exempt_tagged: true
+when:
+  event: app_admin_row
+  all:
+    - change: [added, changed]
+---
+id: D6s.iis-module
+title: Non-built-in IIS module added to the server configuration
+needs: "winevt subscription to Microsoft-IIS-Configuration/Operational and confirmed event 29 field names"
+severity: high
+tier: 1
+attack: [T1505.004]
+collect: [content_changes, process_tree]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - channel: Microsoft-IIS-Configuration/Operational
+    - event_id: 29
+    - configuration: {re: '/system\.webServer/modules/add'}
+    - not: {new_value: [AnonymousAuthenticationModule, CustomErrorModule, DefaultDocumentModule, DirectoryListingModule, FileCacheModule, HttpCacheModule, HttpLoggingModule, ProtocolSupportModule, RequestFilteringModule, StaticCompressionModule, StaticFileModule, TokenCacheModule, UriCacheModule]}
+---
+id: D9c.service-backed-by-share
+title: Scored service content root is a UNC path or mapped drive
+needs: "service config parser (svc_config: service, content_root, root_kind)"
+severity: high
+tier: 1
+attack: [T1021.002, T1036]
+collect: [content_changes]
+when:
+  event: svc_config
+  any:
+    - content_root: {re: '^(\\\\|//)'}
+    - root_kind: [unc, mapped, reparse]
+---
+id: D14b.ftd-syslog
+title: FTD/ASA syslog for admin account, privilege, failed login or config changes
+needs: "device syslog receiver (log_line from Palo/FTD)"
+severity: high
+tier: 1
+attack: [T1685, T1098, T1556, T1601]
+collect: [content_changes]
+when:
+  event: log_line
+  all:
+    - file: {re: '(?i)(ftd|asa|cisco)'}
+    - line: {re: '%(FTD|ASA)-[0-7]-(502101|502102|502103|605004|111002|111004|111005|111007|111008|111010)'}
+---
+id: D14c.device-config
+title: Unplanned device commit/diff, or a login by an admin outside the vault set
+needs: "device adapters (device_config: change, login, tag)"
+severity: critical
+tier: 1
+attack: [T1685, T1686, T1098]
+collect: [content_changes]
+when:
+  event: device_config
+  any:
+    - all:
+        - change: [diff, commit, rule_order, admin_role, api_key, mgmt_profile, syslog_dest, ntp_dest, dns_dest]
+        - tag: {present: false}
+    - all:
+        - login: {present: true}
+        - not: {login: {in_profile: device.admins}}
+---
+id: D14d.esxi-shell-log
+title: ESXi shell history lines for account, permission, VM-kill or syslog changes
+needs: "ESXi shell/hostd log tail via the logs module"
+severity: high
+tier: 1
+attack: [T1136, T1098, T1485, T1685]
+collect: [content_changes]
+when:
+  event: log_line
+  all:
+    - file: {re: '(?i)(shell|hostd|esxi).*log'}
+    - line: {re: 'esxcli\s+(system\s+(account\s+(add|set|remove)|permission\s+set|syslog\s+config\s+set|settings\s+advanced\s+set)|vm\s+process\s+kill|software\s+vib\s+install)'}
+---
+id: D21.addr-change
+title: Address, route or neighbour entry differs from the manifest topology
+needs: "inventory module netlink address/route/neighbour differ (net_addr_change: manifest_match)"
+severity: high
+tier: 1
+attack: [T1557.002, T1565.002, T1499]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: net_addr_change
+  all:
+    - manifest_match: false
+---
+id: D22.reinfection-hunt-trigger
+title: Schedule the full hunt after a restore or re-enrollment
+needs: "controller enroll events (enroll: host, kind)"
+scope: controller
+severity: info
+tier: 1
+attack: [T1546, T1053, T1098.004]
+collect: [hunt_full]
+when:
+  event: enroll
+  all:
+    - kind: [reenroll, restore]
+---
+id: D17e.web-admin-bruteforce
+title: Repeated POSTs to the OpenCart/PrestaShop admin login from one source
+needs: "logs module access-log parser extracting source (log_line.source)"
+severity: medium
+tier: 1
+attack: [T1110.001, T1078]
+collect: [transactions_window_10m]
+when:
+  event: log_line
+  all:
+    - file: {re: '(?i)access[._-]?log'}
+    - line: {re: 'POST [^ ]*(route=common/login|/admin[^ ]*/index\.php\?controller=AdminLogin|/admin[^ ]*/login)'}
+  count:
+    window: 120s
+    gte: 10
+    by: [source]
+---
+id: D13c.beacon-periodicity
+title: Periodic outbound attempts from one process to one destination
+needs: "engine jitter operator (interval coefficient of variation) on count; denied-egress source is net.egress_denied"
+scope: controller
+severity: high
+tier: 1
+attack: [T1071, T1029, T1573]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+when:
+  event: net.egress_denied
+  all:
+    - raddr: {present: true}
+  count:
+    window: 30m
+    gte: 10
+    by: [agent, exe, raddr]
+---
+id: D6d2.unit-env-preload
+title: systemd unit sets a loader-injection variable or a powerful capability
+needs: "fim content parser for systemd units (unit_parsed: path, environment, ambient_caps, exec_start, user)"
+severity: critical
+tier: 1
+attack: [T1574.006, T1543.002]
+collect: [content_changes]
+when:
+  event: unit_parsed
+  any:
+    - environment: {re: '(LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT)='}
+    - ambient_caps: {re: 'CAP_(DAC_OVERRIDE|DAC_READ_SEARCH|SYS_ADMIN|SYS_PTRACE|SYS_MODULE|SETUID|SETGID|CHOWN|FOWNER)'}
+    - exec_start: {re: '^[-@+!]*/(tmp|dev/shm|var/tmp|home)/'}

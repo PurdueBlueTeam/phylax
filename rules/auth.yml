@@ -1,0 +1,118 @@
+# Authentication rules. Producers: the logs module (sshd, Cockpit, web admin
+# parsers) on Linux and winevt 4624/4625 on Windows, both emitting auth_success
+# and auth_fail with account, source, method, service. Never use known-source
+# lists: Divisor re-draws the scorer's source addresses every round.
+id: D18.default-cred-logon
+title: Successful logon with an account whose credential has not been rotated
+severity: high
+tier: 1
+attack: [T1078.001, T1078.003]
+collect: [process_tree, auth_window_10m]
+exempt_tagged: true
+entities: [account, source, service]
+message: "{account} logged on from {source} via {service} with a pending-rotation credential"
+when:
+  event: auth_success
+  all:
+    - account: {in_profile: rotation.pending}
+tests:
+  - name: default credential still valid
+    should_match: true
+    seed: {rotation.pending: [azul, root]}
+    event: {kind: auth_success, fields: {account: azul, source: 203.0.113.5, service: sshd}}
+  - name: rotated account
+    should_match: false
+    seed: {rotation.pending: [root]}
+    event: {kind: auth_success, fields: {account: azul, source: 203.0.113.5, service: sshd}}
+---
+id: D18b.credential-fanout
+title: One source authenticated as one account to three or more hosts in five minutes
+description: Controller rule over events from several agents. Scored accounts are excluded because the scorer fans out by design.
+scope: controller
+severity: high
+tier: 1
+attack: [T1078, T1021]
+collect: [auth_window_10m]
+message: "{account} from {source} reached 3 hosts"
+when:
+  event: auth_success
+  all:
+    - not: {account: {in_profile: accounts.scored}}
+    - source: {present: true}
+  count:
+    window: 5m
+    gte: 3
+    by: [source, account]
+    distinct: agent
+tests:
+  - name: three hosts
+    should_match: true
+    events:
+      - {kind: auth_success, agent: h1, at: 0s, fields: {account: azul, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h2, at: 30s, fields: {account: azul, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h3, at: 60s, fields: {account: azul, source: 10.9.9.9}}
+  - name: same host repeatedly
+    should_match: false
+    events:
+      - {kind: auth_success, agent: h1, at: 0s, fields: {account: azul, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h1, at: 30s, fields: {account: azul, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h1, at: 60s, fields: {account: azul, source: 10.9.9.9}}
+  - name: scored account fans out by design
+    should_match: false
+    seed: {accounts.scored: [scoring]}
+    events:
+      - {kind: auth_success, agent: h1, at: 0s, fields: {account: scoring, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h2, at: 30s, fields: {account: scoring, source: 10.9.9.9}}
+      - {kind: auth_success, agent: h3, at: 60s, fields: {account: scoring, source: 10.9.9.9}}
+---
+id: D9e.auth-bruteforce
+title: Failed logons per host, source and account above the scorer's badattempts
+description: The threshold is generated at deploy time as max(12, 3 x badattempts observed by check discovery). The scorer's N failures then a success every round stays far below it because the window is per (host, source, account) and N is small; Divisor address changes only reset the key.
+severity: medium
+tier: 1
+attack: [T1110.001, T1110.003]
+collect: [auth_window_10m]
+entities: [account, source, service]
+message: "{account} from {source}: repeated failed {service} logons"
+when:
+  event: auth_fail
+  all:
+    - service: [sshd, dovecot, vsftpd, proftpd, cockpit, postfix-sasl, windows]
+  count:
+    window: 120s
+    gte: 12
+    by: [agent, source, account]
+tests:
+  - name: brute force burst
+    should_match: true
+    events:
+      - {kind: auth_fail, at: 0s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 1s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 2s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 3s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 4s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 5s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 6s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 7s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 8s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 9s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 10s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+      - {kind: auth_fail, at: 11s, fields: {service: sshd, account: root, source: 203.0.113.7}}
+  - name: scorer badattempts=3 every 30 seconds for two minutes
+    should_match: false
+    events:
+      - {kind: auth_fail, at: 0s, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 100ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 200ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 30s, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 30100ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 30200ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 60s, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 60100ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+      - {kind: auth_fail, at: 60200ms, fields: {service: sshd, account: scoring, source: 10.8.8.8}}
+  - name: spread over many sources
+    should_match: false
+    events:
+      - {kind: auth_fail, at: 0s, fields: {service: sshd, account: root, source: 1.1.1.1}}
+      - {kind: auth_fail, at: 1s, fields: {service: sshd, account: root, source: 1.1.1.2}}
+      - {kind: auth_fail, at: 2s, fields: {service: sshd, account: root, source: 1.1.1.3}}
