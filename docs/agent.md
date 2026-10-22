@@ -67,3 +67,28 @@ Names are configurable; `--secret` derives stable randomised service/binary/dir 
 
 Signed config verification, step execution, fetch, the real sensor modules, the decoy process,
 Job Object hard caps, a protected service DACL.
+
+## Plan steps (`internal/agent/exec.go`)
+
+Enabled by `Config.Exec` (cmd: whenever the bootstrap has `plan_key`, 64 hex of
+the controller's Ed25519 key; with `Exec` set and no key `New` fails). The step
+handler runs on the receive path only to verify: `plan.Verifier` (key, host id,
+`FileSeqStore` at `<state>/planseq.json`) checks signature, host, window,
+epoch/seq (replay), then the envelope fields must match the signed body, and a
+non-check step needs a real approval record (`dry-run` never counts). Execution
+is off the receive path (bounded, 8 at once; excess is answered `failed`).
+
+Phases: `check` = `Env.Execute` dry run; `apply` = `Env.Execute` with the dead-man
+window from the step (the executor rolls back by itself on apply/verify failure;
+after a successful armed apply the agent opens a fresh handshake to the
+controller and rolls back at once if that fails); `verify` = the action's own
+`Verify`; `rollback` = fire the node's dead-man entries (`NodeID` is
+`<plan>:<node>`), idempotent, allowed in safe mode. `safe_mode` control switches
+`Env.Safe` (persisted in `<state>/safe_mode`), so applies are refused while
+checks and rollbacks still work. `deadman_confirm` takes `{id}` or
+`{plan,node}`. In-process dead-man fires are reported as critical
+`agent.deadman_fired` events; refusals as `agent.step_refused`. Results that
+cannot be sent are kept (64) and re-sent after the next reconnect. The scoring
+guard comes from `<state>/guard.json` (`phylax guard <host>` prints it from the
+manifest); `phylax agent rollback` loads the same environment so the OS timer
+can undo action changes.

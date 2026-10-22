@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 )
@@ -46,24 +47,40 @@ func (a *Agent) placeholderFetch(_ context.Context, f *link.Fetch, _ Reply) erro
 }
 
 // defaultControl implements the controls the agent core owns: safe_mode and
-// deadman_confirm (args {"id": "<entry id>"}). Others are logged.
+// deadman_confirm (args {"id": "<entry id>"} or {"plan": ..., "node": ...}).
+// Others are logged. Control messages ride the pinned mutual-TLS stream; they
+// are not separately signed (a forged confirm could only disarm a rollback).
 func (a *Agent) defaultControl(ctx context.Context, c *link.Control) error {
 	switch c.Kind {
 	case "safe_mode":
 		a.safeMode.Store(c.On)
+		if a.exec != nil {
+			if err := a.exec.env.Safe.Set(c.On); err != nil {
+				a.log.Error("persist safe mode", "err", err)
+			}
+		}
 	case "deadman_confirm":
 		var args struct {
-			ID string `json:"id"`
+			ID   string `json:"id"`
+			Plan string `json:"plan"`
+			Node string `json:"node"`
 		}
-		if err := json.Unmarshal(c.Args, &args); err != nil || args.ID == "" {
-			a.log.Warn("deadman_confirm without id", "err", err)
+		if err := json.Unmarshal(c.Args, &args); err != nil || (args.ID == "" && (args.Plan == "" || args.Node == "")) {
+			a.log.Warn("deadman_confirm without id or plan/node", "err", err)
 			return nil
 		}
-		if _, err := a.dm.Confirm(ctx, args.ID); err != nil {
-			a.log.Warn("deadman confirm failed", "id", args.ID, "err", err)
-		}
+		a.confirmDeadman(ctx, args.Plan, args.Node, args.ID)
 	default:
 		a.log.Warn("unhandled control", "kind", c.Kind, "on", c.On)
 	}
 	return nil
+}
+
+// onDeadmanResult reports every in-process dead-man timer fire to the controller.
+func (a *Agent) onDeadmanResult(e deadman.Entry, err error) {
+	f := map[string]any{"id": e.ID, "node": e.NodeID, "state": string(e.State)}
+	if err != nil {
+		f["error"] = err.Error()
+	}
+	a.emit(event.Event{Kind: "agent.deadman_fired", Priority: event.PriorityCritical, Fields: f})
 }

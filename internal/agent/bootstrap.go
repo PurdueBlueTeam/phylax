@@ -4,6 +4,8 @@
 package agent
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,22 @@ type Bundle struct {
 	Token string `json:"token,omitempty"`
 	// Roles are the initial role switches from the manifest.
 	Roles []string `json:"roles,omitempty"`
+	// PlanKey is the controller's Ed25519 plan-signing public key (64 hex).
+	// Steps are executed only if signed by it; with execution enabled the
+	// agent refuses to start without one.
+	PlanKey string `json:"plan_key,omitempty"`
+}
+
+// PlanPublicKey parses PlanKey; nil, nil if none is set.
+func (b *Bundle) PlanPublicKey() (ed25519.PublicKey, error) {
+	if b.PlanKey == "" {
+		return nil, nil
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(b.PlanKey))
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return nil, errors.New("bootstrap: plan_key must be 64 hex characters (Ed25519 public key)")
+	}
+	return ed25519.PublicKey(raw), nil
 }
 
 // Validate checks the bundle and returns the parsed pin.
@@ -49,6 +67,9 @@ func (b *Bundle) Validate() (link.Pin, error) {
 	}
 	if len(b.Token) > 256 {
 		return link.Pin{}, errors.New("bootstrap: token too long")
+	}
+	if _, err := b.PlanPublicKey(); err != nil {
+		return link.Pin{}, err
 	}
 	return link.ParsePin(b.ControllerPin)
 }
@@ -81,6 +102,12 @@ func (l Layout) Bootstrap() string { return filepath.Join(l.Root, "bootstrap.jso
 func (l Layout) Identity() string  { return filepath.Join(l.Root, "identity.pem") }
 func (l Layout) State() string     { return filepath.Join(l.Root, "state.json") }
 func (l Layout) SpoolDir() string  { return filepath.Join(l.Root, "spool") }
+
+// PlanSeq is the persisted (epoch, seq) high-water mark of accepted steps.
+func (l Layout) PlanSeq() string { return filepath.Join(l.Root, "planseq.json") }
+
+// SafeModeFile is the marker file whose presence means safe mode is on.
+func (l Layout) SafeModeFile() string { return filepath.Join(l.Root, "safe_mode") }
 func (l Layout) DeadmanDir() string {
 	return filepath.Join(l.Root, "deadman")
 }

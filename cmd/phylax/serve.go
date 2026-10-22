@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
@@ -47,12 +49,14 @@ func runServe(ctx context.Context, args []string) error {
 			return fmt.Errorf("manifest: %w", err)
 		}
 		opt.HostKnown = func(h string) bool { _, ok := m.Hosts[h]; return ok }
+		opt.Guard = func(h string) actions.ScoringGuard { return actions.GuardFromManifest(m, h) }
 	}
 	c, err := controller.New(ctx, cfg, opt)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	log.Info("plan-signing public key (bootstrap plan_key)", "plan_key", hex.EncodeToString(c.PlanPublicKey()))
 	log.Info("controller key pin", "pin", c.Pin().String(), "curl", c.Pin().Curl())
 	return c.Run(ctx)
 }

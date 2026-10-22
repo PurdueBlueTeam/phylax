@@ -3,6 +3,7 @@ module github.com/PurdueBlueTeam/phylax
 go 1.27
 
 require (
+	filippo.io/age v1.3.1
 	github.com/elastic/go-libaudit/v2 v2.6.2
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.4
@@ -15,6 +16,7 @@ require (
 )
 
 require (
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/elastic/go-licenser v0.4.1 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect

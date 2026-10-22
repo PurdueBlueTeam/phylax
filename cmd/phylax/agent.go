@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
@@ -76,7 +77,12 @@ func agentRun(ctx context.Context, args []string) error {
 		}
 	}
 	run := func(ctx context.Context) error {
+		ex, err := agentExec(l)
+		if err != nil {
+			return err
+		}
 		a, err := agent.New(agent.Config{
+			Exec:   ex,
 			Layout: l, Version: version, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
 			Backstop:    osBackstop(l),
 			MemoryLimit: *memMB << 20,
@@ -133,7 +139,13 @@ func agentRollback(ctx context.Context, args []string) error {
 		return errors.New("usage: phylax agent rollback [--state-dir D] <id>")
 	}
 	l := agent.Layout{Root: *dir}
-	e, err := agent.Rollback(ctx, l, id, agent.RollbackOptions{Backstop: osBackstop(l)})
+	// The action rollback handlers need the host environment (accounts,
+	// services); without it the OS timer could not undo action changes.
+	hs := map[string]deadman.Handler{}
+	if env, err := agentEnv(l); err == nil {
+		hs = actions.DeadmanHandlers(env)
+	}
+	e, err := agent.Rollback(ctx, l, id, agent.RollbackOptions{Backstop: osBackstop(l), Handlers: hs})
 	if err != nil {
 		return fmt.Errorf("rollback %s: %w", id, err)
 	}

@@ -560,3 +560,60 @@ func BenchmarkIngest(b *testing.B) {
 	}
 	b.ReportMetric(float64(b.N)/b.Elapsed().Seconds(), "events/s")
 }
+
+func TestPlansAndStepSeq(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.Plan(ctx, "nope"); !errors.Is(err, ErrNoPlan) {
+		t.Fatalf("got %v", err)
+	}
+	if err := s.UpsertPlan(ctx, PlanRow{ID: "p", Name: "n", State: "draft", Epoch: 1, Body: `{"a":1}`}); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := s.Plan(ctx, "p")
+	if err := s.UpsertPlan(ctx, PlanRow{ID: "p", Name: "n", State: "running", Epoch: 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Plan(ctx, "p")
+	if got.State != "running" || !got.Created.Equal(first.Created) && got.Created.Before(first.Created) {
+		t.Fatalf("%+v", got)
+	}
+	if err := s.UpsertPlanStep(ctx, PlanStepRow{PlanID: "p", Step: "a", Host: "h", Action: "x", State: "approved"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertPlanStep(ctx, PlanStepRow{PlanID: "p", Step: "a", Host: "h", Action: "x", State: "verified", Result: `{"r":1}`}); err != nil {
+		t.Fatal(err)
+	}
+	steps, _ := s.PlanSteps(ctx, "p")
+	if len(steps) != 1 || steps[0].State != "verified" || steps[0].Result != `{"r":1}` {
+		t.Fatalf("%+v", steps)
+	}
+	for want := uint64(1); want <= 3; want++ {
+		if n, err := s.NextStepSeq(ctx, "h1"); err != nil || n != want {
+			t.Fatalf("seq %d: %d %v", want, n, err)
+		}
+	}
+	if n, _ := s.NextStepSeq(ctx, "h2"); n != 1 {
+		t.Fatalf("independent per host: %d", n)
+	}
+	path := s.Path()
+	s.Close()
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if n, _ := s.NextStepSeq(ctx, "h1"); n != 4 {
+		t.Fatalf("sequence not durable: %d", n)
+	}
+	if n, err := s.InterruptPlans(ctx, "running", "draft"); err != nil || n != 1 {
+		t.Fatalf("%d %v", n, err)
+	}
+	if p, _ := s.Plan(ctx, "p"); p.State != "interrupted" {
+		t.Fatal(p.State)
+	}
+}
