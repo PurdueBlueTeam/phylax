@@ -12,6 +12,7 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.3
 	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
+	github.com/microsoft/go-mssqldb v1.9.8
 	github.com/ulikunitz/xz v0.5.17
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
@@ -33,7 +34,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/socket v0.5.0 // indirect
-	github.com/microsoft/go-mssqldb v1.9.8 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
