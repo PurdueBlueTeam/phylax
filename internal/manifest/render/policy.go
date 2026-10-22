@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
@@ -32,6 +33,7 @@ const (
 	GroupDependency Group = "dependency" // depends_on egress
 	GroupDecoy      Group = "decoy"      // decoy listeners
 	GroupEgress     Group = "egress"     // policy.egress.allow
+	GroupDomain     Group = "domain"     // domain member <-> DC allowances
 	GroupCanary     Group = "canary"     // egress canaries, expected blocked
 )
 
@@ -72,6 +74,7 @@ const (
 	KindDecoy       Kind = "decoy"
 	KindEgress      Kind = "egress"
 	KindCanary      Kind = "canary"
+	KindDomain      Kind = "domain"
 )
 
 // Rule is one host firewall rule intent. For In rules Peers are source
@@ -79,19 +82,23 @@ const (
 // destination prefixes and RemotePorts the destination ports. Empty Peers
 // means any address. A DHCP-style rule sets both port lists.
 type Rule struct {
-	Group       Group          `json:"group"`
-	Kind        Kind           `json:"kind"`
-	Dir         Direction      `json:"dir"`
-	Action      Action         `json:"action"`
-	Proto       string         `json:"proto,omitempty"` // tcp | udp | icmp | icmpv6; empty: any
-	LocalPorts  []uint16       `json:"local_ports,omitempty"`
-	RemotePorts []uint16       `json:"remote_ports,omitempty"`
-	Peers       []netip.Prefix `json:"peers,omitempty"`
-	Approx      bool           `json:"approx,omitempty"`    // a peer is the whole segment because the host address is DHCP
-	Log         bool           `json:"log,omitempty"`       // NFLOG the packets this rule matches
-	LogGroup    uint16         `json:"log_group,omitempty"` // NFLOG group when Log is set
-	Service     string         `json:"service,omitempty"`
-	Comment     string         `json:"comment,omitempty"`
+	Group       Group     `json:"group"`
+	Kind        Kind      `json:"kind"`
+	Dir         Direction `json:"dir"`
+	Action      Action    `json:"action"`
+	Proto       string    `json:"proto,omitempty"` // tcp | udp | icmp | icmpv6; empty: any
+	LocalPorts  []uint16  `json:"local_ports,omitempty"`
+	RemotePorts []uint16  `json:"remote_ports,omitempty"`
+	// LocalRanges and RemoteRanges are inclusive port ranges, additional to
+	// the port lists ("49152-65535" in JSON).
+	LocalRanges  []manifest.PortRange `json:"local_ranges,omitempty"`
+	RemoteRanges []manifest.PortRange `json:"remote_ranges,omitempty"`
+	Peers        []netip.Prefix       `json:"peers,omitempty"`
+	Approx       bool                 `json:"approx,omitempty"`    // a peer is the whole segment because the host address is DHCP
+	Log          bool                 `json:"log,omitempty"`       // NFLOG the packets this rule matches
+	LogGroup     uint16               `json:"log_group,omitempty"` // NFLOG group when Log is set
+	Service      string               `json:"service,omitempty"`
+	Comment      string               `json:"comment,omitempty"`
 }
 
 // HostPolicy is the complete host firewall intent for one host.
@@ -145,6 +152,7 @@ func BuildHostPolicy(m *manifest.Manifest, name string) (*HostPolicy, error) {
 	b.canary()
 	b.dependencies()
 	b.egress()
+	b.domain()
 	b.services()
 	b.decoys()
 	return hp, nil
@@ -333,7 +341,8 @@ func (b *builder) dependencies() {
 				proto = "tcp"
 			}
 			b.add(Rule{Group: GroupDependency, Kind: KindDependency, Dir: Out, Action: Accept, Proto: proto,
-				RemotePorts: sorted(d.Ports), Peers: []netip.Prefix{p}, Approx: ap, Service: id,
+				RemotePorts: sorted(d.Ports), RemoteRanges: manifest.SortRanges(manifest.MustPortRanges(d.PortRanges)),
+				Peers: []netip.Prefix{p}, Approx: ap, Service: id,
 				Comment: fmt.Sprintf("%s: %s -> %s", id, d.Egress, d.To)})
 		}
 	}
@@ -359,7 +368,8 @@ func (b *builder) egress() {
 			proto = "tcp"
 		}
 		b.add(Rule{Group: GroupEgress, Kind: KindEgress, Dir: Out, Action: Accept, Proto: proto,
-			RemotePorts: sorted(a.Ports), Peers: []netip.Prefix{p}, Approx: ap, Comment: a.Reason})
+			RemotePorts: sorted(a.Ports), RemoteRanges: manifest.SortRanges(manifest.MustPortRanges(a.PortRanges)),
+			Peers: []netip.Prefix{p}, Approx: ap, Comment: a.Reason})
 	}
 }
 
@@ -370,10 +380,13 @@ func (b *builder) services() {
 			continue // a stopped service needs no listener rule (the lint rejects it when scored)
 		}
 		byProto := map[string][]uint16{}
+		byRange := map[string][]manifest.PortRange{}
 		var srcs []netip.Prefix
 		restricted := false
 		for _, l := range s.Listen {
-			byProto[l.Proto] = append(byProto[l.Proto], l.Port)
+			ps := l.PortSet()
+			byProto[l.Proto] = append(byProto[l.Proto], ps.Ports...)
+			byRange[l.Proto] = append(byRange[l.Proto], ps.Ranges...)
 			if len(l.Sources) > 0 {
 				restricted = true
 				for _, src := range l.Sources {
@@ -386,9 +399,9 @@ func (b *builder) services() {
 			}
 		}
 		for _, proto := range []string{"tcp", "udp"} {
-			if ports := byProto[proto]; len(ports) > 0 {
+			if ports := byProto[proto]; len(ports) > 0 || len(byRange[proto]) > 0 {
 				r := Rule{Group: GroupService, Kind: KindService, Dir: In, Action: Accept, Proto: proto,
-					LocalPorts: sorted(ports), Service: id, Comment: fmt.Sprintf("%s (%s)", id, s.Kind)}
+					LocalPorts: sorted(ports), LocalRanges: manifest.SortRanges(byRange[proto]), Service: id, Comment: fmt.Sprintf("%s (%s)", id, s.Kind)}
 				if restricted {
 					r.Peers = srcs // only reachable if the manifest says so; the lint rejects it when scored
 				}
@@ -425,4 +438,42 @@ func sorted(p []uint16) []uint16 {
 	out := slices.Clone(p)
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+// domain: a domain member may reach its DC, and a DC accepts its members, on
+// the complete AD port set (DNS, Kerberos, LDAP, SMB, RPC, NTP). Without these
+// default-deny egress silently breaks domain authentication.
+func (b *builder) domain() {
+	if dc := b.h.DomainMember; dc != "" {
+		p, ap := b.m.HostPrefix(dc)
+		for _, a := range b.m.DomainAllowances(dc) {
+			b.add(Rule{Group: GroupDomain, Kind: KindDomain, Dir: Out, Action: Accept, Proto: a.Proto,
+				RemotePorts: a.Ports, RemoteRanges: manifest.SortRanges(a.Ranges), Peers: []netip.Prefix{p}, Approx: ap,
+				Comment: a.Comment + " (" + dc + ")"})
+		}
+	}
+	if !b.h.IsDomainController() {
+		return
+	}
+	members := b.m.DomainMembers(b.name)
+	if len(members) == 0 {
+		return
+	}
+	var peers []netip.Prefix
+	approx := false
+	seen := map[netip.Prefix]bool{}
+	for _, mn := range members {
+		p, ap := b.m.HostPrefix(mn)
+		approx = approx || ap
+		if !seen[p] {
+			seen[p] = true
+			peers = append(peers, p)
+		}
+	}
+	sort.Slice(peers, func(i, j int) bool { return peers[i].String() < peers[j].String() })
+	for _, a := range b.m.DomainAllowances(b.name) {
+		b.add(Rule{Group: GroupDomain, Kind: KindDomain, Dir: In, Action: Accept, Proto: a.Proto,
+			LocalPorts: a.Ports, LocalRanges: manifest.SortRanges(a.Ranges), Peers: peers, Approx: approx,
+			Comment: a.Comment + " (members: " + strings.Join(members, ", ") + ")"})
+	}
 }

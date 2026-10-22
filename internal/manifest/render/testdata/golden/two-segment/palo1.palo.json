@@ -162,6 +162,58 @@
       "comment": "ICMP stays on every device (ping is scored); no zone protection that drops ping"
     },
     {
+      "name": "phylax-domain-mail-to-dc",
+      "phase": "domain",
+      "from_zone": "dmz",
+      "to_zone": "corp",
+      "sources": [
+        {
+          "host": "mail",
+          "value": "10.10.2.20/32"
+        }
+      ],
+      "destinations": [
+        {
+          "host": "dc",
+          "value": "10.10.1.10/32"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            53,
+            88,
+            135,
+            389,
+            445,
+            464,
+            636,
+            3268,
+            3269
+          ],
+          "ranges": [
+            "50000-50199"
+          ]
+        },
+        {
+          "proto": "udp",
+          "ports": [
+            53,
+            88,
+            123,
+            389,
+            464
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "domain auth: mail is a member of dc (DNS, Kerberos, LDAP, SMB, RPC, NTP)"
+    },
+    {
       "name": "phylax-egress-deny-servers",
       "phase": "egress",
       "from_zone": "corp",

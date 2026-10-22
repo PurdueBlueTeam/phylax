@@ -37,8 +37,9 @@ type Endpoint struct {
 
 // ServiceSpec is protocol and ports.
 type ServiceSpec struct {
-	Proto string   `json:"proto"` // tcp | udp | icmp
-	Ports []uint16 `json:"ports,omitempty"`
+	Proto  string               `json:"proto"` // tcp | udp | icmp
+	Ports  []uint16             `json:"ports,omitempty"`
+	Ranges []manifest.PortRange `json:"ranges,omitempty"` // inclusive port ranges ("lo-hi" in JSON)
 }
 
 // ---- Palo Alto ----
@@ -214,6 +215,8 @@ func PaloIntents(m *manifest.Manifest, device string) (*PaloIntent, error) {
 		})
 	}
 
+	paloDomain(m, pi, inGuard)
+
 	// Egress: servers are denied to the outside (logged for the 30 s deny pull),
 	// except explicit allowances. Workstations have PAT access and are not listed.
 	var servers []Endpoint
@@ -239,7 +242,7 @@ func PaloIntents(m *manifest.Manifest, device string) (*PaloIntent, error) {
 		}
 		pi.Rules = append(pi.Rules, PaloRule{
 			Name: fmt.Sprintf("phylax-egress-allow-%d", i+1), Phase: "egress", FromZone: pi.InsideZone, ToZone: pi.OutsideZone,
-			Sources: src, Destinations: []Endpoint{{Value: a.To}}, Services: []ServiceSpec{{Proto: proto, Ports: sorted(a.Ports)}},
+			Sources: src, Destinations: []Endpoint{{Value: a.To}}, Services: []ServiceSpec{{Proto: proto, Ports: sorted(a.Ports), Ranges: manifest.SortRanges(manifest.MustPortRanges(a.PortRanges))}},
 			Action: "allow", LogEnd: true, Commit: CommitPolicy, Risk: RiskService, Comment: a.Reason,
 		})
 	}
@@ -268,35 +271,102 @@ func controllerEndpoint(m *manifest.Manifest) Endpoint {
 
 // serviceSpecs groups the host's enabled scored listeners by protocol.
 func serviceSpecs(m *manifest.Manifest, host string) []ServiceSpec {
-	by := map[string][]uint16{}
+	by := map[string]*manifest.Ports{}
 	for _, id := range m.ServicesOn(host) {
 		s := m.Services[id]
 		if !s.Scored || !s.IsServiceEnabled() {
 			continue
 		}
 		for _, l := range s.Listen {
-			by[l.Proto] = append(by[l.Proto], l.Port)
+			addPorts(by, l.Proto, l.PortSet())
 		}
 	}
 	return specs(by)
+}
+
+func addPorts(by map[string]*manifest.Ports, proto string, ps manifest.Ports) {
+	p := by[proto]
+	if p == nil {
+		p = &manifest.Ports{}
+		by[proto] = p
+	}
+	p.Ports = append(p.Ports, ps.Ports...)
+	p.Ranges = append(p.Ranges, ps.Ranges...)
 }
 
 func decoySpecs(m *manifest.Manifest, host string) []ServiceSpec {
-	by := map[string][]uint16{}
+	by := map[string]*manifest.Ports{}
 	for _, l := range m.Decoys[host].Listeners {
-		by["tcp"] = append(by["tcp"], l.Port)
+		addPorts(by, "tcp", manifest.Ports{Ports: []uint16{l.Port}})
 	}
 	return specs(by)
 }
 
-func specs(by map[string][]uint16) []ServiceSpec {
+func specs(by map[string]*manifest.Ports) []ServiceSpec {
 	var out []ServiceSpec
 	for _, proto := range []string{"tcp", "udp"} {
-		if p := by[proto]; len(p) > 0 {
-			out = append(out, ServiceSpec{Proto: proto, Ports: sorted(p)})
+		if p := by[proto]; p != nil && (len(p.Ports) > 0 || len(p.Ranges) > 0) {
+			out = append(out, ServiceSpec{Proto: proto, Ports: sorted(p.Ports), Ranges: manifest.SortRanges(p.Ranges)})
 		}
 	}
 	return out
+}
+
+// domainSpecs is the member-to-DC service set as device service specs.
+func domainSpecs(m *manifest.Manifest, dc string) []ServiceSpec {
+	var out []ServiceSpec
+	for _, a := range m.DomainAllowances(dc) {
+		out = append(out, ServiceSpec{Proto: a.Proto, Ports: a.Ports, Ranges: manifest.SortRanges(a.Ranges)})
+	}
+	return out
+}
+
+// domainPair is a member and its DC in different segments.
+type domainPair struct{ member, dc string }
+
+// crossSegmentDomain lists member/DC pairs whose hosts are in different segments.
+func crossSegmentDomain(m *manifest.Manifest) []domainPair {
+	var out []domainPair
+	for _, hn := range manifest.SortedKeys(m.Hosts) {
+		h := m.Hosts[hn]
+		if h.DomainMember != "" && m.Hosts[h.DomainMember].Segment != h.Segment {
+			out = append(out, domainPair{hn, h.DomainMember})
+		}
+	}
+	return out
+}
+
+// paloDomain adds member-to-DC rules for pairs that cross this Palo: both
+// segments behind it (zone to zone) or one behind it and one outside (inside
+// to outside, or outside to inside with the DC's public address if it has one).
+// The rule sits before the egress deny so default-deny never cuts domain auth.
+func paloDomain(m *manifest.Manifest, pi *PaloIntent, inGuard map[string]bool) {
+	for _, p := range crossSegmentDomain(m) {
+		mh, dh := m.Hosts[p.member], m.Hosts[p.dc]
+		mIn, dIn := inGuard[mh.Segment], inGuard[dh.Segment]
+		if !mIn && !dIn {
+			continue
+		}
+		from, to := mh.Segment, dh.Segment
+		switch {
+		case mIn && !dIn:
+			to = pi.OutsideZone
+		case !mIn && dIn:
+			from = pi.OutsideZone
+		}
+		mp, mAp := m.HostPrefix(p.member)
+		dp, dAp := m.HostPrefix(p.dc)
+		dst := Endpoint{Host: p.dc, Value: dp.String(), Approx: dAp}
+		if !mIn && dIn && dh.Public != "" {
+			dst = Endpoint{Host: p.dc, Value: dh.Public}
+		}
+		pi.Rules = append(pi.Rules, PaloRule{
+			Name: "phylax-domain-" + p.member + "-to-" + p.dc, Phase: "domain", FromZone: from, ToZone: to,
+			Sources: []Endpoint{{Host: p.member, Value: mp.String(), Approx: mAp}}, Destinations: []Endpoint{dst},
+			Services: domainSpecs(m, p.dc), Action: "allow", LogEnd: true, Commit: CommitPolicy, Risk: RiskService,
+			Comment: "domain auth: " + p.member + " is a member of " + p.dc + " (DNS, Kerberos, LDAP, SMB, RPC, NTP)",
+		})
+	}
 }
 
 // CheckPalo verifies the Palo intent against the scoring rules: scored ports
@@ -445,6 +515,21 @@ func VyOSIntents(m *manifest.Manifest, device string) (*VyOSIntent, error) {
 			})
 		}
 	}
+	for _, p := range crossSegmentDomain(m) {
+		ms, ds := m.Hosts[p.member].Segment, m.Hosts[p.dc].Segment
+		if m.Topology.Segments[ms].Firewall != device && m.Topology.Segments[ds].Firewall != device {
+			continue
+		}
+		mp, mAp := m.HostPrefix(p.member)
+		dp, dAp := m.HostPrefix(p.dc)
+		vi.Firewall = append(vi.Firewall, VyOSRule{
+			Rule: next(), Action: "accept",
+			Source:      []Endpoint{{Host: p.member, Value: mp.String(), Approx: mAp}},
+			Destination: []Endpoint{{Host: p.dc, Value: dp.String(), Approx: dAp}},
+			Services:    domainSpecs(m, p.dc),
+			Description: ManagedTag + ": domain auth, " + p.member + " to its DC " + p.dc, Risk: RiskService,
+		})
+	}
 	if d.Via != "" || d.Mgmt != "" {
 		src := controllerEndpoint(m)
 		if d.Proxy != "" {
@@ -466,7 +551,8 @@ func CheckVyOS(m *manifest.Manifest, vi *VyOSIntent) []manifest.Finding {
 		if r.Action == "accept" && len(r.Services) == 1 && r.Services[0].Proto == "icmp" && len(r.Source) == 0 {
 			icmp = true
 		}
-		if len(r.Source) > 0 && len(r.Destination) > 0 && r.Destination[0].Host != m.ControllerHost() {
+		if len(r.Source) > 0 && len(r.Destination) > 0 && r.Destination[0].Host != m.ControllerHost() &&
+			m.Hosts[r.Source[0].Host].DomainMember != r.Destination[0].Host {
 			out = append(out, manifest.Finding{ID: RuleScoredPort, Severity: manifest.SevError, Subject: subj,
 				Message: fmt.Sprintf("rule %d restricts a scored destination by source", r.Rule)})
 		}
