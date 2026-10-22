@@ -1,0 +1,308 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"runtime/debug"
+	"sync"
+	"time"
+
+	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/link"
+)
+
+// Emit hands one event to the agent. It never blocks on the network: events go
+// to the local spool, so a down link cannot stall a sensor. A non-nil error
+// (rate limited, shed, spool full) means the event was dropped; the spool
+// announces shedding with gap records and the supervisor counts the rest.
+type Emit func(event.Event) error
+
+// Module is one supervised unit of agent functionality.
+type Module interface {
+	Name() string
+	// Start runs the module until ctx is cancelled (return nil or ctx.Err()) or
+	// it fails. A returned error or a panic is a crash and is restarted with
+	// backoff. A nil return while ctx is live means the module finished and
+	// will not be restarted.
+	Start(ctx context.Context, emit Emit) error
+}
+
+// Module states reported in heartbeats and health events.
+const (
+	StateStarting   = "starting"
+	StateRunning    = "ok"
+	StateRestarting = "restarting"
+	StateStopped    = "stopped"
+	StateOverBudget = "over_budget"
+)
+
+// ModuleStatus is a snapshot of one module.
+type ModuleStatus struct {
+	State       string
+	Restarts    int
+	LastError   string
+	Emitted     uint64
+	RateDropped uint64 // dropped by the module's rate limit
+	SpoolDrops  uint64 // refused by the spool (shed/full)
+	DownSince   time.Time
+}
+
+// ModuleSpec registers a module with limits.
+type ModuleSpec struct {
+	Module Module
+	// Rate is the sustained events/second allowed (0 = unlimited); Burst is the
+	// bucket size (default max(1, Rate)). Over the limit events are dropped and
+	// counted, never blocking the module.
+	Rate  float64
+	Burst int
+}
+
+// Budget is the memory/CPU budget hook. It is polled every SupervisorOptions.
+// BudgetInterval for each running module; a non-nil error stops the module,
+// which is then restarted after backoff (state over_budget meanwhile).
+type Budget func(module string) error
+
+// SupervisorOptions tune restart behaviour.
+type SupervisorOptions struct {
+	Emit           Emit // required: the unlimited underlying emitter
+	Logger         *slog.Logger
+	Backoff        link.Backoff  // default 1s..60s
+	StableAfter    time.Duration // a run this long resets the backoff (default 30s)
+	Budget         Budget
+	BudgetInterval time.Duration // default 5s
+	sleep          func(time.Duration) <-chan time.Time
+}
+
+// Supervisor runs modules as goroutines with panic recovery and exponential
+// restart backoff.
+type Supervisor struct {
+	o  SupervisorOptions
+	mu sync.Mutex
+	ms map[string]*modState
+	wg sync.WaitGroup
+}
+
+type modState struct {
+	spec   ModuleSpec
+	status ModuleStatus
+	bucket bucket
+}
+
+// NewSupervisor creates a supervisor; add modules with Add before Run.
+func NewSupervisor(o SupervisorOptions) *Supervisor {
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+	if o.Backoff.Min == 0 {
+		o.Backoff.Min = time.Second
+	}
+	if o.Backoff.Max == 0 {
+		o.Backoff.Max = time.Minute
+	}
+	if o.StableAfter == 0 {
+		o.StableAfter = 30 * time.Second
+	}
+	if o.BudgetInterval == 0 {
+		o.BudgetInterval = 5 * time.Second
+	}
+	if o.sleep == nil {
+		o.sleep = time.After
+	}
+	return &Supervisor{o: o, ms: map[string]*modState{}}
+}
+
+// Add registers a module. Names must be unique.
+func (s *Supervisor) Add(spec ModuleSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := spec.Module.Name()
+	if _, dup := s.ms[n]; dup {
+		return fmt.Errorf("agent: duplicate module %q", n)
+	}
+	burst := spec.Burst
+	if burst <= 0 {
+		burst = max(1, int(spec.Rate))
+	}
+	s.ms[n] = &modState{spec: spec, status: ModuleStatus{State: StateStarting}, bucket: newBucket(spec.Rate, burst)}
+	return nil
+}
+
+// Run starts every module and blocks until ctx is cancelled and all have exited.
+func (s *Supervisor) Run(ctx context.Context) {
+	s.mu.Lock()
+	var names []string
+	for n := range s.ms {
+		names = append(names, n)
+	}
+	s.mu.Unlock()
+	for _, n := range names {
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.supervise(ctx, n) }()
+	}
+	s.wg.Wait()
+}
+
+// Snapshot returns every module's status.
+func (s *Supervisor) Snapshot() map[string]ModuleStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]ModuleStatus, len(s.ms))
+	for n, m := range s.ms {
+		out[n] = m.status
+	}
+	return out
+}
+
+// States returns module name to state, for heartbeats.
+func (s *Supervisor) States() map[string]string {
+	out := map[string]string{}
+	for n, st := range s.Snapshot() {
+		out[n] = st.State
+	}
+	return out
+}
+
+func (s *Supervisor) update(name string, f func(*modState)) {
+	s.mu.Lock()
+	f(s.ms[name])
+	s.mu.Unlock()
+}
+
+// limited wraps emit with the module's token bucket and counters.
+func (s *Supervisor) limited(name string) Emit {
+	return func(e event.Event) error {
+		s.mu.Lock()
+		m := s.ms[name]
+		if !m.bucket.take() {
+			m.status.RateDropped++
+			s.mu.Unlock()
+			return ErrRateLimited
+		}
+		s.mu.Unlock()
+		err := s.o.Emit(e)
+		s.mu.Lock()
+		if err != nil {
+			m.status.SpoolDrops++
+		} else {
+			m.status.Emitted++
+		}
+		s.mu.Unlock()
+		return err
+	}
+}
+
+func (s *Supervisor) supervise(ctx context.Context, name string) {
+	s.mu.Lock()
+	mod := s.ms[name].spec.Module
+	s.mu.Unlock()
+	bo := s.o.Backoff
+	for ctx.Err() == nil {
+		started := time.Now()
+		s.update(name, func(m *modState) { m.status.State, m.status.DownSince = StateRunning, time.Time{} })
+		err, overBudget := s.runOnce(ctx, name, mod)
+		if ctx.Err() != nil {
+			break
+		}
+		if err == nil && !overBudget {
+			s.update(name, func(m *modState) { m.status.State = StateStopped })
+			return
+		}
+		if time.Since(started) >= s.o.StableAfter {
+			bo.Reset()
+		}
+		state := StateRestarting
+		if overBudget {
+			state = StateOverBudget
+		}
+		d := bo.Next()
+		s.update(name, func(m *modState) {
+			m.status.State, m.status.LastError = state, err.Error()
+			m.status.Restarts++
+			m.status.DownSince = time.Now()
+		})
+		s.o.Logger.Warn("module crashed", "module", name, "err", err, "restart_in", d)
+		s.crashEvent(name, err, d)
+		select {
+		case <-s.o.sleep(d):
+		case <-ctx.Done():
+		}
+	}
+	s.update(name, func(m *modState) { m.status.State = StateStopped })
+}
+
+func (s *Supervisor) crashEvent(name string, err error, d time.Duration) {
+	_ = s.o.Emit(event.Event{Kind: "agent.module_crash", Priority: event.PriorityHigh,
+		Fields: map[string]any{"module": name, "error": err.Error(), "restart_in_ms": d.Milliseconds()}})
+}
+
+// runOnce runs the module with panic recovery and the budget watcher.
+func (s *Supervisor) runOnce(ctx context.Context, name string, mod Module) (err error, overBudget bool) {
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var budgetErr error
+	var bmu sync.Mutex
+	if s.o.Budget != nil {
+		go func() {
+			t := time.NewTicker(s.o.BudgetInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					if e := s.o.Budget(name); e != nil {
+						bmu.Lock()
+						budgetErr = e
+						bmu.Unlock()
+						cancel()
+						return
+					}
+				case <-rctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+			}
+		}()
+		err = mod.Start(rctx, s.limited(name))
+	}()
+	bmu.Lock()
+	defer bmu.Unlock()
+	if budgetErr != nil && ctx.Err() == nil {
+		return fmt.Errorf("over budget: %w", budgetErr), true
+	}
+	if err == context.Canceled && ctx.Err() != nil {
+		err = nil
+	}
+	return err, false
+}
+
+// ErrRateLimited is returned by Emit when a module exceeds its rate limit.
+var ErrRateLimited = fmt.Errorf("agent: module rate limit exceeded")
+
+type bucket struct {
+	rate, burst, tokens float64
+	last                time.Time
+}
+
+func newBucket(rate float64, burst int) bucket {
+	return bucket{rate: rate, burst: float64(burst), tokens: float64(burst), last: time.Now()}
+}
+
+func (b *bucket) take() bool {
+	if b.rate <= 0 {
+		return true
+	}
+	now := time.Now()
+	b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
