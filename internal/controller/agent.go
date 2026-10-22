@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"sync"
@@ -82,6 +83,7 @@ type agentConn struct {
 	sess  *link.Session
 	ready chan struct{}              // closed once hello was accepted
 	stp   atomic.Pointer[agentState] // set by hello; read after Run without other synchronisation
+	pub   *ecdsa.PublicKey           // the peer's key (its pin was matched at enrollment); verifies step results
 }
 
 func (c *Controller) handleAgent(ctx context.Context, conn *link.Conn) {
@@ -148,8 +150,11 @@ func (a *agentConn) handle(ctx context.Context, m link.Message) error {
 		return a.heartbeat(v)
 	case *link.Events:
 		return a.events(ctx, v)
+	case *link.StepResult:
+		a.c.onStepResult(a, st.host, v)
+		return nil
 	default:
-		// step_result, chunk, chunk_have: handled by later milestones.
+		// chunk, chunk_have: handled by later milestones.
 		a.c.log.Debug("ignored message", "host", st.host, "type", m.MsgType().String())
 		return nil
 	}
@@ -161,6 +166,9 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		return fmt.Errorf("unsupported protocol %d", h.Proto) // closed without welcome
 	}
 	pin := a.conn.Peer
+	if pcs := a.conn.ConnectionState().PeerCertificates; len(pcs) > 0 {
+		a.pub, _ = pcs[0].PublicKey.(*ecdsa.PublicKey)
+	}
 	enrolled, err := c.authorize(ctx, h, pin)
 	if err != nil {
 		return err
@@ -192,6 +200,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		return err
 	}
 	close(a.ready)
+	go c.resume(h.Host)
 	c.log.Info("agent connected", "host", h.Host, "version", h.Version, "enrolled_now", enrolled, "acked", ag.LastSeq, "agent_last_seq", h.LastSeq)
 	return nil
 }

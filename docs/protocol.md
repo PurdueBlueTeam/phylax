@@ -149,6 +149,19 @@ verification, RFC 8785 canonicalisation, plan id and `(epoch, seq)`
 monotonicity are enforced by the executor, not the transport. `step.secrets`
 holds only this host's secrets.
 
+### Plan steps on the wire
+
+The link messages carry the signed `plan.Step` opaquely. `step`: `plan`, `node`,
+`host`, `epoch`, `seq`, `action`, `phase`, `deadman`, `sig` (base64) are copies
+for routing and logs; `params` holds the complete wire-encoded `plan.Step`
+(signed body, secrets, signature), and the agent refuses a step whose copies do
+not match the signed body. `step_result`: `status` is the outcome
+(`checked|applied|verified|failed|rolled_back`, or the unsigned `rejected` for a
+step refused before verification); `after` is the signed `plan.StepResult`
+(ECDSA P-256, the agent's identity key); `before` is an optional detail object
+(diff, notes) whose SHA-256 is the signed `after_digest`. `control`
+`deadman_confirm` args: `{"id"}` or `{"plan","node"}`.
+
 ### Inbound types per role
 
 - Controller receives: `hello`, `heartbeat`, `events`, `step_result`, `chunk`, `chunk_have`, `ack`.
