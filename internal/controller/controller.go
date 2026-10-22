@@ -62,6 +62,9 @@ type Options struct {
 	// agents of its nodes to reconnect before it fails applies for absent
 	// hosts (default StepTimeout).
 	ResumeGrace time.Duration
+	// Vault holds the honeytoken secret material (deception_registry.go).
+	// Nil disables honeytoken generation; plans never carry secrets either way.
+	Vault SecretVault
 }
 
 const alertRing = 256
@@ -88,7 +91,11 @@ type Controller struct {
 	pend    map[stepKey]*pending
 	ctlMu   sync.Mutex // serialises control signing and queueing
 	closed  atomic.Bool
-	cfgs    cfgState // agent config generation (agentconfig.go)
+	cfgs    cfgState                // agent config generation (agentconfig.go)
+	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
+
+	honey    honeyState // honeytoken registry (deception_registry.go)
+	honeyGen sync.Mutex // serialises GenerateHoneytokens
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -136,6 +143,10 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
 	if err := c.loadConfigRecs(); err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err := c.loadHoneytokens(ctx); err != nil {
 		st.Close()
 		return nil, err
 	}

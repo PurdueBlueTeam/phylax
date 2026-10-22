@@ -1,0 +1,64 @@
+# Decoys and honeytokens (design: Deception). The decoy listeners themselves
+# need no step: the decoys role plus decoys.yml put a `deception` section in the
+# host's signed agent config, and the agent starts the listeners (an
+# unprivileged child process) when it applies it. This plan verifies the
+# listeners and plants the bait.
+#
+# The per-token nodes depend on values generated at competition time (token ids,
+# paths, vault references), so the controller builds the real plan from this
+# shape: Controller.DeceptionPlan generates the missing tokens from decoys.yml
+# and emits one `plant.<token>` node per planting step. The two plant nodes
+# below are that node shape with example ids; they are what the template
+# validation checks.
+#
+# Secrets: file.plant and ad.honey_account take no secret value in params. A
+# node lists `secret_params` and `secret_refs` (param -> vault entry under
+# honeytoken/); the controller resolves the entries when it issues the step.
+# file.plant with only_if_absent never replaces an existing file.
+id: deception.deploy
+name: Deploy decoys and honeytokens
+on_failure: continue
+scoring_note: Decoys never sit on a scored port (enforced by the manifest lint, the controller config and the agent). Honey files are planted only where absent.
+vars:
+  decoy_hosts: [rocky-ecom, ubuntu-email]
+  decoy_ports: ["5985", "3389"]
+  token: ht-example
+  honey_path: /root/.aws/credentials
+  dc: win-dc
+  ad_name: svc_sql07
+  ad_ou: "OU=Decoys,DC=corp,DC=example"
+  ad_spn: "MSSQLSvc/sql07.corp.example:1433"
+nodes:
+  - id: approve-deception
+    gate: true
+    note: Review decoy ports (never a scored port) and honey file paths. Planting never replaces an existing file.
+  - id: decoys-up
+    action: deception.decoy_check
+    target: ${host}
+    each: decoy_hosts
+    needs: [approve-deception]
+    params: {ports: "${decoy_ports}", wait_sec: 30}
+  - id: plant-example
+    action: file.plant
+    target: rocky-ecom
+    needs: [approve-deception]
+    params:
+      path: ${honey_path}
+      mode: "0600"
+      only_if_absent: true
+      secret_params: [content]
+      secret_refs: {content: "honeytoken/${token}/content"}
+    note: One node per planted token (ids, paths and refs come from the generated registry).
+  - id: honey-account-example
+    action: ad.honey_account
+    target: ${dc}
+    needs: [approve-deception]
+    params:
+      name: ${ad_name}
+      ou: ${ad_ou}
+      spn: ${ad_spn}
+      description: Service account
+      logon_rights: none
+      secret_params: [password]
+      secret_refs: {password: "honeytoken/${token}/password"}
+    note: Requires the AD layer on the DC agent (ad.honey_account has no backend until it is bound). Audit 4768/4769/4771/4776 must be on.

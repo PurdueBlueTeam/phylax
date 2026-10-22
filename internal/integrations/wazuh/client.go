@@ -79,6 +79,14 @@ type Agent struct {
 	Groups        []string `json:"group"`
 }
 
+// Group is a Wazuh agent group as listed by GET /groups.
+type Group struct {
+	Name      string `json:"name"`
+	Count     int    `json:"count"`
+	MergedSum string `json:"mergedSum,omitempty"`
+	ConfigSum string `json:"configSum,omitempty"`
+}
+
 // Health is the result of a health check.
 type Health struct {
 	ManagerVersion Version
@@ -186,6 +194,29 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 		q := url.Values{"limit": {fmt.Sprint(page)}, "offset": {fmt.Sprint(off)},
 			"select": {"id,name,ip,version,status,lastKeepAlive,group"}}
 		if err := c.apiGet(ctx, "/agents?"+q.Encode(), &r); err != nil {
+			return nil, err
+		}
+		all = append(all, r.Data.Items...)
+		if len(all) >= r.Data.Total || len(r.Data.Items) == 0 {
+			break
+		}
+	}
+	return all, nil
+}
+
+// Groups lists agent groups with their agent counts (paged, bounded at 5000).
+func (c *Client) Groups(ctx context.Context) ([]Group, error) {
+	var all []Group
+	const page = 500
+	for off := 0; off < 5000; off += page {
+		var r struct {
+			Data struct {
+				Items []Group `json:"affected_items"`
+				Total int     `json:"total_affected_items"`
+			} `json:"data"`
+		}
+		q := url.Values{"limit": {fmt.Sprint(page)}, "offset": {fmt.Sprint(off)}}
+		if err := c.apiGet(ctx, "/groups?"+q.Encode(), &r); err != nil {
 			return nil, err
 		}
 		all = append(all, r.Data.Items...)

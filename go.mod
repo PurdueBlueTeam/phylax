@@ -12,6 +12,7 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.3
 	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
+	github.com/microsoft/go-mssqldb v1.9.8
 	github.com/ulikunitz/xz v0.5.17
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
@@ -25,6 +26,8 @@ require (
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/elastic/go-licenser v0.4.1 // indirect
+	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
+	github.com/golang-sql/sqlexp v0.1.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
@@ -33,7 +36,9 @@ require (
 	github.com/mdlayher/socket v0.5.0 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

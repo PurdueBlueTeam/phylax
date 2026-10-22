@@ -1,11 +1,15 @@
 id: fh.mssql.baseline
 name: MSSQL baseline
 on_failure: continue
-scoring_note: Leaves the login the 1433 check uses.
+scoring_note: Leaves the login and database the 1433 check uses; never forces encryption; every change has rollback data.
 vars:
   sql: win-sql
 nodes:
-  - {id: version, action: sql.query, target: "${sql}", params: {engine: mssql, statement: "SELECT @@VERSION"}}
-  - {id: xp-cmdshell-off, action: sql.query, target: "${sql}", needs: [version], params: {engine: mssql, statement: "EXEC sp_configure 'xp_cmdshell',0; RECONFIGURE"}}
-  - {id: trim-sysadmins, action: sql.query, target: "${sql}", needs: [xp-cmdshell-off], params: {engine: mssql, statement: review_sysadmins}}
-  - {id: review-linked, action: sql.query, target: "${sql}", needs: [trim-sysadmins], params: {engine: mssql, statement: review_linked_servers_and_agent_jobs}}
+  - {id: version, action: sql.query, target: "${sql}", params: {engine: mssql, statement: version}}
+  - {id: audit, action: mssql.audit, target: "${sql}", needs: [version]}
+  - {id: features-off, action: mssql.lock, target: "${sql}", needs: [audit], params: {features: [xp_cmdshell, ole_automation, clr]}}
+  # Trim sysadmin members and weak logins only after reviewing the audit output; the scoring guard
+  # protects the scored login, and sweeps (sysadmin_sweep, disable_unscored) are left to the operator.
+  - {id: review-sysadmins, action: sql.query, target: "${sql}", needs: [features-off], params: {engine: mssql, statement: review_sysadmins}}
+  - {id: review-weak-logins, action: sql.query, target: "${sql}", needs: [features-off], params: {engine: mssql, statement: weak_logins}}
+  - {id: review-linked, action: sql.query, target: "${sql}", needs: [features-off], params: {engine: mssql, statement: review_linked_servers_and_agent_jobs}}

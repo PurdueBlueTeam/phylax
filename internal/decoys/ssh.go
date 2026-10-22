@@ -38,9 +38,12 @@ func sshHostKey() (ssh.Signer, error) {
 // or key, and gives a fake shell. Exec requests are answered by the fake shell
 // too: nothing is run.
 func (m *Module) serveSSH(ctx context.Context, s *sess, c net.Conn) {
-	signer, err := sshHostKey()
-	if err != nil {
-		return
+	signer := m.cfg.HostKey
+	if signer == nil {
+		var err error
+		if signer, err = sshHostKey(); err != nil {
+			return
+		}
 	}
 	banners := pools.Lines("ssh_banners.txt")
 	banner := strings.TrimPrefix(banners[m.bannerIdx%len(banners)], "SSH-2.0-")

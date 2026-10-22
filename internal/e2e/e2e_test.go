@@ -177,6 +177,7 @@ type harness struct {
 	hosts map[string]*testHost
 
 	m         *manifest.Manifest
+	vault     controller.SecretVault // optional (deception tests)
 	cfg       controller.Config
 	stopServe context.CancelFunc
 	served    chan error
@@ -269,6 +270,7 @@ func (h *harness) startController() {
 	c, err := controller.New(context.Background(), h.cfg, controller.Options{
 		Logger:      quiet(),
 		Registry:    newRegistry(),
+		Vault:       h.vault,
 		StepTimeout: 4 * time.Second,
 		ResumeGrace: 6 * time.Second,
 		// The controller lints only h1: h2's scored service is left to the

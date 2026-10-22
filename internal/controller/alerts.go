@@ -68,6 +68,7 @@ func (c *Controller) recordAgentAlert(ctx context.Context, e event.Event) error 
 			}
 		}
 	}
+	c.attributeHoneytoken(e, &k)
 	raw, err := json.Marshal(k)
 	if err != nil {
 		return err

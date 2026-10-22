@@ -67,7 +67,7 @@ func init() {
 type splunkREST struct{}
 
 func (splunkREST) Spec() Spec {
-	return Spec{Name: "splunk.rest", Risk: RiskNone, ReadOnly: true,
+	return Spec{Name: "splunk.rest", Runs: RunsController, Risk: RiskNone, ReadOnly: true,
 		Doc:    "Read-only splunkd REST GET (apps, inputs, users) for review. Search job endpoints are refused.",
 		Params: []ParamSpec{{Name: "path", Type: String, Required: true, Max: 512, Check: checkRESTPath}}}
 }
@@ -131,7 +131,7 @@ func redactSplunk(s string) string { return secretJSON.ReplaceAllString(s, `$1"<
 type splunkPassword struct{}
 
 func (splunkPassword) Spec() Spec {
-	return Spec{Name: "splunk.password", Risk: RiskLockout,
+	return Spec{Name: "splunk.password", Runs: RunsController, Risk: RiskLockout,
 		Doc: "Change a Splunk local user's password; proves the new password with a fresh login. Scored users change only in a PCR transaction.",
 		Params: []ParamSpec{
 			{Name: "user", Type: String, Required: true, Max: 128, Check: func(v any) error {
@@ -212,7 +212,7 @@ type hecUndo struct {
 type splunkHEC struct{}
 
 func (splunkHEC) Spec() Spec {
-	return Spec{Name: "splunk.hec_setup", Risk: RiskService,
+	return Spec{Name: "splunk.hec_setup", Runs: RunsController, Risk: RiskService,
 		Doc: "Create the phylax index and an HEC token bound to it through the management API. Existing indexes and tokens are never modified; scored indexes are refused. The token value is returned in Output secret.token for the vault.",
 		Params: []ParamSpec{
 			{Name: "index", Type: String, Required: true, Check: func(v any) error {

@@ -177,6 +177,13 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 		}
 	}
 	ctx = actions.WithTag(ctx, actions.Tag{Plan: s.PlanID, Node: s.NodeID})
+	// The step's secrets (digest signed with the step) reach the action only
+	// through its context, never through params, logs or results.
+	var serr error
+	if ctx, serr = actions.WithSecrets(ctx, s.Secrets); serr != nil {
+		a.finishStep(ctx, reply, s, plan.OutcomeFailed, serr.Error(), nil)
+		return
+	}
 	req := actions.Request{Action: s.Action, Params: params, NodeID: nodeKey(s.PlanID, s.NodeID)}
 	a.emit(event.Event{Kind: "agent.step", Priority: event.PriorityHigh, Fields: map[string]any{
 		"plan": s.PlanID, "node": s.NodeID, "phase": s.Phase, "action": s.Action, "epoch": s.Epoch, "seq": s.Seq}})

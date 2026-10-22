@@ -173,3 +173,26 @@ Sequence numbers are durable, so no number is signed twice and a change is
 never applied twice (except the `unknown` answer, which proves it was not
 accepted). `Controller.Close` stops timers; the plan stays as persisted.
 Dead-man fires while connected are not yet reconciled until the next reconnect.
+
+## Device and Splunk nodes (`dir_devices.go`, `devexec_run.go`)
+
+Plan nodes whose action starts with `palo.`, `vyos.` or `splunk.` run on the controller, not on an agent. The node's `target` is the
+device name from the manifest (or, for `splunk.*`, the Splunk host). Enable with `phylax serve -vault FILE` (needs a manifest; the
+passphrase is read from `PHYLAX_VAULT_PASSPHRASE` and cleared) or `Controller.EnableDeviceExec` in code.
+
+- `Directory` implements `actions.DeviceDirectory` and `actions.SplunkDirectory`. Credentials are read from the vault at execution
+  time (`cred/<device>/phylax` for Palo/VyOS, optional `cred/<device>/api` for the VyOS HTTP key, `cred/<splunk host>/admin` for
+  splunkd on 8089). Palo exchanges the password for an API key (kept in memory only). Adapters are pooled per device and rebuilt when the
+  vault version of the credential changes. TLS and SSH host keys are pinned (`Pins`) or trusted on first use per process. Every
+  error text passes through `Directory.Redact` before it reaches a plan result, the store or a log.
+- One lock per device (or Splunk host) serialises all node phases that touch it; nodes on different devices run concurrently.
+- No signed step or result exists for these nodes (the controller is both ends); the phase record is `signed: false`. No dead-man is
+  armed: rollback is the device protocol's (`devices.SafeChange` reverts a failed change). A `rollback` phase for an already applied device
+  node fails with an explanation (undo with a new plan). After a controller crash an apply with no result is reported failed, never re-run.
+- Dry run (`check`) runs the action's `Plan` on the controller, so the diff and the console-ack note show in the dry run.
+- `secret.*` outputs (the HEC token from `splunk.hec_setup`) are written to the vault as `out/<plan>/<node>/<name>` and appear
+  nowhere else; the node result names only the vault entry.
+- Console acknowledgement: lockout-risk device changes (`palo.permitted_ips`, `palo.apply` management scope) refuse to run without the
+  Network role confirming console access. `Controller.AckConsole(ctx, plan, node, operator)` (for the UI) and
+  `phylax plan ack-console -data-dir D -plan P -node N -operator NAME` (works while `serve` runs: it writes the store) record an audit row
+  (`plan.ack_console`); the ack covers that plan node only and is read from the audit log at execution time.

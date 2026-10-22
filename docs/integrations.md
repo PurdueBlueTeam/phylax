@@ -45,14 +45,70 @@ validates Windows plans; the backends come from `Env.Win`):
 `Path` parameters now validate platform-independently (`IsAbsPath`: POSIX, drive and UNC paths), so `file.write`
 accepts Windows paths on a Linux controller; `agentopt.set` additionally allows only `local_internal_options.conf`.
 
-Still stubs (Linux/app agent or later): `pkg.install`, `pkg.remove`, `firewall.allow` (use `win.firewall` on Windows),
-`ini.set`, `xml.set`, `web.remove_dir`, `web.rename_dir`, `kernel.module_block`, `sysctl.set`, `command.check`,
-`sql.query`, `net.http_probe`, `net.tcp_probe`, `wazuh.health`, `wazuh.capture`, `wazuh.test_alert`.
-Palo steps stay their own commits (no commit-confirm on PAN-OS).
+Palo steps stay their own commits (no commit-confirm on PAN-OS). Nothing in `plans/actions.yaml` is left: every template
+action is implemented; `sql.query` with `engine: mssql` returns `ErrUnsupported` (MSSQL is not covered by the MySQL client).
+
+### Implemented Linux and application actions (`internal/actions`, files `linux_*.go`, `app_*.go`)
+
+Backends are injected through `Env.Linux` (`LinuxEnv`): command runner (the `host.exec` escape hatch, with an
+optional hash-pinned tool list), patch-window lookup, depot directory, firewall manager, database dialer, HTTP
+client, Wazuh API factory, inode-flag backend. Every one has a fake for tests; nothing in the tests touches the
+real host.
+
+- `pkg.install`, `pkg.upgrade`, `pkg.remove`: apt/dnf via the runner only inside an open patch window, through
+  the window's loopback proxy; versions pinned; `source: depot:<path>` installs a file from the local depot after a
+  sha256 check (param or `SHA256SUMS`), re-verified right before use; dry-run shows the package manager's simulated
+  transaction; refuses removing a package that provides a scored service. Not rolled back automatically.
+- `firewall.allow`: adds or updates one tagged inbound rule in the declared host policy and installs it through the
+  firewall manager (`NftFirewall` adapts `internal/firewall`); rollback restores kernel and declared state.
+- `ini.set`, `conf.set`, `service.config`: comment- and order-preserving atomic key edits (stanza INI, `key = value`
+  with brace blocks and Postfix continuation lines, sshd-style space separated), the service's own syntax check
+  (`sshd -t`, `postfix check`, `doveconf -n`) with automatic restore of the old file on failure, and the
+  scoring-safety lint below.
+- `xml.set`: in-place element text edit at an xpath subset (`//a/b`, `[n]`, `[@a='v']`), multi-root documents,
+  comments and layout untouched; creates a missing leaf under an existing parent.
+- `sysctl.set` (runtime plus `/etc/sysctl.d/99-phylax.conf`, rollback restores both), `kernel.module_block`
+  (modprobe.d blacklist plus `install /bin/false`, unload via `delete_module`), `systemd.dropin` (allowlisted
+  settings, daemon-reload), `cockpit.disable`, `cron.disable` / `at.disable` (quarantine, never delete),
+  `file.attr` (chattr flags through ioctl; refuses `+i`/`+a` on cache, log, upload and database paths).
+- `mysql.audit`, `mysql.lock`, `sql.query` (mysql/mariadb only): built-in client for the unix socket
+  (native, caching_sha2 and socket auth; LOCAL INFILE refused). `sql.query` takes named statements
+  (`version`, `audit_accounts`, `rotate_opencart_admin`) or one parameterised statement; writes need `write: true`.
+  The rotated OpenCart password is returned in the output (`password`) for the vault.
+- `web.remove_dir`, `web.rename_dir` (fixes `HTTP_SERVER`/`HTTPS_SERVER` and absolute paths in `config.php`),
+  `web.opencart_audit` (install dir, default admin dir, writable config, PHP in upload dirs, vendor hash diff,
+  extension list, admin users and installed extensions from the database).
+- SQL Server (`mssql_*.go`, pure-Go `go-mssqldb`; any platform builds, run on the Windows SQL host): `sql.query` with
+  `engine: mssql` (named statements `version`, `sysadmins`/`review_sysadmins`, `logins`, `weak_logins`, `config`,
+  `linked_servers`, `agent_jobs`, `review_linked_servers_and_agent_jobs`, `startup_procs`, `trustworthy_dbs`,
+  `server_triggers`, `audit`, or one T-SQL statement with `?` placeholders; writes need `write: true`; `sp_configure`,
+  `xp_cmdshell`, `OPENROWSET`, `SHUTDOWN`, comments and multi-statement batches are refused; login DDL and
+  `ALTER SERVER ROLE` go through the scoring guard), `mssql.audit` (read-only findings, `fail_on_critical`), and
+  `mssql.lock` (`sp_configure` off for xp_cmdshell / Ole Automation / CLR by default, optionally external scripts and
+  ad hoc distributed queries; `disable_logins`, `remove_sysadmins`; `disable_unscored` / `sysadmin_sweep` with `keep`
+  need a non-default scoring guard). Rollback (kind `mssql.undo`, no credentials) restores the prior option values,
+  re-enables logins and re-adds sysadmin members. Connection is loopback only, Windows integrated authentication
+  unless `MSSQLConfig.Auth` (set by the agent from the vault) returns a SQL login; encryption is login-only with the
+  server certificate not validated, and the actions never set the server's ForceEncryption (it can break the scorer).
+  The blank / same-as-name password check is a fixed comparison of the stored hash against two candidates, never
+  guessing. The lock never changes a scored login (disable, role removal) and never the connection's own login,
+  `sa`'s role membership, `NT SERVICE\*`, `NT AUTHORITY\*` or Windows groups (lockout risk) unless the agent is a
+  direct sysadmin member. The build check flags 2019 builds below 15.0.2190.7 (GDR) / 15.0.4490.9 (CU). The real-server
+  test runs only with `PHYLAX_MSSQL_DSN=user:password@127.0.0.1:1433`.
+- `net.tcp_probe`, `net.http_probe`, `command.check` (sudo, pkexec, ssh, kernel, user-namespace probes with the
+  known vulnerable ranges), `wazuh.health`, `wazuh.capture`, `wazuh.test_alert`.
+
+Scoring-safety lint (refusals wrap `ErrScoringUnsafe`, apply in dry-run too): sshd `PasswordAuthentication no`,
+key-only `AuthenticationMethods`, `PermitTTY no`, `ForceCommand`/`ChrootDirectory`, `LoginGraceTime 0`, `UsePAM no`,
+`AllowUsers` that omits a scored account, `AllowGroups`; Dovecot `disable_plaintext_auth yes`, `ssl required`;
+Postfix TLS-only/`noplaintext`/postscreen/sender-domain rejects; Splunk SSL/mgmt port/`acceptFrom`/lockout/auth
+changes; `bind-address` on loopback for a database; `icmp_echo_ignore_all`; drop-ins that restrict a scored
+service. The rules are skipped only when the guard lists this host's scored services and the service is not one.
 
 ## Wazuh (`internal/integrations/wazuh`)
 
-API client: JWT auth with re-auth on 401, `/manager/info`, `/agents`, `Health` (active, disconnected,
+API client: JWT auth with re-auth on 401, `/manager/info`, `/agents`, `/groups` (`Groups`: name, agent count, config
+checksums; `wazuh.capture` writes `group_details.json` and lists agent-less groups in `groups.json`), `Health` (active, disconnected,
 never-connected). Version pin: `CheckManager` refuses a manager < 4.14.9 (CVE-2025-24016 and the 2026 bugs),
 `CheckAgents` refuses any agent newer than the manager; comparison is numeric. TLS verify is on unless
 `InsecureTLS` (lab self-signed certs) or a CA is given. Alerts come from the Wazuh indexer
