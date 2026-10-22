@@ -9,8 +9,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$(realpath -m "${1:-$here/../../build/depot-src}")
 mkdir -p "$out"
 docker build -t phylax-depot-build "$here"
-for t in busybox coreutils procps iproute2 lsof net-tools tcpdump strace curl socat openssh file findutils grep tar gzip xz; do
-  docker run --rm -v "$out:/out" phylax-depot-build "$t"
+for t in ${TOOLS:-busybox coreutils procps iproute2 lsof net-tools tcpdump strace curl socat openssh file findutils grep tar gzip xz toybox nmap}; do
+  docker run --rm -v "$out:/out" ${SRC_CACHE:+-v "$SRC_CACHE:/srccache:ro"} phylax-depot-build "$t"
 done
-# optional extras: toybox nmap
+
 echo "built into $out"

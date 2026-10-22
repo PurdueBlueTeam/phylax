@@ -1,0 +1,20 @@
+{{define "content"}}
+<h1>Agent {{.Data.Host}}</h1>
+<p><a href="/agents">All agents</a></p>
+<table>
+<tr><th>State</th><td class="link-{{.Data.State}}">{{.Data.State}}</td></tr>
+<tr><th>Last heartbeat</th><td>{{ago .Data.LastSeen}} ({{ts .Data.LastSeen}})</td></tr>
+<tr><th>Clock skew</th><td>{{dur .Data.ClockSkew}}{{if not .Data.SkewAt.IsZero}} measured {{ago .Data.SkewAt}}{{end}}</td></tr>
+<tr><th>Config</th><td>{{.Data.ConfigState}}, version {{.Data.ConfigVersion}}, epoch {{.Data.ConfigEpoch}}</td></tr>
+<tr><th>Spool</th><td>{{.Data.SpoolDepth}} queued, congestion {{if .Data.Congestion}}{{.Data.Congestion}}{{else}}none{{end}}, {{.Data.Drops}} dropped</td></tr>
+<tr><th>Events</th><td>{{.Data.LastEvents}} stored, acked through seq {{.Data.Acked}}</td></tr>
+<tr><th>Safe mode</th><td>{{if .Data.SafeMode}}<strong>ON</strong> (tier-0 responses and plan nodes suspended){{else}}off{{end}}
+ <a href="/agents/{{.Data.Host | urlq}}/safemode">{{if .Data.SafeMode}}Turn off...{{else}}Turn on...{{end}}</a></td></tr>
+</table>
+<h2>Modules</h2>
+<table><thead><tr><th>Module</th><th>State</th></tr></thead><tbody>
+{{range .Data.Modules}}<tr><td>{{.Key}}</td><td>{{.Value}}</td></tr>{{else}}<tr><td colspan="2">No module report yet.</td></tr>{{end}}</tbody></table>
+<h2>Telemetry gaps</h2>
+<table><thead><tr><th>Seq range</th><th>Events lost</th><th>Class</th><th>Reason</th><th>Time</th></tr></thead><tbody>
+{{range .Data.Gaps}}<tr><td>{{.From}}-{{.To}}</td><td>{{.Count}}</td><td>{{.Class}}</td><td>{{.Reason}}</td><td>{{ts .Time}}</td></tr>{{else}}<tr><td colspan="5">No gaps recorded.</td></tr>{{end}}</tbody></table>
+{{end}}

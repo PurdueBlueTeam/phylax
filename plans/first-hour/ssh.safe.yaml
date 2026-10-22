@@ -1,0 +1,26 @@
+id: fh.ssh.safe
+name: Safe sshd hardening
+on_failure: stop_dependents
+scoring_note: No PasswordAuthentication, TTY or AllowUsers changes for scored users.
+probe: SSH login of the scored user from the check host
+vars:
+  linux_hosts: [rocky-web, fedora-mail, debian-splunk, ubuntu-wkst]
+nodes:
+  - id: dropin
+    each: linux_hosts
+    action: file.write
+    target: ${host}
+    deadman_sec: 60
+    params:
+      path: /etc/ssh/sshd_config.d/10-phylax.conf
+      mode: "0644"
+      content: |
+        LoginGraceTime 20
+        MaxStartups 10:30:60
+        X11Forwarding no
+  - id: reload
+    each: linux_hosts
+    action: service.restart
+    target: ${host}
+    needs: [dropin]
+    params: {unit: sshd}

@@ -1,0 +1,38 @@
+id: fh.dc.zerologon_first
+name: Zerologon first on DCs, Spooler off, SMBv1 off
+on_failure: stop_dependents
+scoring_note: No NTLM disabling. Patch needs a reboot (DNS and WinRM briefly down) so it is a separate approved gate.
+probe: DNS query and WinRM auth succeed against each DC after the step
+vars:
+  dcs: [win-dc, win-dc2]
+nodes:
+  - {id: check, each: dcs, action: ad.zerologon_check, target: "${host}", params: {}}
+  - id: secure-channel
+    each: dcs
+    action: ad.secure_channel
+    target: ${host}
+    needs: [check]
+    deadman_sec: 120
+    params: {enforce: true}
+  - id: spooler-off
+    each: dcs
+    action: service.state
+    target: ${host}
+    needs: [check]
+    params: {unit: Spooler, state: stopped, enable: disabled}
+  - id: smb1-off
+    each: dcs
+    action: windows.smb1
+    target: ${host}
+    needs: [check]
+    params: {enabled: false}
+  - id: patch-gate
+    gate: true
+    needs: [secure-channel, spooler-off, smb1-off]
+    note: Approve the reboot window before applying the cached cumulative update.
+  - id: patch
+    each: dcs
+    action: windows.hotfix
+    target: ${host}
+    needs: [patch-gate]
+    params: {kb: cached-latest-cu, reboot: true}

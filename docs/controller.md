@@ -10,7 +10,7 @@ Package `internal/controller`, command `cmd/phylax/serve.go`.
 `silence_threshold` (default `30s`), `hello_timeout` (10s), `read_idle` (20s),
 `max_handshakes`, `max_conns`, `reorder_window` (65536), `max_buffered_events`
 (16384), `max_live_tokens` (1024), `rules_path` (detection rules directory) and
-`ledger_path` (signed integrity ledger; agents get its sha256), see "Agent config". Durations are strings. Run:
+`ledger_path` (signed integrity ledger; agents get its sha256), see "Agent config", `ui_listen` (operator UI, default `127.0.0.1:8443`, loopback only, `off` disables) and `plans_path` (plan templates), see docs/ui.md. Durations are strings. Run:
 `phylax serve -config controller.json` (or `-data-dir DIR`). The controller key
 pin is logged at start.
 

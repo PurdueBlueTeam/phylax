@@ -1,0 +1,10 @@
+id: fh.mail.checks
+name: Mail server review (read-only plus hashes)
+on_failure: continue
+scoring_note: Keeps plaintext listeners and AD-backed auth. Removing webmail is a separate, human-approved step.
+vars:
+  mail: fedora-mail
+nodes:
+  - {id: hash-postfix, action: file.hash, target: "${mail}", params: {path: /usr/sbin/postfix}}
+  - {id: hash-dovecot, action: file.hash, target: "${mail}", params: {path: /usr/sbin/dovecot}}
+  - {id: relay-probe, action: net.tcp_probe, target: "${mail}", params: {host: "10.0.0.40", port: 25}, note: Open-relay test is run by the SMTP check harness against this port.}

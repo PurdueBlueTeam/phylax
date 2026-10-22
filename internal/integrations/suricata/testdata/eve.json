@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-22T10:00:02.500000+0000","flow_id":111,"event_type":"alert","src_ip":"128.232.110.120","src_port":34855,"dest_ip":"66.35.250.204","dest_port":80,"proto":"TCP","community_id":"1:LQU9qZlK+B5F3KDmev6m5PMibrg=","alert":{"action":"allowed","gid":1,"signature_id":2100498,"rev":7,"signature":"GPL ATTACK_RESPONSE id check returned root","category":"Potentially Bad Traffic","severity":2}}
+{"timestamp":"2026-10-22T10:00:01.000000+0000","flow_id":112,"event_type":"alert","src_ip":"10.0.0.99","src_port":4444,"dest_ip":"10.0.0.5","dest_port":22,"proto":"TCP","alert":{"action":"allowed","gid":1,"signature_id":2001219,"rev":20,"signature":"ET SCAN Potential SSH Scan","category":"Attempted Information Leak","severity":1}}
+this is not json
+{"timestamp":"2026-10-22T10:00:00.000000+0000","flow_id":113,"event_type":"flow","src_ip":"10.0.0.1","dest_ip":"10.0.0.2","proto":"UDP"}
+{"timestamp":"2026-10-22T10:00:03.000000+0000","flow_id":114,"event_type":"dns","src_ip":"10.0.0.5","src_port":5353,"dest_ip":"10.0.0.53","dest_port":53,"proto":"UDP","dns":{"rrname":"evil.example","rrtype":"A"}}

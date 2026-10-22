@@ -1,0 +1,31 @@
+id: fh.splunk.sidecar_off
+name: Splunk postgres sidecar off (CVE-2026-20253 workaround)
+on_failure: stop_dependents
+scoring_note: Keeps 8000 and 8089 open and the scored Splunk user untouched.
+probe: GET :8000 returns 200 and the scored login still works
+vars:
+  splunk: debian-splunk
+  splunk_url: http://10.0.0.20:8000/
+nodes:
+  - {id: list-apps, action: splunk.rest, target: "${splunk}", params: {path: /services/apps/local}}
+  - {id: list-inputs, action: splunk.rest, target: "${splunk}", params: {path: /services/data/inputs/all}}
+  - id: postgres-disabled
+    action: ini.set
+    target: ${splunk}
+    params: {path: /opt/splunk/etc/system/local/server.conf, stanza: postgres, key: disabled, value: "true"}
+  - id: restart
+    action: service.restart
+    target: ${splunk}
+    needs: [postgres-disabled]
+    params: {unit: Splunkd}
+  - id: admin-password
+    action: splunk.password
+    target: ${splunk}
+    needs: [restart]
+    note: Change the default admin only; the scored user is not touched.
+    params: {user: admin}
+  - id: probe-web
+    action: net.http_probe
+    target: ${splunk}
+    needs: [restart]
+    params: {url: "${splunk_url}", expect_status: 200}

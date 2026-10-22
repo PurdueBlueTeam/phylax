@@ -1,0 +1,161 @@
+# Wazuh manager + agents (design: OSS alongside Phylax, Wazuh deploy plan).
+# Pinned >= 4.14.9 (KEV CVE-2025-24016; 2026 authd/API bugs); agent == manager.
+# Packages come from the depot cache; nothing is downloaded at install time.
+# Manager host is tier-0. Active response and remote commands are OFF.
+id: wazuh.deploy
+name: Deploy Wazuh manager and agents (pinned, offline)
+on_failure: stop_dependents
+scoring_note: Not scored. Manager goes on a non-scored trusted host; on the Splunk host it is memory-capped.
+vars:
+  version: "4.14.9"
+  manager: ubuntu-wkst          # or the Splunk host per manifest/RAM measurement
+  manager_addr: 10.0.0.10
+  allow_from: 10.0.0.0/24       # our hosts / controller only
+  linux_agents: [debian-splunk, rocky-web, fedora-mail]
+  win_agents: [win-dc, win-ad, win-wkst]
+  enroll_password_file: /var/ossec/etc/authd.pass
+nodes:
+  - id: approve-placement
+    gate: true
+    note: Confirm manager host has the RAM headroom (>= 8 GB) and the depot has the 4.14.9+ bundle; otherwise skip Wazuh.
+  - id: mgr-install
+    action: pkg.install
+    target: ${manager}
+    needs: [approve-placement]
+    params: {name: wazuh-manager, version: "${version}", source: "depot:wazuh/${version}"}
+  - id: mgr-firewall
+    action: firewall.allow
+    target: ${manager}
+    needs: [mgr-install]
+    deadman_sec: 60
+    params: {ports: "1514,1515,55000,443", proto: tcp, from: "${allow_from}", name: wazuh}
+  - id: mgr-active-response-off
+    action: xml.set
+    target: ${manager}
+    needs: [mgr-install]
+    params: {path: /var/ossec/etc/ossec.conf, xpath: "//active-response/disabled", value: "yes"}
+  - id: mgr-authd-password
+    action: xml.set
+    target: ${manager}
+    needs: [mgr-install]
+    params: {path: /var/ossec/etc/ossec.conf, xpath: "//auth/use_password", value: "yes"}
+  - id: mgr-group-fim
+    action: file.write
+    target: ${manager}
+    needs: [mgr-install]
+    params:
+      path: /var/ossec/etc/shared/phylax-fim/agent.conf
+      mode: "0640"
+      content: |
+        <agent_config>
+          <syscheck>
+            <frequency>600</frequency>
+            <directories check_all="yes" realtime="yes">/etc,/usr/bin,/usr/sbin</directories>
+            <directories check_all="yes">/var/www,/opt/splunk/etc</directories>
+          </syscheck>
+        </agent_config>
+  - id: mgr-group-rootcheck
+    action: file.write
+    target: ${manager}
+    needs: [mgr-install]
+    params:
+      path: /var/ossec/etc/shared/phylax-rootcheck/agent.conf
+      mode: "0640"
+      content: |
+        <agent_config>
+          <rootcheck><frequency>3600</frequency></rootcheck>
+          <wodle name="syscollector"><disabled>no</disabled><interval>1h</interval></wodle>
+        </agent_config>
+  - id: mgr-group-sca
+    action: file.write
+    target: ${manager}
+    needs: [mgr-install]
+    params:
+      path: /var/ossec/etc/shared/phylax-sca/agent.conf
+      mode: "0640"
+      content: |
+        <agent_config>
+          <sca><enabled>yes</enabled><scan_on_start>yes</scan_on_start><interval>12h</interval></sca>
+        </agent_config>
+  - id: mgr-up
+    action: service.state
+    target: ${manager}
+    needs: [mgr-firewall, mgr-active-response-off, mgr-authd-password, mgr-group-fim, mgr-group-rootcheck, mgr-group-sca]
+    params: {unit: wazuh-manager, state: restarted, enable: enabled}
+  - id: mgr-health
+    action: wazuh.health
+    target: ${manager}
+    needs: [mgr-up]
+    params: {api: "https://${manager_addr}:55000", min_version: "4.14.9"}
+
+  - id: agent-install-linux
+    each: linux_agents
+    action: pkg.install
+    target: ${host}
+    needs: [mgr-health]
+    params: {name: wazuh-agent, version: "${version}", source: "depot:wazuh/${version}"}
+  - id: agent-install-win
+    each: win_agents
+    action: pkg.install
+    target: ${host}
+    needs: [mgr-health]
+    params: {name: wazuh-agent, version: "${version}", source: "depot:wazuh/${version}/wazuh-agent-${version}-1.msi"}
+  - id: agent-conf-linux
+    each: linux_agents
+    action: xml.set
+    target: ${host}
+    needs: [agent-install-linux]
+    params: {path: /var/ossec/etc/ossec.conf, xpath: "//client/server/address", value: "${manager_addr}"}
+  - id: agent-noremote-linux
+    each: linux_agents
+    action: file.write
+    target: ${host}
+    needs: [agent-install-linux]
+    params:
+      path: /var/ossec/etc/local_internal_options.conf
+      mode: "0640"
+      content: |
+        wazuh_command.remote_commands=0
+        logcollector.remote_commands=0
+        sca.remote_commands=0
+  - id: agent-conf-win
+    each: win_agents
+    action: xml.set
+    target: ${host}
+    needs: [agent-install-win]
+    params: {path: 'C:\Program Files (x86)\ossec-agent\ossec.conf', xpath: "//client/server/address", value: "${manager_addr}"}
+  - id: agent-noremote-win
+    each: win_agents
+    action: agentopt.set
+    target: ${host}
+    needs: [agent-install-win]
+    note: Sets wazuh_command, logcollector and sca remote_commands=0 in local_internal_options.conf (file.write path validation is POSIX-only on the controller).
+    params: {path: 'C:\Program Files (x86)\ossec-agent\local_internal_options.conf', keys: "wazuh_command.remote_commands=0,logcollector.remote_commands=0,sca.remote_commands=0"}
+  - id: agent-up-linux
+    each: linux_agents
+    action: service.state
+    target: ${host}
+    needs: [agent-conf-linux, agent-noremote-linux]
+    params: {unit: wazuh-agent, state: restarted, enable: enabled}
+  - id: agent-up-win
+    each: win_agents
+    action: service.state
+    target: ${host}
+    needs: [agent-conf-win, agent-noremote-win]
+    params: {unit: WazuhSvc, state: restarted, enable: enabled}
+  - id: enrolled-health
+    action: wazuh.health
+    target: ${manager}
+    needs: [agent-up-linux, agent-up-win]
+    params: {api: "https://${manager_addr}:55000", min_version: "4.14.9"}
+  - id: authd-off
+    action: xml.set
+    target: ${manager}
+    needs: [enrolled-health]
+    note: Stop accepting enrollment once every agent is connected.
+    params: {path: /var/ossec/etc/ossec.conf, xpath: "//auth/disabled", value: "yes"}
+  - id: authd-restart
+    action: service.restart
+    target: ${manager}
+    needs: [authd-off]
+    params: {unit: wazuh-manager}

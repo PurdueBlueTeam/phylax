@@ -68,6 +68,8 @@ type Pane struct {
 // Dashboard holds the data for the one-screen dashboard.
 type Dashboard struct {
 	Overview, Alerts, Plans, Approvals, RoundClock, Health Pane
+	// Ops, when set, replaces the placeholder panes with real data.
+	Ops *OpsDashboard
 }
 
 // DashboardSource supplies dashboard data; nil means placeholders.
@@ -81,6 +83,7 @@ type Config struct {
 	Agents    AgentLister  // default: none
 	Audit     AuditLog     // default: discard
 	Dashboard DashboardSource
+	Ops       Ops // operator pages (dashboard data, alerts, plans, chains); nil: placeholders only
 	Logger    *slog.Logger
 
 	Addr             string   // default 127.0.0.1:8443
@@ -403,6 +406,15 @@ func (s *Server) loadTemplates() error {
 			}
 			return s.cfg.Now().Sub(t).Round(time.Second).String() + " ago"
 		},
+		"ts": func(t time.Time) string {
+			if t.IsZero() {
+				return "-"
+			}
+			return t.UTC().Format("2006-01-02 15:04:05Z")
+		},
+		"dur":  func(d time.Duration) string { return d.Round(time.Millisecond).String() },
+		"join": strings.Join,
+		"urlq": url.PathEscape,
 	}
 	for _, e := range entries {
 		name := strings.TrimSuffix(strings.TrimPrefix(e, "templates/"), ".html")

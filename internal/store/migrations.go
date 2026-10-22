@@ -174,4 +174,21 @@ CREATE TABLE credentials (
   UNIQUE (scope, name)
 );
 `,
+	// 3: operator UI: accounts (argon2id PHC strings only) and the audit log
+	`
+CREATE TABLE ui_accounts (
+  name       TEXT PRIMARY KEY,
+  phc        TEXT NOT NULL,
+  created_ns INTEGER NOT NULL
+);
+CREATE TABLE ui_audit (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  time_ns INTEGER NOT NULL,
+  actor   TEXT NOT NULL,
+  action  TEXT NOT NULL,
+  remote  TEXT NOT NULL DEFAULT '',
+  detail  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX ui_audit_time ON ui_audit(time_ns);
+`,
 }
