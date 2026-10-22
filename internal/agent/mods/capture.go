@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,8 +61,14 @@ func hasCaptureRole(c *plan.AgentConfig) bool { return slices.Contains(c.Roles, 
 // (the net module's "proto/port" map), sorted.
 func scoredPorts(c *plan.AgentConfig) []uint16 {
 	set := map[uint16]bool{}
-	for _, p := range declaredPorts(c) {
-		set[p] = true
+	if c.Modules.Net != nil { // decoy ports too: they are captured in full
+		for k := range c.Modules.Net.Services {
+			if _, p, ok := strings.Cut(k, "/"); ok {
+				if n, err := strconv.ParseUint(p, 10, 16); err == nil {
+					set[uint16(n)] = true
+				}
+			}
+		}
 	}
 	out := make([]uint16, 0, len(set))
 	for p := range set {
