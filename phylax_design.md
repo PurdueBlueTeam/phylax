@@ -1056,3 +1056,316 @@ The Palo can capture packets on a filter and serve them through its API. The ada
 ### Pulled pcaps and optional analysis
 
 Frozen slices are real pcap files. The controller can run Suricata and Zeek over a slice offline, join their output to Phylax flows by Community ID, and attach the result to the incident (§ OSS alongside Phylax).
+
+## Active checks and check discovery
+
+The platform keeps a live, editable list of **active checks**: our own end-to-end tests of each service, built to behave like Quotient. The scorer's checks change during the event, so the list is kept in step by watching scorer traffic passively. The design follows how Quotient was measured to behave, not how a generic scorer might [Q §0]. Several numbers (Delay, Jitter, Timeout, SLA threshold, Divisor, debug visibility, the MSSQL, Splunk and RDP scripts) are unknown until the event and are measured, not assumed.
+
+### The scorer model
+
+| Fact | Consequence for Phylax | Source |
+| --- | --- | --- |
+| One burst per round for every team at once. A team's checks hit its hosts within about 25–55 ms, from up to five runner addresses. The next round starts `Delay ± Jitter` after the last one started (upstream defaults: 60 s ± 5 s). | Cluster inbound new connections into bursts, estimate Delay and Jitter after about 10 bursts, and align everything to the clock | [Q §3] |
+| Each check picks one random sub-item and one random credential per round, with one attempt | A broken item or one wrong password fails only some rounds. A service has to be learned over many rounds | [Q §0.2] |
+| Credentials are copied into tasks at enqueue time. A PCR landing during the enqueue pass can give a mixed snapshot | Rotate only in the quiet part of the interval, after a burst | [Q §5] |
+| A round is all-or-nothing. If any task result is missing at the deadline, the whole round is discarded: SLA streaks neither advance nor reset | One missing burst is not an outage. Dropped rounds are not incidents | [Q §3] |
+| Source addresses are runner addresses behind Docker NAT, or re-drawn each round by Divisor | Never label by address; addresses are advisory | [Q §6] |
+| SLA penalty is global (per-check overrides are ignored): `SlaThreshold` consecutive failures cost `SlaPenalty` and reset the counter | Track streaks per service, alert at threshold minus 2 | [Q §4.2] |
+| Upstream `rdp` and `tcp` checks open a TCP connection and never close it; a `web` check with no status or regex passes a 404; DNS MX never passes; an SSH command with no `Contains` passes on any output | Our checks are stricter where Quotient is lax | [Q §0.5] |
+| `BadAttempts` makes N failed SSH logins with a random-UUID password for the real username right before the real login | Exempt from lockout and brute-force detection | [Q §2, SH §1.1] |
+| MSSQL login and query, Splunk query and 8089, and RDP with authentication have no native Quotient type; MW runs custom scripts or a fork | Fingerprint by burst, port and account until seen; record what arrives | [Q §2.2] |
+| Config hot-reloads with a 1 s debounce; checks have launch and stop times and can be toggled per team | Discovery runs all event; silence is "scorer stopped checking", not "healthy" | [Q §9.9] |
+
+### Round clock estimator
+
+On the controller, over flows and transactions from all hosts:
+
+1. A **burst** is at least 15 new connections to a team's hosts within about 60 ms. The first burst after the competition starts sets the alarm.
+2. After about 10 bursts the estimator publishes `Delay`, `Jitter`, the last burst's end and the **quiet window** `[burst end + safety, next start − safety]`. Before 10 bursts it publishes the upstream defaults at low confidence.
+3. Everything time-sensitive uses the window: PCR transactions, active-check scheduling (our probes never sit inside a burst), `threshold − 2` SLA alerts and the Kali's probes.
+4. A missing burst for the whole team is recorded as a "scorer round gap" and not treated as an outage [Q §9.12].
+
+### Active checks
+
+- **Run by** the checker module on the controller, by `check_runner` agents on the LAN, and by the Kali (§ The Kali as an external vantage point), every 30–60 s per check, outside the burst window.
+- **Check types**, each implemented with the same Go libraries Quotient uses where possible, so fingerprints match without effort [Q §9.11]:
+
+| Type | What it does | Notes |
+| --- | --- | --- |
+| HTTP and HTTPS | `GET` with `Host: <ip>:<port>`, `Accept-Encoding: gzip`, `Connection: close`, no other headers, TLS verification off, redirects followed. Status and content hash, plus the scorer's regex | Run for every learned URL |
+| DNS | UDP A (and MX, which cannot pass in Quotient) queries, no EDNS, one retry | Compare all learned records |
+| ICMP | Echo, 24-byte payload, privileged raw socket | |
+| SSH | Password login (`none` then `password`), PTY `xterm 40x80`, `shell`, type one command, wait `Timeout/8`, read | The scorer-mimic probe; catches slow profiles, `PermitTTY no`, `nologin` shells |
+| SMB | NTLMv2 with an empty domain (so the server's own name is used), tree `\\ip:445\share`, open and read the learned file, compare regex or SHA-256 | A bare username hits the local account database of a member server |
+| WinRM | `POST /wsman` over NTLM, run the learned command, compare stdout | |
+| SMTP | `EHLO localhost`, `AUTH PLAIN` over plaintext, `MAIL FROM`, `RCPT TO` a local mailbox, `DATA`, `QUIT`; no STARTTLS | |
+| IMAP, POP3 | Plaintext `LOGIN` and `LIST`; `USER`, `PASS`, `NOOP`, `STAT` | |
+| FTP | `USER`, `PASS`, `FEAT`, `TYPE I`, `EPSV`, `RETR` of each learned file, `QUIT` | |
+| MSSQL | TDS pre-login, login7, run a learned query, compare the first rows | `go-mssqldb`; the real script is unknown |
+| Splunk | REST login on 8089 then a search export; and Basic auth `GET /services/server/info` | Until the real logic is seen |
+| RDP | TCP connect and hold, and an authentication probe (CredSSP/NTLM) on the Kali with `xfreerdp /auth-only` | The bare connect is what upstream does; the packet says "with authentication" |
+| LDAP, TCP | Simple bind; connect with banner match | |
+
+- **Each check has:** a service, a type, its parameters, the expected result, an interval, its vantage points, an origin (`manifest`, `discovered` or `manual`), a state (`active`, `paused`, `retired`), a mode (below) and a result history.
+- **Two modes per check.** The **faithful sample** picks one random item and one random credential like the scorer, and checks the response as the scorer would. The **union sweep** tests every learned item and every learned credential in turn, at a low rate. Faithful tells us what the scorer will see this round; union finds the one broken item that hides for rounds [Q §9.8].
+- **Strict where Quotient is lax.** A check can report "scorer would likely fail" (status, content, hash or regex drift against the last response seen next to a scorer success) separately from "service unhealthy" (refused, reset, timeout, wrong auth) [Q §9.7].
+- **Managed in the UI:** add from a template or from any observed request (**Make this a check**), edit, pause, retire, and **Accept current response** after a legitimate change. Every change is written to the manifest overrides and takes effect immediately.
+- **Results:** a check turns red after 2 consecutive failures. A red check opens an alert with the response diff and the latest trace-back attached.
+- **Latency warning.** The scorer's default timeout is `Delay/2`; our probes alert when a response approaches it [SP §A14].
+- **Vantage points side by side.** Red from the Kali but green from inside the LAN points at the Palo or NAT path. Red from inside points at the service. The Kali is the closest to the scorer's own position (§ The Kali).
+
+### Credentials the scorer uses
+
+Discovery builds, per service, the set of accounts the scorer authenticates with, from observed logins (SSH banner and auth, SMTP `AUTH PLAIN`, IMAP `LOGIN`, FTP `USER`, SMB NTLM user names, WinRM NTLM, TDS login7). Each learned account is marked `scored`. With organizer approval, `GET /api/credlists` on the portal lists the usernames per credlist directly [Q §4.3]. Marked accounts are never locked, deleted, renamed, expired or rotated outside a PCR transaction. `sysadmin` is treated as scored until shown otherwise.
+
+### Check discovery
+
+1. **Recognize scorer traffic** by behaviour. A connection is scored on burst membership, one-shot-per-service-per-round, protocol fingerprint match (table in Appendix G) and use of a learned credential. Source IP is a hint, never a rule, because runners sit behind NAT or Divisor [Q §6].
+2. **Group its requests per service** into observed checks, with variable parts templated. Rotating users, URLs, records or files become one check with a set of values. The service (port, protocol, account usage) is learned within 3 rounds. The **item set** is marked partial with a coverage estimate (expected rounds to see all `k` equally likely items is `k·H_k`: about 4 for 3 items, 11 for 5, 29 for 10) and keeps growing the whole event [SP §A2].
+3. **Compare against the active list:**
+   - **Not covered:** a proposal, "Scorer started checking X", with a sample request and a pre-filled check.
+   - **Covered, but the request changed:** a proposal to update the existing check.
+   - **Active check with no scorer counterpart for 5 rounds:** flagged as possibly stale. Nothing is ever removed automatically.
+4. **Mark scored accounts** (above).
+5. **Spot blocked checks.** If a round reaches the other services but no scorer traffic reaches one of them, that's an upstream block. An alert fires with the Palo's deny logs for that window attached.
+6. **Learn unknown scorer logic.** Services without a native Quotient check (MSSQL, Splunk, RDP-with-auth) are fingerprinted by burst timing, port and account use; the first bytes of each exchange are stored so the check can be rebuilt.
+
+**Rules of engagement.** Discovery is strictly passive toward the scorer. We observe what it sends to our hosts. We never connect to, scan or probe its addresses, and never break a scored service on purpose to see what the scorer does.
+
+### SLA tracking and operator-fed verdicts
+
+- Per learned service, a failure streak is inferred from capture (refused, reset, timeout, auth failure, wrong content) and alerts at `threshold − 2`. A pass resets it; after a penalty it restarts. The threshold starts at the upstream default of 5 and is replaced by the observed value once known [Q §9.5].
+- Passive capture shows what the scorer sent and how the service replied, not whether Quotient called it pass or fail. Ground truth enters in one of three ways, in the order we would prefer: (1) a **read-only poll** of the team's own pages (`GET /api/services/{team}`, `/api/metadata`, `/api/credlists`) at most once per round, using a session cookie an operator pastes, only if the organizers approve; (2) the operator **pasting the Up/Down table**; (3) neither, and Phylax runs on inference. The poll never calls `POST /api/pcrs/*` [Q §4.4].
+- If debug text is shown to teams, it contains the usernames and passwords the scorer used and the exact failing step. Portal cookies and that text are credentials: stored encrypted, never forwarded, never logged [Q §9.14].
+
+### The checks view
+
+Per service, two columns side by side: our active checks with their latest results from each vantage point, and the scorer checks observed recently, with when each was last seen. Each pair is marked **matched**, **proposed** or **stale**. Below that is a change feed. A strip shows the round clock, the learned Delay and Jitter, the SLA streak per service, and any dropped rounds.
+
+**Complexity flag:** recognizing scorer traffic is heuristic. It's bounded by requiring a human click for every proposal, and by acceptance tests against Quotient's own ground truth in the lab.
+
+**Deliberately out of scope:** learning the scorer's pass criteria from NISE, byte-exact replay of scorer traffic, and keeping scorer profiles across seasons.
+
+## Traffic labeling, change detection and trace-back
+
+Every connection to our services is labeled scorer, us or other. Any change to a service is detected within a minute. Each change our own plans didn't make starts an automatic trace-back: from the changed thing, to the process that changed it, to the network request that drove that process, to the source and everything else it did. The result is an incident, which the chain builder turns into hops (§ Attack chains).
+
+### Traffic labels
+
+| Label | How it's assigned |
+| --- | --- |
+| `us` | Our active checker, the Kali and its scans, agents, relays and device adapters. Known sources and connection types. A canary probe or plan step carries its tag. |
+| `scorer` | Learned by check discovery: burst membership, fingerprint, learned credentials. Never from address alone. |
+| `other` | Everything else: traffic generators, the red team. Within it, `attack-like` is flagged by detections: scans, exploit payloads, webshell requests, decoy hits. |
+
+Red-team sources learned from decoy hits and detections are tagged as such, so later connections from them are labeled on sight. The red team won't always look malicious and may imitate the scorer, so the working question is "is this neither the scorer nor us?"
+
+### What counts as a change
+
+| Change | Detected by |
+| --- | --- |
+| Served content on disk (webroots, FTP root, zone data, mail store structure, the SMB SOP files) | `fim` with hashes |
+| What the service returns | Active checks, and our answers to scorer requests |
+| Configuration (Apache or httpd, IIS, PHP, Postfix, Dovecot, DNS, `.htaccess`, `auto_prepend_file`, Splunk apps) | `fim`, plus semantic parsers for PHP ini and unit files |
+| Runtime behaviour: new child processes, listeners, outbound connections or loaded modules under the service | `proc`, `net`, Sysmon 7, the integrity module |
+| The service's own binary or libraries | The integrity ledger |
+| Identity: accounts, groups or permissions the service depends on | `fim` on account files; Security events on Windows |
+| App-level data (OpenCart admin rows, database users, UDFs) | Read-only SQL pollers |
+| Network devices: rules, NAT, admins | Device adapter config diff |
+
+Changes made by our own plans carry the plan's tag and quietly update the baseline. Anything untagged raises an alert.
+
+### The trace-back chain
+
+Triggered automatically by any untagged change, red health check, or high-severity detection on a service:
+
+1. **The change.** For example, `index.php` modified at 14:03:12.
+2. **The writer.** The file event now carries the actor (audit watches on Linux, Sysmon 11 on Windows).
+3. **Its lineage.** For example, `sh` ← `httpd` worker ← `httpd` parent, from the agent's process records.
+4. **The request.** The agent maps the worker to the client connection it was serving, and the transaction log gives the parsed request. How the mapping works depends on the stack:
+   - **The worker owns the client socket** (Apache prefork with mod_php, most simple daemons): the socket records give the connection directly.
+   - **php-fpm behind Apache or nginx:** the worker holds only the FastCGI socket. The agent follows it to the front-end process. If that process serves one connection at a time, the match is exact. If it serves many, the match is by time and script path in the transaction log, marked lower confidence.
+   - **IIS:** http.sys accepts every connection, so socket tables show PID 4. Hardening adds `REMOTE_PORT` to the IIS log fields. The agent maps `w3wp` to its site through its application pool, matches the request by time and path in that site's log, and the client address and port then give the exact connection.
+5. **The source.** That connection's source address and its label.
+6. **Everything else from that source:** earlier transactions, scans, login attempts and decoy hits, across every host. This usually reveals first contact and the foothold.
+7. **Evidence.** The packet ring around the window is frozen and pulled, and files involved are hashed and collected.
+
+When the chain breaks, the timeline says which link is missing instead of guessing: encrypted traffic (HTTPS details only from server logs), in-memory changes with no writer, agent gaps, and short-lived processes (the agent queries sockets at the moment of the exec or file event, not only on a timer).
+
+**Complexity flag:** the request link (step 4) is the hardest part. It has a dedicated lab test with quick webshell requests. If it misses too often, the fallback is time-window correlation, marked lower confidence.
+
+## Attack chains
+
+D-2 asks for chains built from network and other telemetry, kept lightweight. A chain is an ordered list of hops. It is **not** a graph engine: there is no graph database, no query language, no whole-system provenance graph. It is a table of hops, about a dozen linking rules, and a timeline view. The aim is the IR rubric: half of the red-team lead's marks go to remediating the attack path (who or what placed the thing, how the account was compromised, proof the hole is closed) [TTP §0, PRO §3].
+
+### Hops
+
+| Kind | Meaning | Built from |
+| --- | --- | --- |
+| `access` | Source reaches a host through a service and account | Authentication events with source address: Security 4624 and 4625 (types 3 and 10), 4768, 4769, 4776; sshd auth lines; web logins from transaction logs; device logins |
+| `exec` | A process runs on a host | Process lineage from `proc`, trace-back |
+| `change` | A file, config, account or persistence entry changes | `fim`, account events, persistence detections |
+| `move` | Host A reaches host B | SSH, SMB, WinRM, RDP, WMI, PsExec-style service creation, DCSync, found by cross-host stitching |
+| `egress` | A host reaches outside | Denied egress, sinkhole captures, Palo traffic logs, allowed-but-unknown connections |
+
+Each hop row holds: chain id, kind, source host and address, destination host, account, process reference, 5-tuple and Community ID, start and end, technique (ATT&CK v19), evidence references, **link method**, **confidence**, and a remediation item.
+
+### Building hops from data we already have
+
+1. **Authentication with source.** Every login event becomes an `access` hop candidate, with the account and the source address.
+2. **Cross-host stitching by 5-tuple.** An outbound connection recorded by host A's `net` module is matched to an inbound session on host B by Community ID, with each host's measured clock offset applied. Every LAN host has an agent, and on the flat LAN that's the only way to see east-west movement. Where the Palo is in the path (the outside leg), the tuple is translated, so the match goes through the Palo's session log and its NAT fields. An unmatched side is kept and marked lower confidence.
+3. **Within a host,** process lineage and trace-back join `exec` and `change` hops to the `access` hop that created the session: the sshd child tree, the `w3wp` request, the WinRM `wsmprovhost`, the service created by a remote caller.
+4. **Perimeter.** Palo traffic logs cover anything crossing the perimeter, including attackers who killed the agent.
+
+### Seeding, bounds and grouping
+
+- **Seeding.** A chain starts from any high-severity alert, untagged service change, red check, decoy hit, honeytoken use or ledger alert.
+- **Extension** goes backward (how did this get here: the inbound hop and its source's earlier hops) and forward (what did this source or account do next), bounded by ±2 hours and a hop limit of 12.
+- **Campaigns.** Chains that share a source address, an account (the hidden domain admin, a stolen key), a binary hash or a C2 destination merge into one campaign. One IR per campaign is the pattern that worked for other teams.
+
+### Output
+
+- **A timeline view,** not a graph canvas, with one row per hop: time (Central, UTC alongside), host, what happened, ATT&CK technique, link method and confidence.
+- **A remediation item per hop:** close the entry (service, account, vulnerability), remove the persistence, rotate the credential that was used, block the source. Each item has a state (`open`, `applied`, `verified`) and a checkbox, and verification is automatic where possible (the account's password changed, the persistence is gone and a re-hunt is clean, the binary matches the ledger).
+- **Feeds the IR drafter:** the incident's "attack path" and "remediation" sections come from the hops and their items.
+
+### Confidence
+
+Every hop records how it was linked: an exact 5-tuple, the same account within N seconds, lineage within a host, or a time-window guess. Network-only hops (an agent dead or lying) are shown, marked lower confidence. The timeline never presents a guess as fact.
+
+### What it deliberately does not do
+
+No syscall-level provenance, no general graph traversal, no ad-hoc queries, no machine-learned linking. Rules of bounded size, tested against the purple-team campaigns (chain completeness is a metric: T33).
+
+**Complexity flag:** cross-host stitching depends on clock offsets and NAT-aware joins. It is bounded by exact-tuple matching first, per-hop confidence, and a lab test against campaigns 01 and 03.
+
+## Detection and response
+
+Detections favor behavior and allowlists over signatures, because the red team can read our rules. They run on the host, so they fire with the link down. Responses come in three tiers by reversibility. Only reversible actions on unscored state run automatically, and every automatic action is followed by a health check.
+
+### Rule format
+
+Rules are YAML, delivered in the agent's signed config and hot-reloaded without a restart. The language is deliberately small, and the engine has the pieces the research found necessary [PR "Engine and telemetry work", OA §5.5, WT §9.5].
+
+```yaml
+id: D1.service-spawns-shell
+mode: act                       # act (may trigger tier-0/1 responses) | alert; a global override forces alert
+when:
+  event: process_start          # mandatory event type; the engine indexes rules by it
+  all:
+    - parent.service.scored: true
+    - not: { exe: { in_profile: parent.service } }
+    - not: { tag: { present: true } }       # exempt our own tagged plan and patch-window activity
+  any:
+    - image: { endswith_any: [/sh, /bash, /dash, /python3, /perl, /nc, /ncat, /socat, /curl, /wget, /busybox] }
+    - image: { endswith_any: [\cmd.exe, \powershell.exe, \pwsh.exe, \certutil.exe, \bitsadmin.exe, \whoami.exe, \net.exe, \net1.exe, \rundll32.exe, \mshta.exe, \regsvr32.exe] }
+severity: high
+tier: 1
+collect: [process_tree, content_changes, transactions_window_10m, freeze_ring]
+attack: [T1505.003, T1059]       # ATT&CK v19 ids; validated in CI
+ir_template: web-app-compromise
+tests:
+  - { name: php-exec,     event: lab/tests/fixtures/webshell_php_exec.json, should_match: true }
+  - { name: health-script, event: lab/tests/fixtures/cgi_health.json,       should_match: false }
+source: { author: Phylax, license: repo }   # imported rules carry upstream id, commit, author, licence
+```
+
+Engine requirements, all of which the discarded engine lacked [CR §5, PR E1–E9]:
+
+| Requirement | Why |
+| --- | --- |
+| Exactly one key per condition, enforced by schema validation; deterministic evaluation | A multi-key map was evaluated on a random key |
+| Operators `eq`, `in`, `re`, `contains`, `startswith`, `endswith` (and `_any` forms), `gt`, `lt`, `cidr`, `in_profile`, `present`; string matching case-insensitive by default with an explicit case-sensitive flag | Sigma translation is then mechanical |
+| `count` with `by` and `distinct`, per host, source, account or process, not one global window per rule | A global SSH-failure count cannot tell the scorer from an attacker |
+| Parent fields on process events (`parent.exe`, `parent.cmdline`, `parent.service`) | Every parent-based public rule needs them |
+| Actor on file events (pid, exe, auid) | Package managers are excluded by process, or by window tag where the actor is unknown |
+| The plan or patch-window `tag` on every event type, not only files | Our own hardening must not alert |
+| Direction and service on connection events | D3 fires on every listener without it, D4 never fires |
+| Regexes compiled once at load; the dedupe map is pruned; cooldown keys include the process start time | PID reuse suppressed alerts; regex recompilation cost CPU |
+| `collect:` is executed when the rule fires, and the evidence ships with the alert | Evidence has to be gathered before the attacker cleans up |
+| Inline `tests:` with fixtures; CI fails a rule with no test or a failing test; an `attack:` id that is revoked or unknown fails | "CI rejects a rule without a test" must be real |
+| A global `override_mode: alert` that makes every rule alert only (and safe mode does the same for responses) | UCF's pattern |
+
+Rules, plans and the Sigma output live in the public repo. The rule text is ours.
+
+### Sigma: build-time import, not an agent evaluator
+
+The decision [DR §4, OA §5.5]: **no Sigma evaluator on the agents; yes as a build-time input.**
+
+- A Go tool, `phylax rules import-sigma` (run in CI, never shipped to hosts), built on `sigma-go`'s parser (MIT), translates a **curated allow-list of Sigma rule ids** (about 118 are cited in the research) into Phylax YAML. A pre-pass expands `windash`; `fieldref`, `base64offset`, aggregation and correlation are rejected.
+- Output goes through the same CI as hand-written rules: a lab-test fixture per rule, ATT&CK v19 ids, tiers and `collect`. A rule that no telemetry can feed stays disabled until the producer exists.
+- `source:` carries the upstream id, path, commit, author and licence into the alert, the UI and the IR drafter, as the Detection Rule License requires [DR §6]. A generated `THIRD_PARTY_RULES.md` lists them.
+- Field names follow Sigma and Sysmon (`Image`, `CommandLine`, `ParentImage`, `User`, `OriginalFileName`, snake_case for Windows `EventData` keys) so translation is mechanical; the 4688 fallback cannot feed rules that need `OriginalFileName` or hashes.
+- Why not native: 10,377 match values cost about 46 MB of heap and 14.5 ms per event unindexed; the agent budget is 80 MB and 3% CPU. Sigma is 77% Windows and 7% Linux, and mostly `status: test` [DR §4].
+- **Licensing:** vendor Sigma (DRL 1.1, with attribution), Splunk security_content, Falco, osquery packs, sysmon-modular and Atomic Red Team. **Re-implement** Elastic (ELv2) and Wazuh (GPL-2.0) logic and cite the upstream id in `source:`. Do not use the UIUC or Wayne State files [DR §6].
+- **Optional:** the same translation can emit scheduled searches for the Splunk host with schedules enabled, as secondary hunting (§ OSS alongside Phylax).
+
+### Detection catalog
+
+The ids continue v2's D1–D17 and the coverage spec's D18 onward [COV §4]. The 81 proposed rules P01–P81 [PR] are the backlog; each becomes a tested `rules/*.yml` file. Their readiness classes (A: shipped event types; A*: needs the exec feed; B: needs an engine feature; C: needs a producer that did not exist) map to milestones M4 to M7.
+
+| ID | Detects | Data | Logic | Tier |
+| --- | --- | --- | --- | --- |
+| D1 | Service process spawns a shell or tool; stray processes of scored users; sshd child interpreter; web server and Windows service children | `proc`, Sysmon 1 | Parent in a scored service's tree and child not in its profile, or any shell, interpreter or download tool. D1b: Windows names under `w3wp`, `dns.exe`, `ftpsvc`. D1d: a scored account's process whose parent is not sshd, login or its service. | 1 |
+| D2 | Content or config tampering; mounts over content; PHP ini semantics; app admin rows; web log attacks; dangerous webroot extensions; mail hooks; DB plugins | `fim`, semantic parsers, SQL pollers, access logs | Untagged change in a content root or config; D2b new bind or overlay mount on content roots; D2c effective PHP config loses `disable_functions` entries or gains `auto_prepend_file`, `extension=`; D2d new or changed `oc_user` or `ps_employee` row; D2h/D2i Postfix `master.cf` pipes, aliases, Dovecot post-login, `mysql.func`, `plugin_dir` | 0 if a webshell signature matches, else 1 |
+| D3 | New listener; risky listener; remote-access inventory; known local-root exec | `net`, `inventory` | Listening socket not in any service, decoy or profile (the baseline comes from the manifest); Tailscale, ngrok, chisel, frp, cloudflared, VNC, WSL feature, OpenSSH on Windows; PwnKit-shaped exec | 1 |
+| D4 | Unexpected outbound connection; relay or proxy behaviour | `net`, Sysmon 3, Palo traffic | D4: an established connection from a server process to a peer outside its declared dependencies. D4b: a service whose profile says `outbound: none` has an established external peer and near-symmetric bytes in and out (the regional's Postfix proxy signature) | 1 |
+| D5 | Fileless or hidden execution; **binary integrity**; capabilities; masquerade; writes to binary directories; new SUID | `crossview`, `integrity`, Sysmon 8/25, xattr walk | D5: deleted or memfd executable, `LD_PRELOAD`, anonymous executable memory, remote threads. **D5d: a binary, library or pinned service image does not match the ledger (§ Binary integrity ledger).** D5c: new file capability. D5e: system-name masquerade (`ISASS.EXE`, `SVCH0ST`) or wrong parent. D5f/D5g: writes to `/usr/bin`, new SUID outside a patch window | 1 (alert only for D5d) |
+| D6 | Persistence created or altered; package holds; unit environment and capabilities; shell hooks; immutable flag; suspicious service install; SSH persistence files; PAM changes; task content; WMI; autoruns; IFEO; IIS modules; DNS plugin DLL | `fim`, audit, Security 4697/4698/4702, System 7045, Task Scheduler 106, Sysmon 12–14 and 19–21, D-Bus | Any untagged write to a persistence location (Appendices B and C). D6c `apt-mark hold` or versionlock on PAM, ssh, sudo or libc. D6d unit `Environment=LD_PRELOAD` or ambient capabilities a service doesn't need. D6e `.screenrc`, `PROMPT_COMMAND`, `command_not_found` hooks. **D6f `chattr +i`/`+a` outside a plan tag (our own hardening is tagged).** D6g unsigned SYSTEM service. D6q task content (outside System32, encoded PowerShell, the `\Microsoft\` folder hiding a non-stock task) | 0 (disable, never delete) |
+| D7 | Account changes; sudoers; UID 0 and shell invariants; Windows account events; hidden `$` accounts; privileged group adds | `fim`, Security 4720, 4722, 4724, 4738, 4728, 4732, 4756, 4781 | Account created, enabled, renamed, reset or elevated outside our plans; D7b `/etc/sudoers.d`; D7d `uid==0 && name!=root`; D7e a hidden machine-style account | 1 |
+| D8 | Credential theft; **Zerologon**; LSASS; DCSync; AD object changes; Kerberos anomalies; hive and NTDS dumps | Sysmon 10 and 1; Security 4662, 4742, 4768, 4769, 5136/5137, 4670, 4741; System/Netlogon 5827–5831 | LSASS read by a non-allowlisted process; D8b **System 5829 (Netlogon vulnerable-connection) or Security 4742 by ANONYMOUS LOGON on a DC machine account, or a burst of `DC$` network logons**, plus a continuous check of `FullSecureChannelProtection` and the build number [DR §0, SV R2.4]; DCSync (4662 replication rights from a non-DC); RC4 ticket bursts; D8d GPO, ACL, delegation and `gPLink` changes | 1 |
+| D9 | Lateral movement and remote admin; SSH peer push; services backed by shares; SSH brute force | Security 4624 (types 3, 10), 4648, 5140/5145; Sysmon 17 and 18; auth logs | Admin logon from a source other than the controller after rotation; admin-share access; remote service creation; D9b `ssh` client on a server connecting to another declared host; D9c FTP or IIS root on a UNC path; D9e failures per source and account, **with the scorer's N-failures-then-success pattern from the same source within about 100 ms exempt** [Q §9.6] | 1 |
+| D10 | Defense evasion: firewall, Defender, audit policy, log clearing, Sysmon tamper, monitoring config, timestomp | Audit ruleset hash every 10 s, Firewall log, Defender 5001/5007, Security 4719/1102, System 104, Sysmon 4/16, heartbeat gaps | Firewall changed or disabled; Defender protection off or new exclusion; audit policy changed; logs cleared; Sysmon stopped; agent silent; `auditctl -D` and `iptables -F` by untagged actors | 0 (restore) and 1 |
+| D11 | Rootkit indicators; kernel modules; BPF programs | `crossview`, `inventory`, Sysmon 6 | Hidden PIDs, sockets or modules; BPF programs outside the baseline; kernel taint change; unsigned or new driver | 1 |
+| D12 | Denied egress | `egress`, Palo deny logs | Any denied outbound attempt from a server; periodic attempts escalate | 1 |
+| D13 | Sinkhole catch; C2 pipes; beacon periodicity | `sinkhole`, flows, Sysmon 17/18 | Any capture; HTTP or TLS beacons with framework fingerprints escalate; jitter below 20% over at least 10 intervals | 1 |
+| D14 | Network device tampering; policy order and role changes | Adapter diff, Palo config and system logs, VyOS commit log | Commit we didn't make; unknown admin login; an `allow` rule above a block rule; new admin role or API key; diff against last known-good | 1 |
+| D15 | Decoy interaction; credential-file access | `decoys`, DC events, service logs | Severity by depth: connect (info), login or command (high), honey credential or key used anywhere (critical) | 1 |
+| D16 | Scorer check change | Check discovery | New, changed or stale scorer checks; scorer traffic missing for a service | Info |
+| D17 | Service change; config moved; service stopped without a plan tag; destructive commands; web-admin brute force | Change detection, D-Bus, `proc` | Untagged change to a scored service's content, config, behaviour or identity, with trace-back attached; D17b `moved_from`/delete on configs; D17c `UnitStopped` for a scored unit (tier-0 restart under the circuit breaker); D17d `rm -rf`, `dd of=/dev/sd*`, `shutdown`, `vssadmin delete` by non-operator sessions | 1 (0 for restart) |
+| D18 | **Default or old-credential logon; credential fan-out** | sshd, 4624, Cockpit, web admin, device auth | A successful login for an account in `rotation_pending`, or with a default credential, or from an unknown source; D18b one source authenticating to at least 3 hosts within 5 minutes (controller correlation). Scorer sources are excluded by behaviour, never by address | 1 |
+| D19–D23 | Promiscuous NIC; allowed-protocol abuse (NTP, DNS, ICMP volume and shape); address or route changes; re-infection hunt trigger; USB attach | `net`, flows, `enroll` events | See [PR]; D22 starts the prebake hunt after any restore or re-enrollment | 1 |
+| V1–V4 | **Vantage alerts** (from the Kali): V1 external probe red or disagreeing with the in-LAN probe; V2 newly open public port; V3 egress canary leak; V4 PCR credential verification failed | Kali probes, scans, canaries | See § The Kali as an external vantage point | Info/1 |
+
+Every rule in the repo carries an ATT&CK v19 mapping (T1685 and T1686 replace the revoked T1562 family; the old ids stay as aliases), its test, its tier, its mode and its IR template [DR §5].
+
+**False-positive controls.** The scorer and our own hardening are the main sources, more than the red team [DR §3]. The controls: behavioural scorer exemption (never address-based, because Divisor re-draws addresses and known-source and first-seen rules would break), the plan and patch-window tag on every event type, exempting the agent by randomised path and hash, thresholds generated from check discovery, and keeping exec-based rules at tier 1 so an operator typing the same command costs one click. NTLM WinRM and SMB network logons by the scorer look like pass-the-hash to some public rules [DR §3, inferred], so those rules take the scorer's learned accounts as context.
+
+### Response tiers
+
+| Tier | Who decides | Actions |
+| --- | --- | --- |
+| 0: automatic | The agent, locally, in seconds, even with the link down | Restore the declared host firewall; re-enable Defender protection and remove new exclusions; reinstall or restart Sysmon and restore audit rules; disable (never delete) untagged scheduled tasks, cron entries, units and Run keys; restart a stopped scored unit under the circuit breaker; quarantine a new webroot script that matches a webshell signature |
+| 1: one-click | Operator in the UI, with the evidence on screen | Kill a process tree (pidfd with start-time check; `cgroup.kill` for units); suspend instead of kill to preserve memory; quarantine a file; **restore a binary from the depot**; block a single source IP on the Palo; isolate a host (quarantine table with auto-revert); lock an unscored account; kill sessions; restart a service; restore a file from baseline or backup; roll back a plan node |
+| 2: manual with checklist | Operator, with a verbal callout to the team | Scored-account rotation (PCR transaction); krbtgt reset; full service restore; device config revert; requesting a new reservation (resets everything) |
+
+The integrity ledger is alert only (D-1): D5d never runs tier 0, and its one-click response is explicit.
+
+### Guards on automatic actions
+
+- **Protected processes** are never killed: OS-critical processes (`csrss`, `wininit`, `winlogon`, `services`, `smss`, `lsass`, core `svchost` instances, `systemd`), the sshd listener if declared, our agent, and anything inside a scored service's declared tree.
+- **Scored accounts** are never touched automatically.
+- **Rate limit:** at most 3 tier-0 actions per host per minute, keyed per object, not per recipe. Beyond that they become tier-1 proposals.
+- **Circuit breaker:** a real post-action health check (the scorer-mimic probe) runs after every tier-0 action. If it goes red within 2 minutes, that action type is disabled on that host and escalated.
+- **Loop detection:** the same restore of the same object 3 times in 10 minutes opens an incident and a targeted hunt on the culprit's lineage.
+- **Locks and safe mode** apply. **Every network, account or process-control action has a timeout and a verified rollback** [OA §5.9].
+- **No scripts:** response actions are typed and native. Wazuh active response is disabled (§ OSS alongside Phylax).
+
+### Response recipes
+
+| Trigger | Collected automatically | Proposed actions | IR template |
+| --- | --- | --- | --- |
+| D1 or D17 via webshell | Trace-back timeline, process tree, content diff, transactions from the source ±10 min, ring slice | Kill tree, quarantine file, block source IP, hunt persistence by the web user, rotate unscored app and DB credentials | Web application compromise |
+| D5d binary modified | Ledger verdict, signer, package owner, expected file and source, process tree, network behaviour | Quarantine as evidence, restore from the depot, restart, scorer-mimic verify, hunt the same hash everywhere | Service binary replaced |
+| D7 | Creating session and its source | Disable account, kill sessions, review group memberships | Unauthorized account |
+| D8b Zerologon | Netlogon events, source, build and registry state | Enforce the secure channel, patch or filter RPC, propose krbtgt double reset and privileged credential rotation (tier 2) | Domain controller compromise |
+| D10 firewall disabled | Lineage of the disabler, recent persistence | Tier 0 restores; propose disabling the trigger | Defense evasion |
+| D12 or D13 | Owning process, binary hash, sinkhole capture, persistence | Kill, quarantine, remove persistence, hunt the same hash on all hosts | Malware callback |
+| D8 | Source account and host, logon session, tools seen | Disable source account, plan credential resets, krbtgt double reset | Credential compromise |
+| D14 | Config diff, admin session | Revert to known-good, rotate device admin | Network device compromise |
+| D15 with a honey credential | Token origin, every use of the token | Treat the origin host as compromised; hunt it; rotate real credentials stored nearby | Credential theft from host X |
+| V2 or V3 | The Kali scan diff or canary report, the Palo rule set | Close the port or the egress path | Perimeter misconfiguration |
+
+### Audit trail
+
+Every action, automatic or manual, writes an event: what triggered it, before and after state, the undo, and the health result afterwards. This is the containment section of every IR report, and the answer when the White Team asks why something changed.
