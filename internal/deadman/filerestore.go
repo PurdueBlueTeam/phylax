@@ -79,12 +79,9 @@ func restoreFiles(_ context.Context, e Entry) error {
 			}
 			continue
 		}
-		if err := atomicfile.WriteFile(s.Path, s.Content, s.Mode.Perm()); err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		// atomicfile keeps the *current* mode; the snapshot's mode wins on rollback.
-		if err := os.Chmod(s.Path, s.Mode); err != nil {
+		// The snapshot's mode wins on rollback and is set before the rename, so
+		// content and mode become visible together.
+		if err := atomicfile.WriteExactMode(s.Path, s.Content, s.Mode); err != nil {
 			errs = append(errs, err)
 		}
 	}
