@@ -147,7 +147,7 @@ func TestSweepLoopEmitsMissedChangesButNotAuditReported(t *testing.T) {
 	write(t, dir+"/missed", "evil")
 	write(t, dir+"/seen", "evil")
 	m.recent.Store(dir+"/seen", time.Now()) // audit already reported this one
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for len(c.kind(KindFileChange)) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}

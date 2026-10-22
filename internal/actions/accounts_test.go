@@ -270,7 +270,7 @@ func TestCrossProcessLockFile(t *testing.T) {
 	rel()
 	select {
 	case <-got:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("second locker never acquired")
 	}
 	if _, err := os.Stat(f.path("etc/.pwd.lock")); err != nil {

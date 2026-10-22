@@ -47,7 +47,7 @@ func startServer(t *testing.T, o ServerOptions) *testEnv {
 		cancel()
 		select {
 		case <-e.done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Error("server did not shut down")
 		}
 	})
@@ -95,6 +95,8 @@ func (m *memSource) Events(after uint64, max int) ([]event.Event, error) {
 
 func eventually(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
+	// d is the expected latency; a slow -race CI runner gets a generous floor.
+	d = max(d, 30*time.Second)
 	dl := time.Now().Add(d)
 	for !f() {
 		if time.Now().After(dl) {

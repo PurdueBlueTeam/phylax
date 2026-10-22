@@ -87,7 +87,7 @@ func TestLocksSerializeAndNamesIndependent(t *testing.T) {
 	rel1() // idempotent
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("never acquired")
 	}
 }

@@ -123,6 +123,15 @@ func (a *Agent) subscribe(buf int) (<-chan event.Event, func()) {
 	}
 }
 
+// Subscribers reports how many modules currently listen to the event stream.
+// A module is reported running before it subscribes, and events published in
+// between are not replayed, so readiness checks (tests) wait on this.
+func (a *Agent) Subscribers() int {
+	a.tapMu.Lock()
+	defer a.tapMu.Unlock()
+	return len(a.taps)
+}
+
 // publish hands e to every subscriber without blocking.
 func (a *Agent) publish(e event.Event) {
 	a.tapMu.Lock()

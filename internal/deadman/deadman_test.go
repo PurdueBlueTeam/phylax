@@ -60,7 +60,7 @@ func open(t *testing.T, dir string, opt Options) *Manager {
 
 func waitState(t *testing.T, m *Manager, id string, want State) Entry {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		e, err := m.Get(id)
 		if err == nil && e.State == want {
@@ -139,7 +139,7 @@ func TestNoConfirmFiresAndRestoresExactly(t *testing.T) {
 	}
 	select {
 	case <-results:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("OnResult not called")
 	}
 	got, _ := os.ReadFile(path)

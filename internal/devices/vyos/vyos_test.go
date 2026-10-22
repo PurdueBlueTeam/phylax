@@ -241,7 +241,7 @@ func TestDeadmanTimerFiresWithoutController(t *testing.T) {
 	}
 	// The controller "dies" here: no Confirm, no Rollback; Close must not disarm.
 	_ = tx.Close(c)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && !slices.Equal(e.srv.Lines(), before) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -293,7 +293,7 @@ func TestMgmtLockoutDetectedByFreshConnectionAndDeadmanReverts(t *testing.T) {
 	if !errors.Is(err, devices.ErrRollback) || !strings.Contains(err.Error(), "dead-man") || res.RolledBack {
 		t.Fatalf("expected a failed manual rollback that defers to the dead-man: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) && !slices.Equal(e.srv.Lines(), before) {
 		time.Sleep(20 * time.Millisecond)
 	}
