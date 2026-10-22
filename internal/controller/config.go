@@ -48,6 +48,11 @@ type Config struct {
 	// LedgerPath is the signed reference ledger; agents receive its hash in
 	// their config and load the file from their state directory.
 	LedgerPath string `json:"ledger_path"`
+	// UIListen is the operator web UI address (default "127.0.0.1:8443"; must
+	// be loopback; "off" disables the UI).
+	UIListen string `json:"ui_listen"`
+	// PlansPath is the plan template directory (YAML files).
+	PlansPath string `json:"plans_path"`
 	// SilenceThreshold: an enrolled agent not heard from for this long raises
 	// an agent.silent alert (default 30s).
 	SilenceThreshold  Duration `json:"silence_threshold"`
@@ -63,6 +68,9 @@ type Config struct {
 func (c *Config) applyDefaults() {
 	if c.AgentListen == "" {
 		c.AgentListen = "0.0.0.0:7443"
+	}
+	if c.UIListen == "" {
+		c.UIListen = "127.0.0.1:8443"
 	}
 	if c.IdentityPath == "" && c.DataDir != "" {
 		c.IdentityPath = filepath.Join(c.DataDir, "identity.pem")

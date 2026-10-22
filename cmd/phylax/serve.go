@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -23,6 +24,8 @@ func runServe(ctx context.Context, args []string) error {
 	cfgPath := fs.String("config", "", "controller config file (JSON)")
 	dataDir := fs.String("data-dir", "", "data directory (when no config file)")
 	listen := fs.String("listen", "", "agent listen address override")
+	uiListen := fs.String("ui-listen", "", "operator UI address (loopback only; \"off\" disables)")
+	plansDir := fs.String("plans", "", "plan template directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -38,6 +41,12 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	if *listen != "" {
 		cfg.AgentListen = *listen
+	}
+	if *uiListen != "" {
+		cfg.UIListen = *uiListen
+	}
+	if *plansDir != "" {
+		cfg.PlansPath = *plansDir
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("%w (use -config or -data-dir)", err)
@@ -71,5 +80,45 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	log.Info("plan-signing public key (bootstrap plan_key)", "plan_key", hex.EncodeToString(c.PlanPublicKey()))
 	log.Info("controller key pin", "pin", c.Pin().String(), "curl", c.Pin().Curl())
+	if cfg.UIListen != "off" {
+		if err := startUI(ctx, c, cfg, log); err != nil {
+			return err
+		}
+	}
 	return c.Run(ctx)
+}
+
+// startUI serves the operator UI on its own loopback listener. The first run
+// creates the "admin" operator and prints its password once on stderr; it is
+// stored only as an argon2id hash.
+func startUI(ctx context.Context, c *controller.Controller, cfg controller.Config, log *slog.Logger) error {
+	srv, _, err := c.NewUI(controller.UIOptions{Addr: cfg.UIListen, PlansDir: cfg.PlansPath, Logger: log})
+	if err != nil {
+		return fmt.Errorf("ui: %w", err)
+	}
+	ln, err := net.Listen("tcp", srv.Addr())
+	if err != nil {
+		return fmt.Errorf("ui listen: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			ln.Close()
+		}
+	}()
+	pw, created, err := srv.EnsureAdmin(ctx)
+	if err != nil {
+		return fmt.Errorf("ui: %w", err)
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "\nFirst run: operator account created.\n  user:     admin\n  password: %s\nThis password is shown once and is not stored; change it on the Account page.\n\n", pw)
+	}
+	ok = true
+	log.Info("operator UI listening", "url", "http://"+ln.Addr().String()+"/")
+	go func() {
+		if err := srv.Serve(ctx, ln); err != nil {
+			log.Error("operator UI stopped", "err", err)
+		}
+	}()
+	return nil
 }

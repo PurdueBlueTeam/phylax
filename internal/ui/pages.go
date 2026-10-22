@@ -20,7 +20,9 @@ func (s *Server) routes() {
 
 	s.Handle("GET /{$}", http.HandlerFunc(s.getDashboard))
 	s.Handle("GET /agents", http.HandlerFunc(s.getAgents))
+	s.Handle("GET /dashboard/live", http.HandlerFunc(s.getDashboardLive))
 	s.Handle("GET /agents/table", http.HandlerFunc(s.getAgentsTable))
+	s.opsRoutes()
 	s.Handle("GET /account", http.HandlerFunc(s.getAccount))
 	s.Handle("POST /account/password", http.HandlerFunc(s.postPassword))
 	s.Handle("POST /logout", http.HandlerFunc(s.postLogout))
@@ -100,7 +102,13 @@ func (s *Server) postLogout(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------- pages
 
-func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) { s.dashboard(w, r, "") }
+
+func (s *Server) getDashboardLive(w http.ResponseWriter, r *http.Request) {
+	s.dashboard(w, r, "dash_live")
+}
+
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, block string) {
 	d := placeholderDashboard()
 	if s.cfg.Dashboard != nil {
 		var err error
@@ -110,7 +118,16 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.render(w, r, http.StatusOK, "dashboard", pageData{Title: "Dashboard", Nav: "dashboard", Data: d})
+	if s.cfg.Ops != nil && d.Ops == nil {
+		od, err := s.cfg.Ops.Overview(r.Context())
+		if err != nil {
+			s.log.Error("ui: overview", "err", err)
+			http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+			return
+		}
+		d.Ops = &od
+	}
+	s.render(w, r, http.StatusOK, "dashboard", pageData{Title: "Dashboard", Nav: "dashboard", Data: d, Block: block})
 }
 
 func placeholderDashboard() Dashboard {

@@ -1,0 +1,8 @@
+{{define "content"}}
+<h1>Alerts</h1>
+<p>Show: <a href="/alerts?state=open">open</a> | <a href="/alerts?state=acked">acked</a> | <a href="/alerts?state=closed">closed</a> | <a href="/alerts?state=all">all</a></p>
+<table><thead><tr><th>Time</th><th>Severity</th><th>Rule</th><th>Host</th><th>State</th><th></th></tr></thead><tbody>
+{{range .Data.Alerts}}<tr><td>{{ts .Time}}</td><td class="sev-{{.Severity}}">{{.Severity}}</td><td>{{.Title}}<br><span class="mono">{{.Rule}}</span></td><td>{{.Host}}</td><td>{{.State}}</td>
+<td><a href="/alerts/{{.ID}}">Evidence</a>{{if .ChainID}} | <a href="/chains/{{.ChainID}}">Chain</a>{{end}}</td></tr>
+{{else}}<tr><td colspan="6">No alerts.</td></tr>{{end}}</tbody></table>
+{{end}}

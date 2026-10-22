@@ -266,7 +266,7 @@ Every connection is opened by the host side. The Kali agent dials the controller
 | --- | --- | --- |
 | `phylax serve` | Controller (ubuntu-wkst) | Accepts agent connections. Holds the event store (SQLite) and the encrypted secrets vault. Compiles the manifest into plans, agent configs and firewall policy. Runs plans, correlation, check discovery, the round-clock model, trace-back, the integrity ledger, attack chains and the drafters. Talks to network devices through adapters. Serves the web UI on its own localhost listener. |
 | Active checker | Controller, as a module of the main process | Runs the active checks on its own scheduler, with per-check timeouts and panic recovery. Its list is managed in the UI and fed by check discovery, but it shares no code with discovery. |
-| Web UI | Controller, `127.0.0.1` only, separate listener | Server-rendered with htmx, live updates over Server-Sent Events. Login, session cookie and CSRF on every state-changing request. |
+| Web UI | Controller, `127.0.0.1` only, separate listener | Server-rendered with htmx, live updates by htmx polling (Server-Sent Events later if polling proves too slow; see docs/ui.md). Login, session cookie and CSRF on every state-changing request. |
 | Cache and depot | Controller | Content-addressed store of packages, reference hashes, rule sets, tools and installers. Cache-through proxy for patch windows. See § Offline-first. |
 | Integrity ledger | Controller | Reference hashes with provenance for binaries and libraries, and the lookup service agents use through the controller. See § Binary integrity ledger. |
 | Chain builder | Controller | Builds hops, chains and campaigns from events. See § Attack chains. |

@@ -14,6 +14,9 @@
 <nav>
 <a href="/"{{if eq .Nav "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
 <a href="/agents"{{if eq .Nav "agents"}} aria-current="page"{{end}}>Agents</a>
+<a href="/alerts"{{if eq .Nav "alerts"}} aria-current="page"{{end}}>Alerts</a>
+<a href="/plans"{{if eq .Nav "plans"}} aria-current="page"{{end}}>Plans</a>
+<a href="/chains"{{if eq .Nav "chains"}} aria-current="page"{{end}}>Chains</a>
 <a href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>Account</a>
 </nav>
 <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><span class="user">{{.User}}</span> <button type="submit">Sign out</button></form>
