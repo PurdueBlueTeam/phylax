@@ -388,3 +388,344 @@ The controller's internal address is DHCP. A static NAT needs a fixed target, so
   2. First contact installs the agents.
   3. Host firewalls get the management allows first, then default-deny outbound, under the dead-man switch (§ Execution).
 - **Controller address.** If it changes, the static NAT is updated by hand and every agent is pointed at the new address with a local command (§ Enrollment).
+
+## Trust model
+
+The controller and its unlocked keys are the only fully trusted component. Agents are trusted to report on their own host only while that host is clean. Relays, the network, host binaries, DNS and clocks aren't trusted at all. The Kali is a workstation outside the Palo and is treated as an untrusted vantage point. Every mechanism below exists to keep a compromise of one host from spreading through our own tooling.
+
+### Adversary assumptions
+
+The red team can:
+
+- get root or SYSTEM on any server, possibly on a workstation, possibly before drop flag
+- read our full source, rules and this document
+- watch or tamper with traffic inside the LAN, and across segments if they own the router
+- move system clocks
+- kill, patch, or impersonate our agent on a host they own
+- replay anything they capture
+- feed crafted strings (process names, file paths, HTTP paths, usernames) into anything we log
+- reach every default credential in the packet and any local process on the controller host that isn't ours
+
+### Trust boundaries
+
+| Component | Trusted for | Not trusted for | If compromised |
+| --- | --- | --- | --- |
+| Controller host and its unlocked keys | Everything; it's the root of trust | — | Total loss: attacker can sign plans for every host. |
+| UI session (one login) | Launching and approving actions | — | Same as controller compromise. Bound to localhost with a login, so the attacker needs the controller host and the password. |
+| Release signing key (kept off the competition network) | Which binaries are ours | — | Malicious builds. Never present in the environment. |
+| Agent | Reporting what it sees while its host is clean | Truth about a compromised host; anything about other hosts | Attacker can lie for that one host, flood, replay its own history, or impersonate that host. Nothing more. |
+| Kali agent | Reporting what an outside client sees | Anything else; it holds scored credentials only in memory during probes | Attacker can falsify external verdicts and read credentials in memory. Cannot command other hosts. |
+| Relay | Moving bytes | Reading or altering content | Can drop or delay its segment's traffic. Can't read, forge or command. |
+| Optional OSS (Wazuh manager and others) | Extra detections and evidence | Anything on the critical path | The Wazuh manager can push code to its agents; treat its host as a tier-0 asset (§ OSS alongside Phylax). |
+| Network devices (after rotation) | Enforcing policy | Staying unchanged | Detected by config diff; reverted from snapshot. |
+| Host OS, host binaries, DNS, clocks, the network | Nothing | Everything | Assumed hostile from the start |
+
+### Mechanisms
+
+**Identity with pinned keys, no certificate authority.**
+
+- Each agent generates its own ECDSA P-256 keypair at install and enrolls with a one-time token. The controller records the public key against the host's identity. P-256 is used everywhere because Windows SChannel (PowerShell's download path on Server 2019 and Windows 10) cannot negotiate Ed25519 server certificates [CR §2].
+- The agent carries the controller's public-key hash from its bootstrap bundle.
+- Both sides verify each other by key hash, not by a certificate chain, and ignore certificate dates. Moving the clock can't break authentication.
+- A stolen agent key impersonates only that host.
+
+**Signed commands, separate from the transport.**
+
+- Every plan step is signed with an Ed25519 plan-signing key held only in controller memory, unlocked by passphrase.
+- The signature covers a canonical encoding (RFC 8785 JSON) of the whole step except the signature itself: plan id, node, target host identity, epoch, sequence, action, phase, parameters, a digest of the secrets blob, a digest of the rollback data, the dead-man deadline, risk class and approval record [CR §3.2].
+- Verification is mandatory. An agent with no plan key refuses every step.
+- Each agent persists the highest `(epoch, seq)` it has accepted and rejects anything not strictly greater, and any step for an unexpected plan id. The epoch rises only when the controller is restored from a snapshot (§ Controller recovery).
+- The transport key and the plan-signing key are different.
+
+**Bounded agent power.** The agent runs as root or SYSTEM because it has to, but it only executes typed actions from the catalog. `host.exec` needs an explicit approval and is labeled in the UI. The pre-approved host tools are an explicit, hash-pinned list (YARA-X, `nmap` on the Kali, the Sysmon installer, package managers inside patch windows).
+
+**Per-host secrets only.** A plan step carries only the secrets its host needs. The Kali gets scored credentials only for the probes it runs, held in memory, never written to disk.
+
+**Every endpoint is authenticated.** There is no "loopback means trusted" [CR §3.1].
+
+| Surface | Listener | Authentication |
+| --- | --- | --- |
+| Agent and relay streams | `agent_port`, ALPN `phylax/*` | Mutual key pinning |
+| Bootstrap downloads | `agent_port`, no ALPN | Serves only the signed binary and a bootstrap config bound to a one-time token. Mints nothing. |
+| Operator UI and API | `127.0.0.1:8443` only | Login (argon2id), HttpOnly SameSite=Strict cookie, CSRF token on every state change. CLI uses an API token created in the UI. |
+| Token minting, plans, responses, approvals | UI listener only | Session plus CSRF, plus approval records for risky nodes |
+
+**Agent data is evidence, never instructions.**
+
+- Events are sequenced and hash-chained. The controller acknowledges what it stores. A root attacker can forge future events but can't rewrite acknowledged ones, and gaps are visible.
+- Every message is validated against its schema, with per-agent size and rate limits.
+- Nothing an agent sends is ever executed, or used to build a command or a query.
+
+**The web UI treats every agent-supplied string as hostile.** Process names, command lines, paths, usernames, HTTP paths and decoy-shell input are all attacker-controlled. Required:
+
+- Go `html/template` auto-escaping; no raw HTML from data.
+- A strict Content Security Policy with no inline scripts and only vendored assets.
+- An HttpOnly, SameSite=Strict session cookie, and CSRF tokens on every state-changing request.
+- Evidence files served as downloads, never rendered inline.
+- Request bodies are size-capped.
+
+**Time is for display only.** Ordering comes from per-host sequence numbers. Each heartbeat carries the host clock, and timelines apply the measured offset.
+
+**The controller host gets the hardest hardening.** Inbound: only the agent port, from declared sources. The UI is on localhost. SSH disabled. Secrets in memory only, encrypted at rest. Its own agent reports to it like any other host. Other local users and processes get nothing from the UI without the password.
+
+**Obscurity (D-8).** The agent's install path, binary name, service name and unit name are randomised per event from a secret in the vault. Sysmon's driver and service are renamed. The controller's own detections exclude the agent by its randomised path and hash, not by name. Release binaries are never mutated per host, so the signature always verifies. This raises the cost for scripted kill lists [OA §5.6, WT §9.8]. It is not a boundary.
+
+### Where trust is weakest
+
+- **First contact.** A host that's already backdoored at drop flag can tamper with the agent install. Its first hunt results and its ledger sweep matter more than its heartbeats.
+- **Windows.** Go calls through `ntdll` and `kernel32`, so a userland hook there affects our agent. On Linux, Go skips libc and is immune to `LD_PRELOAD`, but not to kernel rootkits.
+- **The Kali.** Its verdicts are good evidence about the public path, and poor evidence about anything else.
+- **The controller.** The single root of trust, accepted deliberately in exchange for simplicity.
+
+## The agent
+
+The agent is the agent mode of the single static Phylax binary, running as a supervised service. It collects, detects, responds, executes plan steps, captures packets and runs decoys, all locally. It sends everything outbound and holds a crash-safe local spool while the link is down. Roles from the manifest switch extra modules on. A host can hold several roles at once. It builds and runs on Windows from the first milestone, and CI cross-builds both OSes with `CGO_ENABLED=0` [CR §6].
+
+### Process model
+
+- **Main process,** root or SYSTEM: everything except decoys. Modules run as supervised goroutines with panic recovery and exponential restart backoff. Shared state is behind locks or channels; `go test -race` is a CI gate, because a concurrent map write is a fatal error no recover can catch [CR §3.5].
+- **Decoy process,** unprivileged (a dedicated user on Linux, a low-privilege service account on Windows): every decoy listener and the fake shell. **Complexity flag:** a second process, kept because decoys are the agent code most exposed to attackers.
+- **Config comes only from the controller,** as signed `config` messages delivered at hello and on change. The bootstrap file carries the controller pin and the host identity; the module list, watches, services, checks and rules arrive signed. An agent without config reports itself as unconfigured and runs no module [CR §3.4].
+
+### Footprint targets
+
+| Measure | Target | Enforced by |
+| --- | --- | --- |
+| Binary size | 40 MB or less, 15 MB or less compressed. If first contact is too slow, a build tag produces an agent-only variant. | CI fails the build above it |
+| First contact to heartbeat | 30 s or less | Lab test T21 |
+| Memory | 80 MB RSS or less steady, excluding the packet ring and kernel-held memory (reported separately in the heartbeat) | `debug.SetMemoryLimit`, plus systemd `MemoryMax` or a Windows Job Object as the hard cap |
+| CPU | 3% average; a 5 s burst of one core at most | Per-module token buckets, plus `CPUQuota` or Job Object. Hash sweeps run at low priority. Capture drops packets before slowing the host. |
+| Disk | Spool 200 MB cap; packet ring the smaller of 2 GB or 10% of free disk | Oldest low-priority data dropped first; alerts and evidence never dropped |
+
+Kernel-held memory is counted too: audit backlog, inotify watches, the AF_PACKET ring and any BPF maps [OA §5.7].
+
+### Modules
+
+Each module has its own config block and on/off switch. A module that panics is restarted on its own and reported.
+
+| Module | Does | Linux | Windows |
+| --- | --- | --- | --- |
+| `link` | Outbound TLS, reconnect, priorities, bounded queues | Native | Native |
+| `spool` | Segment-file spool, hash chain, gap records, heartbeat every 5 s with clock reading and a sensor-health block | Native | Native |
+| `exec` | Runs signed plan steps off the receive loop: typed actions with check, apply, verify, rollback; agent-side dead-man | Native; `host.exec` on approval | Same |
+| `proc` | Process start and exit with lineage, user, command line, service attribution, image hash | Kernel audit `EXECVE` via `go-libaudit` as truth; proc connector as redundancy; `/proc/<pid>` read at each event | Sysmon 1 and 5 via `EvtSubscribe` with bookmarks; Security 4688 fallback |
+| `net` | Listeners, connections, owning process, direction and service | `sock_diag` netlink plus an fd-inode join; audit `connect` on default-deny hosts | `GetExtendedTcpTable`, UDP table, Sysmon 3 |
+| `fim` | File changes on persistence paths, content roots, configs, with actor | Audit directory watches; hash sweep as truth; fanotify for honey-file reads | `ReadDirectoryChangesW`, USN journal, Sysmon 11–14, SACL auditing (4663) with a periodic verifier |
+| `logs` | App and OS logs into events, including `auth_success` and `auth_fail` | File tail with parsers (sshd, Cockpit, web admin logins) | `EvtSubscribe` on Security, System, Sysmon, PowerShell, Defender, Task Scheduler, Firewall, DNS Server, WMI-Activity, Netlogon log tail |
+| `capture` | Packet ring, flows with Community ID, protocol transactions | AF_PACKET TPACKET_v3 mapped ring | Raw socket with `SIO_RCVALL` |
+| `egress` | Denied outbound attempts, attributed to a process | NFLOG over netlink plus the `sock_diag` join | Security 5157 (agent's own link excluded) |
+| `sinkhole` | Catches denied outbound TCP and records the first bytes | nftables `nat` redirect to a loopback catcher | Not available |
+| `detect` | Rule evaluation on every event | Native | Native |
+| `respond` | Tier-0 actions, with guards | Native | Native |
+| `integrity` | Exec-time hashing, loaded-library checks, service binary pinning, sweeps, ledger lookups | Native | Native, plus Authenticode and catalog checks |
+| `crossview` | Hidden PIDs, sockets and modules; memfd or deleted executables; `LD_PRELOAD`; BPF programs | Native | Process list from several APIs; driver list against baseline |
+| `inventory` | Differential snapshots: listeners, accounts, tasks, services, units, mounts, capabilities, BPF programs, interfaces | Native | Native |
+| `decoys` | Network decoys and the fake shell (in the decoy process) | Native | Native |
+| `scan` | YARA sweeps (scheduled, low priority) | Pre-approved pinned YARA-X | Same |
+| `relay`, `device_proxy`, `check_runner`, `scanner`, `canary` | Roles described elsewhere | Native | Native |
+| `patch_proxy` | Loopback HTTP proxy for patch windows | Native | Native |
+
+### What "Go-native" means here
+
+- **Allowed by default:** calling the OS's own interfaces from Go. That means syscalls, netlink, `/proc` and `/sys`, D-Bus for systemd, Win32 APIs, COM and WMI, the event log API, LDAP, and database drivers.
+- **Escape hatch:** `host.exec`, which runs a binary on the host. It needs approval in the UI and is labeled "runs a host binary" everywhere. Pre-approved, hash-pinned tools: package managers inside patch windows, the Sysmon installer, YARA-X, and `nmap` and `xfreerdp` on the Kali.
+- **Complexity flag:** COM and WMI from Go (Windows Firewall, Task Scheduler, WMI subscriptions, Defender settings) is fiddly code and the largest chunk of Windows work. If one COM interface fights back, use `host.exec` for that one action and record it in the register.
+
+### Telemetry sources
+
+Phase 1 uses mechanisms that work on every target kernel. `phylax doctor` and the agent's start-up probe publish a `capabilities` block and which sensor is active, so a coverage gap shows in the UI [OA §6].
+
+- **Linux process events.**
+  - The kernel audit subsystem is the truth. An `execve` or `execveat` record carries argv, cwd, exe, ppid, uid and tty atomically [OA §0.1, OA §4]. The agent installs its own rules (plus `fork`/`clone` with the thread-clone filter) and joins the read-only multicast group, which leaves auditd running. RHEL-family hosts refuse manual auditd stops, and Splunk may read `audit.log`. If no auditd runs, or the kernel is older than 3.16, the agent takes the unicast role.
+  - Audit is sized on purpose: backlog 8192 to start (tuned by the load test), a large socket receive buffer, failure mode log not panic, a dedicated reader goroutine that parses and enqueues and never blocks on I/O [OA §5.1].
+  - The netlink proc connector is a second opinion and lineage hint. A divergence between connector exec events and audit exec events is itself an alert (audit tampered with or overloaded).
+  - On every exec event the agent reads `/proc/<pid>` at once (cgroup, systemd unit, `exe` target, start time) and treats the audit record as authoritative if the read fails. A process is identified by `(pid, start_time, boot_id)`; exited entries live in a short-TTL table so late children still resolve their parents.
+  - **Loss is visible.** The agent uses `go-libaudit`'s sequence-gap detection and the connector's per-CPU `seq`, emits `telemetry_gap{source, count, from, to}`, and backfills from a `/proc` diff marked `source=backfill`, lower confidence [OA §5.1].
+  - **Audit health** is checked on a timer (enabled flag, our pid still the reader, ruleset hash, lost and backlog counters, no `-a never,task`) and reported in every heartbeat. D10 restores the rules.
+  - **eBPF is a gated option** behind the same `process_start` schema (`cilium/ebpf`, pre-built objects, runtime feature probing, BTF required, audit as fallback). It is built only if the exec-storm load test shows audit missing more than 1% at 200 execs per second, or the lab shows a kernel where audit is unusable [OA §0.2].
+- **Windows.**
+  - Sysmon is installed by the agent using `host.exec` (no reboot). The Sysinternals license doesn't let us redistribute it, so the controller fetches it from Microsoft during cache sync and checks it against a hash pinned in our release; agents get it from the controller cache. The driver and service are installed under randomised names (`sysmon -d`, `-i`) [OA §5.6, §5.4].
+  - The Sysmon config is code: sysmon-modular's Balanced profile pinned to the installed Sysmon version, plus CCDC includes (children of scored services, LSASS access, named pipes, WMI, DNS, image loads for service binaries, file deletes only in web roots), volume-tested per host role [OA §5.4].
+  - The agent reads channels through `EvtSubscribe` (adapted from winlogbeat's cgo-free wrapper) with a bookmark persisted after each acknowledged batch. A restart resumes exactly where it stopped, including events logged while the agent was down. Channel sizes are raised and clears (1102, 104) alert.
+  - If Sysmon is removed or reconfigured, the agent reinstalls it as a tier-0 action and falls back to Security 4688 with command-line auditing, which it enables natively. Fallback order: Sysmon, 4688. The WMI process trace is not shipped. An in-house ETW consumer is not planned.
+- **Network.**
+  - Connections come from `sock_diag` plus an inode-to-pid walk of `/proc/<pid>/fd`, refreshed only for unmapped inodes between full walks. Every flow record carries a Community ID so host data joins Palo and Suricata data by string [OA §5.3].
+  - Short connections are caught by audit `connect` rules on hosts with default-deny egress, filtered by uid where possible.
+  - The agent's own TLS link and spool writes are excluded from every stream, which avoids the documented feedback loop [OA §5.2, §5.3].
+- **Files.**
+  - Audit directory watches (`-a always,exit -F dir=… -F perm=wa`) are recursive and give the actor (pid, exe, auid). Each mount is watched separately. Where audit gives only an inode, the sweep or the `PATH` record resolves the name [OA §5.2].
+  - The hash sweep is the source of truth: it walks trees and diffs against a baseline database, including creations and deletions, rate-limited and low priority, hashing only changed files each pass and re-hashing everything on a slower cadence. Events trigger an immediate re-stat and re-hash of that path.
+  - Unsupported filesystems (NFS, overlayfs, btrfs quirks) are reported as a coverage gap. A small hand-rolled inotify loop is a fallback only.
+
+### Agent self-protection and tamper detection
+
+No open Linux agent prevents a root user from stopping it. The goal is to raise the cost for scripted kill lists, detect fast and recover automatically [OA §5.6]:
+
+1. **Heartbeat with sensor health:** module states, audit status, connector and fanotify overflow counts, Sysmon service and config hash, binary hash, uptime, clock, kernel-held memory. Silence means the agent is down; present-but-degraded means a sensor was tampered with or overloaded.
+2. **Service hardening:** `Restart=always`, `RestartSec=1`, `StartLimitIntervalSec=0`, `WatchdogSec` with `sd_notify`, `OOMScoreAdjust=-900`, `MemoryMax`, `CPUQuota`. Windows: recovery actions set to restart forever, a protected service DACL.
+3. **Kernel-side watches on our own files** (binary, unit, config, audit rule files). The kernel records edits even if the agent was just killed, and the restarted agent ships them.
+4. **Opt-in immutability:** `chattr +i` on the agent binary and unit; audit `-e 2` as an explicit late plan step with a reboot as rollback. Neither is automatic, and the agent's replace-binary action clears and re-sets the bit.
+5. **Cross-source tripwires:** exec via audit against the connector, listeners via `sock_diag` against `/proc/net`, the process list against `sock_diag`-owned pids.
+6. **Assume the host key is stolen:** the controller sees one key used from two places as an alert.
+7. **Randomised names and paths** (D-8), and a tier-1 alert if the agent binary hash changes.
+
+### Windows Defender
+
+An unsigned binary that captures raw packets, runs fake services and keeps a decoy credential session in LSASS can look like malware.
+
+- Test the agent against current Defender definitions in the lab before every release.
+- If it's flagged, hardening keeps exactly one Defender exclusion (the agent's randomised install directory) and alerts on any other exclusion.
+- **Complexity flag:** an exclusion is a hole, even a narrow one. The only alternative is code signing, which isn't practical.
+
+### Lifecycle
+
+| Stage | What happens |
+| --- | --- |
+| Install | First contact copies the binary and a bootstrap config to a randomised path (§ Enrollment), installs a systemd unit or Windows service with automatic restart, then enrolls. |
+| Steady state | Supervised by systemd or the service manager. Config and rules hot-reload from signed config messages. |
+| Killed or disabled | The controller sees the heartbeat stop. If the host is unreachable by other means, restore from the console one-liner. |
+| Binary replacement | One action, `agent.replace_binary`: verify the signed binary, swap, restart, and roll back if no heartbeat returns within 30 s. |
+| Uninstall | One action, for cleanup after the competition. |
+
+## Wire protocol and data flow
+
+Each agent holds one long-lived TLS 1.3 connection to the controller, with both sides pinning keys. Over it run length-prefixed, compressed JSON messages in strict priority order. Anything that isn't agent messaging gets its own connection, told apart by ALPN, the protocol name sent during the TLS handshake.
+
+### TLS and pinning
+
+- TLS 1.3 only for every agent, relay, splice and patch connection. Bootstrap downloads also accept TLS 1.2, because Windows 10, Server 2016 and Server 2019 can't do TLS 1.3 and the console one-liner uses the host's own stack.
+- Self-signed ECDSA P-256 certificates. Verification is replaced by a check of the peer's public-key hash against the pinned value, with dates ignored.
+- The controller pins each agent's key at enrollment. Agents and relays pin the controller's key from their bootstrap config.
+- The TLS handshake runs in a per-connection goroutine with a pending-handshake cap and a short deadline. It never runs in the accept loop [CR §3.3].
+- One listener on the controller, `agent_port`, serves every connection type. The ALPN value picks the handler:
+
+| ALPN | Opened by | Purpose |
+| --- | --- | --- |
+| `phylax/agent` | Agent (direct or spliced), including the Kali | All agent messaging |
+| `phylax/relay` | Relay | The relay's control connection |
+| `phylax/splice` | Relay | One device-proxy or bootstrap stream |
+| `phylax/patch` | Agent | One proxied HTTP connection during a patch window |
+| None, or `http/1.1` | A host being bootstrapped from the console | Download of the agent binary and a bootstrap config bound to a one-time token. Serves only these downloads. |
+
+The operator UI is not on this listener.
+
+**Complexity flag:** five connection types on one port. It's still one listener and one firewall rule, and each handler is small.
+
+### Framing
+
+- Each message is a 4-byte length, a type byte, and a JSON body. Batches of events are compressed with zstd (pure Go) with a hard decoder memory cap and a size check before decompression [CR §3.6].
+- **JSON over protobuf, deliberately:** readable under pressure, no code generation.
+- Maximum message size: 4 MB. Anything larger (pcap slices, files, binaries) moves as content-addressed 256 KB chunks, resumable.
+- Every connection has read and write deadlines and TCP keepalive. Send queues are bounded per priority. Handlers run off the receive loop so a slow handler can't stall acknowledgments or `control` messages.
+
+### Messages
+
+| Direction | Message | Notes |
+| --- | --- | --- |
+| Agent → controller | `hello` | Host id, agent version, roles, `capabilities` block (kernel features, sensors chosen), last acknowledged sequence, token if not yet enrolled |
+| Controller → agent | `welcome` | Confirms enrollment, carries the first signed `config` |
+| Agent → controller | `heartbeat` | Every 5 s: sequence, host clock, spool depth and congestion state, per-module health block |
+| Agent → controller | `events` | Batch of telemetry, alerts, transactions and flows, each with its sequence number |
+| Agent → controller | `step_result` | Per-action check, apply, verify outcome with before and after state |
+| Agent → controller | `chunk` | Evidence, pcap slices, collected files |
+| Controller → agent | `ack` | Highest contiguous sequence stored |
+| Controller → agent | `step` | A signed plan step |
+| Controller → agent | `config` | Signed module config, rules, profiles, ledger shards, check list |
+| Controller → agent | `fetch` | Request for a pcap slice, a file or raw telemetry |
+| Controller → agent | `chunk` | Payloads for steps: files, packages, the agent binary |
+| Controller → agent | `control` | Safe mode, freeze capture, patch window, dead-man confirm |
+
+### Priority
+
+The sender drains its queues in strict order, and every message is sent at its real priority:
+
+1. Heartbeats, alerts, acknowledgments and dead-man confirmations
+2. Plan steps and step results
+3. Evidence attached to alerts
+4. Transactions and flows
+5. Other telemetry
+6. Bulk transfers (pcap slices, files, binaries), shaped by a token bucket
+
+### Reliability
+
+- **Spool and acknowledge.** Every event has a per-host sequence number. The agent resends from the last acknowledged sequence after every reconnect, and the controller discards duplicates.
+- **Reconnect** with jittered backoff from 1 s to 30 s.
+- **Per-agent limits** on message rate, bytes per minute and concurrent fetches. SQLite writes are batched in transactions.
+- **Congestion states** reported to the controller: warning at 90% of the spool cap, full, flood, recovered at 70% [OA §5.8].
+
+### The spool
+
+The spool is segment files, not one file [CR §3.10, OA §5.8]:
+
+- Append-only segments of 4 to 16 MB holding length-prefixed, CRC-checked frames. `fsync` on a bounded interval and immediately for alert-class events. A small index file holds the chain head and last-acknowledged sequence.
+- **Startup repair:** scan the last segment and truncate to the last valid frame, so a torn write never bricks the agent.
+- **Acknowledgment-driven deletion** of whole segments below the controller's cumulative ack. Acknowledged data stays until space is needed, so a restored controller can ask for it again.
+- **Shedding drops whole low-priority segments** and appends a gap record (sequence range, count, class, time, hash bridge) to the chain. History is never rewritten. Alerts, evidence, heartbeats and step results live in segment sets that are never dropped. Shed order: raw log lines, connection churn, flows on unscored ports.
+- **Bounded RAM:** a small write buffer and an in-memory index only.
+- Collection is decoupled from transport: modules write through a bounded queue, and a down link never blocks sensors or local response.
+- Crash tests (kill -9 at random points, disk full, clock jumps) are a milestone gate (T29).
+
+### Volume
+
+- Shipped continuously: alerts, heartbeats, process starts, connection changes, file changes on watched paths, selected log lines, flows, protocol transactions on scored ports, denied-egress attempts, sinkhole captures, decoy sightings, ledger verdicts.
+- Kept on the host until fetched: the packet ring, raw sampler output, full log files.
+
+### Performance envelope
+
+Design for outages of up to 60 s on any link. Latency from event to controller is 10 s or less while the link is up.
+
+## Enrollment, bootstrap and recovery
+
+The controller gets its binaries from a signed release. On the flat LAN it installs agents over SSH where it can, WinRM where it must, and a typed console one-liner as break-glass. Each install enrolls with a one-time token. A new reservation resets everything, so bulk re-enrollment is a first-class path. The controller itself can be restored from an encrypted snapshot kept on another host.
+
+### Getting binaries into the environment
+
+1. **CI builds and signs** a release: static binaries for linux/amd64 and windows/amd64, rules, YARA rules, ledger indexes, the cache index, and the pinned hash of the tested Sysmon release. Signed with an ed25519 key that never enters the competition environment.
+2. **The first binary.** The platform driver downloads `phylax` for ubuntu-wkst from the GitHub release (slow, so it is kept small) and verifies it with `ssh-keygen -Y verify`. The public key to verify against is printed on the driver's checklist.
+3. **`phylax init`** downloads the rest of the release and verifies it against the key compiled into `phylax`, then starts `phylax cache sync` in the background (§ Offline-first).
+4. **Fallbacks,** in order: the same signed artifacts committed under `dist/` (the packet says nothing about the repo this year, so confirm), then a build from vendored source with a Go toolchain.
+5. **`phylax init` reports which channel worked** and how fast.
+
+### First contact
+
+| Method | When | How |
+| --- | --- | --- |
+| SSH (preferred) | Linux hosts with the default `sysadmin` credentials, reachable from the controller | Built-in Go SSH client. Uploads the agent binary and bootstrap config to a randomised path, installs the service, starts it. |
+| WinRM | Server 2019 and 2022 (enabled by default) | Built-in Go WinRM client with NTLM and message encryption. Basic auth and `AllowUnencrypted` are never used. |
+| Console one-liner | Windows 11 (no WinRM by default), the Kali, anything unreachable, or break-glass | Typed on the NETLAB console. ASCII only, short, no assumption that paste works. Downloads the binary and bootstrap config over the bootstrap connection type, checks the hash, installs. |
+
+The one-liner carries two pins: the controller's public-key hash (`curl --pinnedpubkey`, or a validation callback in PowerShell, which also enables TLS 1.2 on older builds) and the download's hash. The UI generates the full command for each host [SP §A18].
+
+**Bootstrap config contents:** the controller's address and port, the controller key pin, the host's manifest identity, the randomised install parameters, a one-time enrollment token that expires after 10 minutes, and the initial roles.
+
+### Enrollment
+
+1. The UI mints a token bound to a host identity. Only a logged-in operator can do this.
+2. The agent generates its keypair and connects with `phylax/agent`, presenting the token.
+3. The controller records the key, binds the token to that key, and replies `welcome`. The agent persists its `enrolled` flag only after `welcome`. Until then the same key may re-present the same token, so a dropped connection never wedges enrollment [CR §3.7].
+4. Token consumption is atomic. A wrong-host claim does not burn a token.
+5. Host identity is the manifest name plus the enrolled key, never an IP address.
+
+### After enrollment
+
+SSH, WinRM and RDP are treated like any other service. If the manifest doesn't declare them for a host, hardening disables them, with the console as break-glass. On 2027 hosts the manifest declares SSH on the Linux hosts, WinRM on the AD host and RDP on the MSSQL host, because they are scored.
+
+### Re-enrollment after a reset
+
+- A per-VM reset does not exist in 2027. A new reservation resets all hosts, so the UI offers **Re-enroll all**: it revokes every old key, issues fresh tokens and runs first contact again with the default credentials in dependency order.
+- The vault marks every rotated credential as reverted, and the hardening plans run again from zero. Every action is idempotent.
+- A host reset in a variant event restores its default credentials and, for the DC, rolls back every domain change. The domain credentials are marked reverted and the AD plans re-run.
+- A new key claiming to be an existing host is always an alert until an operator approves it.
+- After any restore or re-enrollment, the prebake hunt and the ledger sweep run automatically, and the host cannot be tagged golden until both are clean [COV X-2].
+
+### Changing the controller address
+
+If the address changes, run `phylax set-controller <address:port>` on each affected host's console. The Palo NAT target for the Kali path is updated by hand. Nothing is automatic.
+
+### Controller recovery
+
+**State snapshot.** Every 15 minutes, and after every enrollment, plan completion and vault change, `phylax` writes an encrypted snapshot to each backup target in the manifest. It holds state, not event data (target: under 10 MB): the controller's keys, enrolled agent keys with their last acknowledged sequence and chain hash, the manifest and overrides, the vault, plans and node status, active checks, the honeytoken registry, the ledger overrides and incidents without bulk evidence. It is encrypted with a key derived from the operator passphrase (`age`, scrypt mode).
+
+**Restore starts a new epoch.** Install `phylax` on the replacement machine, fetch the latest snapshot, unlock it, and start. The restored controller raises the epoch, so agents accept steps in the higher epoch despite sequence numbers the lost controller used after the snapshot. After a restore the controller asks each agent to resend everything its spool still holds, verifies that the chain passes through the snapshot's recorded sequence and hash, and marks anything missing as a gap with the reason "controller restored".
+
+**Restart safety.** After any restart, the controller accepts and stores agent traffic immediately. Plan signing and secret access stay locked until the passphrase is entered. Packet captures, evidence files and the cache are not in the snapshot; golden service backups are copied once to the backup targets.
