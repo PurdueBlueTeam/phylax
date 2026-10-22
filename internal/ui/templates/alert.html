@@ -1,0 +1,23 @@
+{{define "content"}}
+<h1>Alert {{.Data.ID}}: {{.Data.Title}}</h1>
+<p><a href="/alerts">Alert queue</a></p>
+<table>
+<tr><th>Time</th><td>{{ts .Data.Time}}</td></tr>
+<tr><th>Severity</th><td class="sev-{{.Data.Severity}}">{{.Data.Severity}}</td></tr>
+<tr><th>Rule</th><td class="mono">{{.Data.Rule}}</td></tr>
+<tr><th>Host</th><td>{{.Data.Host}}</td></tr>
+<tr><th>State</th><td>{{.Data.State}}</td></tr>
+{{if .Data.Message}}<tr><th>Message</th><td>{{.Data.Message}}</td></tr>{{end}}
+{{range .Data.Entities}}<tr><th>{{.Key}}</th><td>{{.Value}}</td></tr>{{end}}
+</table>
+<div class="actions">
+{{if .Data.ChainID}}<p><a href="/chains/{{.Data.ChainID}}">Chain timeline for this alert</a></p>
+{{else}}<form method="post" action="/alerts/{{.Data.ID}}/trace"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Trace back</button></form>{{end}}
+<form method="post" action="/alerts/{{.Data.ID}}/state"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="state" value="acked"><button type="submit">Acknowledge</button></form>
+<form method="post" action="/alerts/{{.Data.ID}}/state"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><input type="hidden" name="state" value="closed"><button type="submit">Close</button></form>
+</div>
+<h2>Evidence</h2>
+<table><thead><tr><th>Event</th><th>Time</th><th>Kind</th><th>Fields</th></tr></thead><tbody>
+{{range .Data.Evidence}}<tr><td class="mono">{{.Agent}}#{{.Seq}}</td><td>{{ts .Time}}</td><td>{{.Kind}}</td><td class="mono">{{.Body}}</td></tr>
+{{else}}<tr><td colspan="4">No evidence events referenced.</td></tr>{{end}}</tbody></table>
+{{end}}

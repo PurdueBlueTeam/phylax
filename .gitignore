@@ -8,3 +8,4 @@ vendor/
 
 # test fixtures are data, not logs
 !internal/**/testdata/*.log
+*.exe
