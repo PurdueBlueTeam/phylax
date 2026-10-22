@@ -41,6 +41,13 @@ type Config struct {
 	// ManifestPath is the manifest directory. Optional: when set, enrollment
 	// tokens can only be minted for hosts the manifest declares.
 	ManifestPath string `json:"manifest_path"`
+	// RulesPath is the detection rules directory (*.yml); with ManifestPath it
+	// makes the controller generate and sign every agent's config. Optional:
+	// without it hosts get no detect module.
+	RulesPath string `json:"rules_path"`
+	// LedgerPath is the signed reference ledger; agents receive its hash in
+	// their config and load the file from their state directory.
+	LedgerPath string `json:"ledger_path"`
 	// SilenceThreshold: an enrolled agent not heard from for this long raises
 	// an agent.silent alert (default 30s).
 	SilenceThreshold  Duration `json:"silence_threshold"`

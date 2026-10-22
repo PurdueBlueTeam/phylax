@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -81,12 +82,20 @@ type Supervisor struct {
 	mu sync.Mutex
 	ms map[string]*modState
 	wg sync.WaitGroup
+	// ctx is set once Run has started; modules added afterwards start at once.
+	ctx    context.Context
+	closed bool
 }
 
 type modState struct {
+	name   string
 	spec   ModuleSpec
 	status ModuleStatus
 	bucket bucket
+	// started/cancel/done are set when the module's goroutine runs.
+	started bool
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 // NewSupervisor creates a supervisor; add modules with Add before Run.
@@ -112,7 +121,8 @@ func NewSupervisor(o SupervisorOptions) *Supervisor {
 	return &Supervisor{o: o, ms: map[string]*modState{}}
 }
 
-// Add registers a module. Names must be unique.
+// Add registers a module. Names must be unique. Before Run the module starts
+// with Run; after it, at once.
 func (s *Supervisor) Add(spec ModuleSpec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -124,22 +134,76 @@ func (s *Supervisor) Add(spec ModuleSpec) error {
 	if burst <= 0 {
 		burst = max(1, int(spec.Rate))
 	}
-	s.ms[n] = &modState{spec: spec, status: ModuleStatus{State: StateStarting}, bucket: newBucket(spec.Rate, burst)}
+	m := &modState{name: n, spec: spec, status: ModuleStatus{State: StateStarting}, bucket: newBucket(spec.Rate, burst)}
+	s.ms[n] = m
+	if s.ctx != nil {
+		if s.closed {
+			return errors.New("agent: supervisor is stopping")
+		}
+		s.launchLocked(m)
+	}
 	return nil
 }
 
-// Run starts every module and blocks until ctx is cancelled and all have exited.
-func (s *Supervisor) Run(ctx context.Context) {
+// launchLocked starts m's goroutine. Caller holds s.mu and s.ctx is set.
+func (s *Supervisor) launchLocked(m *modState) {
+	mctx, cancel := context.WithCancel(s.ctx)
+	m.started, m.cancel, m.done = true, cancel, make(chan struct{})
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		defer close(m.done)
+		defer cancel()
+		s.supervise(mctx, m)
+	}()
+}
+
+// Remove stops the named module, waits for it to exit and forgets it. It
+// reports whether the module existed.
+func (s *Supervisor) Remove(name string) bool {
 	s.mu.Lock()
-	var names []string
-	for n := range s.ms {
-		names = append(names, n)
+	m, ok := s.ms[name]
+	if !ok {
+		s.mu.Unlock()
+		return false
+	}
+	cancel, done := m.cancel, m.done
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	s.mu.Lock()
+	if s.ms[name] == m {
+		delete(s.ms, name)
 	}
 	s.mu.Unlock()
-	for _, n := range names {
-		s.wg.Add(1)
-		go func() { defer s.wg.Done(); s.supervise(ctx, n) }()
+	return true
+}
+
+// Has reports whether a module with this name is registered.
+func (s *Supervisor) Has(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.ms[name]
+	return ok
+}
+
+// Run starts every module and blocks until ctx is cancelled and all have exited.
+// Modules may be added and removed while it runs.
+func (s *Supervisor) Run(ctx context.Context) {
+	s.mu.Lock()
+	s.ctx = ctx
+	for _, m := range s.ms {
+		if !m.started {
+			s.launchLocked(m)
+		}
 	}
+	s.mu.Unlock()
+	<-ctx.Done()
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	s.wg.Wait()
 }
 
@@ -163,17 +227,16 @@ func (s *Supervisor) States() map[string]string {
 	return out
 }
 
-func (s *Supervisor) update(name string, f func(*modState)) {
+func (s *Supervisor) update(m *modState, f func(*modState)) {
 	s.mu.Lock()
-	f(s.ms[name])
+	f(m)
 	s.mu.Unlock()
 }
 
 // limited wraps emit with the module's token bucket and counters.
-func (s *Supervisor) limited(name string) Emit {
+func (s *Supervisor) limited(m *modState) Emit {
 	return func(e event.Event) error {
 		s.mu.Lock()
-		m := s.ms[name]
 		if !m.bucket.take() {
 			m.status.RateDropped++
 			s.mu.Unlock()
@@ -192,20 +255,18 @@ func (s *Supervisor) limited(name string) Emit {
 	}
 }
 
-func (s *Supervisor) supervise(ctx context.Context, name string) {
-	s.mu.Lock()
-	mod := s.ms[name].spec.Module
-	s.mu.Unlock()
+func (s *Supervisor) supervise(ctx context.Context, m *modState) {
+	name, mod := m.name, m.spec.Module
 	bo := s.o.Backoff
 	for ctx.Err() == nil {
 		started := time.Now()
-		s.update(name, func(m *modState) { m.status.State, m.status.DownSince = StateRunning, time.Time{} })
-		err, overBudget := s.runOnce(ctx, name, mod)
+		s.update(m, func(m *modState) { m.status.State, m.status.DownSince = StateRunning, time.Time{} })
+		err, overBudget := s.runOnce(ctx, m, mod)
 		if ctx.Err() != nil {
 			break
 		}
 		if err == nil && !overBudget {
-			s.update(name, func(m *modState) { m.status.State = StateStopped })
+			s.update(m, func(m *modState) { m.status.State = StateStopped })
 			return
 		}
 		if time.Since(started) >= s.o.StableAfter {
@@ -216,7 +277,7 @@ func (s *Supervisor) supervise(ctx context.Context, name string) {
 			state = StateOverBudget
 		}
 		d := bo.Next()
-		s.update(name, func(m *modState) {
+		s.update(m, func(m *modState) {
 			m.status.State, m.status.LastError = state, err.Error()
 			m.status.Restarts++
 			m.status.DownSince = time.Now()
@@ -228,7 +289,7 @@ func (s *Supervisor) supervise(ctx context.Context, name string) {
 		case <-ctx.Done():
 		}
 	}
-	s.update(name, func(m *modState) { m.status.State = StateStopped })
+	s.update(m, func(m *modState) { m.status.State = StateStopped })
 }
 
 func (s *Supervisor) crashEvent(name string, err error, d time.Duration) {
@@ -237,7 +298,7 @@ func (s *Supervisor) crashEvent(name string, err error, d time.Duration) {
 }
 
 // runOnce runs the module with panic recovery and the budget watcher.
-func (s *Supervisor) runOnce(ctx context.Context, name string, mod Module) (err error, overBudget bool) {
+func (s *Supervisor) runOnce(ctx context.Context, m *modState, mod Module) (err error, overBudget bool) {
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var budgetErr error
@@ -249,7 +310,7 @@ func (s *Supervisor) runOnce(ctx context.Context, name string, mod Module) (err 
 			for {
 				select {
 				case <-t.C:
-					if e := s.o.Budget(name); e != nil {
+					if e := s.o.Budget(m.name); e != nil {
 						bmu.Lock()
 						budgetErr = e
 						bmu.Unlock()
@@ -268,7 +329,7 @@ func (s *Supervisor) runOnce(ctx context.Context, name string, mod Module) (err 
 				err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
 			}
 		}()
-		err = mod.Start(rctx, s.limited(name))
+		err = mod.Start(rctx, s.limited(m))
 	}()
 	bmu.Lock()
 	defer bmu.Unlock()
