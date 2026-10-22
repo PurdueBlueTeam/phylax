@@ -478,9 +478,10 @@ func TestSQLQueryRules(t *testing.T) {
 			t.Errorf("%s: %v", st, err)
 		}
 	}
-	// mssql is not handled by this action
-	if _, err := f.run(t, "sql.query", map[string]any{"engine": "mssql", "statement": "SELECT @@VERSION"}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("mssql: %v", err)
+	// engine mssql is handled by mssql_query.go (tests in mssql_test.go); with no
+	// SQL Server login configured on Linux it fails to connect, not to plan
+	if _, err := f.run(t, "sql.query", map[string]any{"engine": "mssql", "statement": "SELECT @@VERSION"}); err == nil || !strings.Contains(err.Error(), "SQL login") {
+		t.Fatalf("mssql without configuration: %v", err)
 	}
 	if _, err := f.run(t, "sql.query", map[string]any{"engine": "mysql", "statement": "no_such_named"}); err == nil {
 		t.Fatal("unknown named statement")

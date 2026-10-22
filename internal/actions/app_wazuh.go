@@ -24,6 +24,12 @@ type WazuhAPI interface {
 	Agents(ctx context.Context) ([]wazuh.Agent, error)
 }
 
+// WazuhGroupsAPI is implemented by API clients that can list agent groups
+// (*wazuh.Client does); wazuh.capture uses it when available.
+type WazuhGroupsAPI interface {
+	Groups(ctx context.Context) ([]wazuh.Group, error)
+}
+
 // WazuhFactory builds the LinuxEnv.Wazuh hook from a base client config (API
 // credentials and CA come from the agent's configuration, never from params).
 func WazuhFactory(base wazuh.Config) func(ctx context.Context, api, minVersion string) (WazuhAPI, error) {
@@ -98,7 +104,7 @@ type wazuhCapture struct{ wazuhRO }
 
 func (wazuhCapture) Spec() Spec {
 	return Spec{Name: "wazuh.capture", Risk: RiskNone, ReadOnly: true,
-		Doc:    "Write health.json, agents.json, agents.csv and groups.json to the inject-kit directory out.",
+		Doc:    "Write health.json, agents.json, agents.csv, groups.json and (from the groups endpoint) group_details.json to the inject-kit directory out.",
 		Params: []ParamSpec{apiParam, {Name: "out", Type: Path, Required: true}, {Name: "min_version", Type: String, Max: 32}}}
 }
 func (wazuhCapture) Touches(p Params) []Touch { return []Touch{pathTouch(p.Str("out"), OpModify)} }
@@ -135,6 +141,25 @@ func (wazuhCapture) Apply(ctx context.Context, env *Env, p Params) (Output, erro
 	if err := write("agents.csv", cb.Bytes()); err != nil {
 		return nil, err
 	}
+	// Groups from the API: includes groups with no agents yet, with sizes and
+	// configuration checksums (groups.json stays group -> agent names).
+	var details []wazuh.Group
+	if ga, ok := c.(WazuhGroupsAPI); ok {
+		gs, err := ga.Groups(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("groups: %w", err)
+		}
+		details = gs
+		for _, g := range gs {
+			if _, ok := groups[g.Name]; !ok {
+				groups[g.Name] = []string{}
+			}
+		}
+		dj, _ := json.MarshalIndent(gs, "", "  ")
+		if err := write("group_details.json", dj); err != nil {
+			return nil, err
+		}
+	}
 	gj, _ := json.MarshalIndent(groups, "", "  ")
 	if err := write("groups.json", gj); err != nil {
 		return nil, err
@@ -152,7 +177,7 @@ func (wazuhCapture) Apply(ctx context.Context, env *Env, p Params) (Output, erro
 	if err := write("health.json", hb); err != nil {
 		return nil, err
 	}
-	return Output{"agents": fmt.Sprint(len(agents)), "dir": dir}, nil
+	return Output{"agents": fmt.Sprint(len(agents)), "groups": fmt.Sprint(len(groups)), "group_details": fmt.Sprint(len(details)), "dir": dir}, nil
 }
 
 // csvSafe neutralises spreadsheet formula injection from agent-supplied names.
