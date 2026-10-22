@@ -1,0 +1,7 @@
+type=SYSCALL msg=audit(1700000011.011:5100): arch=c000003e syscall=82 success=yes exit=0 a0=55d0c0a1 a1=55d0c0b2 a2=55d0c0c3 a3=7ffd1234 items=2 ppid=900 pid=5001 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="mv" exe="/usr/bin/mv" subj=unconfined key="phylax_fim"
+type=CWD msg=audit(1700000011.011:5100): cwd="/etc"
+type=PATH msg=audit(1700000011.011:5100): item=0 name="/etc/" inode=1 mode=040755 nametype=PARENT
+type=PATH msg=audit(1700000011.011:5100): item=1 name="/etc/" inode=1 mode=040755 nametype=PARENT
+type=PATH msg=audit(1700000011.011:5100): item=2 name="passwd.new" inode=7 mode=0100644 nametype=DELETE
+type=PATH msg=audit(1700000011.011:5100): item=3 name="passwd" inode=8 mode=0100644 nametype=CREATE
+type=EOE msg=audit(1700000011.011:5100): 

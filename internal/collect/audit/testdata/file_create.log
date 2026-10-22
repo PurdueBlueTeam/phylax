@@ -1,0 +1,6 @@
+type=SYSCALL msg=audit(1700000010.010:5000): arch=c000003e syscall=257 success=yes exit=0 a0=55d0c0a1 a1=55d0c0b2 a2=55d0c0c3 a3=7ffd1234 items=2 ppid=900 pid=5001 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=pts0 ses=3 comm="tee" exe="/usr/bin/tee" subj=unconfined key="phylax_fim"
+type=CWD msg=audit(1700000010.010:5000): cwd="/root"
+type=PATH msg=audit(1700000010.010:5000): item=0 name="/etc/cron.d/" inode=100 dev=08:01 mode=040755 ouid=0 ogid=0 rdev=00:00 nametype=PARENT
+type=PATH msg=audit(1700000010.010:5000): item=1 name="/etc/cron.d/evil" inode=101 dev=08:01 mode=0100644 ouid=0 ogid=0 rdev=00:00 nametype=CREATE
+type=PROCTITLE msg=audit(1700000010.010:5000): proctitle=746565002F6574632F63726F6E2E642F6576696C
+type=EOE msg=audit(1700000010.010:5000): 

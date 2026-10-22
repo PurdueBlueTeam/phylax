@@ -5,3 +5,6 @@ dist/
 tmp/
 vendor/
 *-identity/
+
+# test fixtures are data, not logs
+!internal/**/testdata/*.log

@@ -1,0 +1,4 @@
+type=SYSCALL msg=audit(1700000013.013:5300): arch=c000003e syscall=257 success=yes exit=0 a0=55d0c0a1 a1=55d0c0b2 a2=55d0c0c3 a3=7ffd1234 items=1 ppid=900 pid=5301 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="vim" exe="/usr/bin/vim.basic" subj=unconfined key="phylax_fim"
+type=CWD msg=audit(1700000013.013:5300): cwd="/"
+type=PATH msg=audit(1700000013.013:5300): item=0 name=2F6574632F63726F6E2E642F612062 inode=8 nametype=CREATE
+type=EOE msg=audit(1700000013.013:5300): 

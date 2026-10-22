@@ -1,0 +1,7 @@
+type=SYSCALL msg=audit(1700000001.001:4300): arch=c000003e syscall=59 success=yes exit=0 a0=55d0c0a1 a1=55d0c0b2 a2=55d0c0c3 a3=7ffd1234 items=2 ppid=1000 pid=2001 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="printf" exe="/usr/bin/printf" subj=unconfined key="phylax_exec"
+type=EXECVE msg=audit(1700000001.001:4300): argc=6 a0="printf" a1="%s" a2="aaa"
+type=EXECVE msg=audit(1700000001.001:4300): argc=6 a3=6C696E65310A6C696E6532 a4_len=10 a4[0]="12345" a4[1]="67890" a5="end"
+type=CWD msg=audit(1700000001.001:4300): cwd="/tmp"
+type=PATH msg=audit(1700000001.001:4300): item=0 name="/usr/bin/printf" inode=5 dev=08:01 mode=0100755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL
+type=PROCTITLE msg=audit(1700000001.001:4300): proctitle=7072696E7466002573
+type=EOE msg=audit(1700000001.001:4300): 
