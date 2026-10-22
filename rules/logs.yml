@@ -1,0 +1,52 @@
+# Log-line rules. Producer: the logs module's file tail (kind log_line with
+# file and line). The module is planned (design: Modules); until it ships these
+# rules are inert but tested.
+id: D2e.web-log-attack
+title: Web attack string in the access log
+severity: medium
+tier: 1
+attack: [T1190, T1505.003]
+collect: [transactions_window_10m]
+entities: [file]
+message: "attack string in {file}"
+when:
+  event: log_line
+  all:
+    - file: {re: '(?i)access[._-]?log'}
+    - line: {re: '(?i)(union(%20|\+|\s)+select|information_schema|sleep\(\d+\)|benchmark\(|/etc/passwd|\.\./\.\./|%00|base64_decode|eval\(|system\(|passthru\(|shell_exec|[?&](cmd|exec|command)=)'}
+tests:
+  - {name: sqli, should_match: true, event: {kind: log_line, fields: {file: /var/log/apache2/access.log, line: 'GET /?id=1 union select 1,2 HTTP/1.1'}}}
+  - {name: traversal, should_match: true, event: {kind: log_line, fields: {file: /var/log/nginx/access.log, line: 'GET /../../etc/passwd HTTP/1.1'}}}
+  - {name: normal request, should_match: false, event: {kind: log_line, fields: {file: /var/log/apache2/access.log, line: 'GET /index.php HTTP/1.1'}}}
+  - {name: error log, should_match: false, event: {kind: log_line, fields: {file: /var/log/apache2/error.log, line: 'union select'}}}
+---
+id: D19.promisc-log
+title: Interface entered promiscuous mode
+severity: high
+tier: 1
+attack: [T1040]
+collect: [process_tree]
+when:
+  event: log_line
+  all:
+    - file: {re: '(kern\.log|messages|syslog)$'}
+    - line: {re: 'entered promiscuous mode'}
+    - not: {line: {re: '(veth|docker0|br-[0-9a-f]{6,}|virbr|vnet|cni|flannel|cali)'}}
+tests:
+  - {name: eth0 promisc, should_match: true, event: {kind: log_line, fields: {file: /var/log/kern.log, line: 'device eth0 entered promiscuous mode'}}}
+  - {name: docker veth, should_match: false, event: {kind: log_line, fields: {file: /var/log/kern.log, line: 'device veth12ab entered promiscuous mode'}}}
+---
+id: D23.usb-attach
+title: USB device attached
+severity: medium
+tier: 1
+attack: [T1091, T1200]
+collect: [process_tree]
+when:
+  event: log_line
+  all:
+    - file: {re: '(kern\.log|messages|syslog)$'}
+    - line: {re: 'New USB device found|USB Mass Storage device detected'}
+tests:
+  - {name: usb, should_match: true, event: {kind: log_line, fields: {file: /var/log/syslog, line: 'usb 1-1: New USB device found, idVendor=0781'}}}
+  - {name: other kernel line, should_match: false, event: {kind: log_line, fields: {file: /var/log/syslog, line: 'eth0: link up'}}}

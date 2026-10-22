@@ -1,0 +1,538 @@
+# Windows rules (producer: internal/collect/winevt). Kinds: process_start (Sysmon 1 / 4688),
+# file_change (Sysmon 11/23), net_connect, auth_*, and sec_event for everything
+# else with channel, provider, event_id, category and the raw snake_case
+# EventData keys. Fields used here: exe/image, comm, cmdline, pexe/parent.*,
+# category, target_object, details, pipe_name, source_image, target_image, ...
+id: D7c.windows-account-event
+title: Account created, enabled, reset, changed or added to a privileged group outside a plan
+severity: high
+tier: 1
+attack: [T1136.001, T1136.002, T1098]
+collect: [process_tree]
+exempt_tagged: true
+entities: [account, subject_account]
+when:
+  event: sec_event
+  all:
+    - channel: Security
+    - event_id: [4720, 4722, 4724, 4728, 4732, 4738, 4756, 4781]
+tests:
+  - {name: account created, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4720, account: backdoor$x, subject_account: CORP\azul}}}
+  - {name: other security event, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4624}}}
+  - {name: our plan, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4724, tag: "plan:rotate"}}}
+---
+id: D7e.hidden-dollar-account
+title: User account created or renamed with a trailing dollar sign
+severity: high
+tier: 1
+attack: [T1136.001, T1564.002]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - channel: Security
+  any:
+    - all:
+        - event_id: 4720
+        - target_user_name: {re: '\$$'}
+        - not: {target_user_name: HomeGroupUser$}
+    - all:
+        - event_id: 4781
+        - new_target_user_name: {re: '\$$'}
+tests:
+  - {name: hidden account, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4720, target_user_name: svc_sql$}}}
+  - {name: renamed to hidden, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4781, new_target_user_name: Guest$}}}
+  - {name: normal user, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4720, target_user_name: alice}}}
+  - {name: HomeGroupUser, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4720, target_user_name: HomeGroupUser$}}}
+---
+id: D8b.zerologon
+title: Zerologon signal on the DC (vulnerable Netlogon channel or anonymous machine-account change)
+severity: critical
+tier: 1
+attack: [T1210, T1068]
+collect: [process_tree, auth_window_10m]
+ir_template: dc-compromise
+when:
+  event: sec_event
+  all:
+    - zerologon_signal: {present: true}
+tests:
+  - {name: 5829 vulnerable connection, should_match: true, event: {kind: sec_event, fields: {channel: System, event_id: 5829, zerologon_signal: 5829_vulnerable_allowed}}}
+  - {name: 4742 by anonymous, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4742, zerologon_signal: 4742_anonymous}}}
+  - {name: normal 4742, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4742}}}
+---
+id: D3c2.remote-access-inventory-win
+title: Remote-access or tunnelling tool started on Windows
+severity: high
+tier: 1
+attack: [T1219, T1202, T1572]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: {re: '(?i)^(tailscale(-ipn)?|ngrok|chisel|frpc|ligolo.*|cloudflared|teamviewer|anydesk|rustdesk|winvnc|tvnserver|vncserver|wsl|wslhost|bash|sshd|ssh-agent|screenconnect.*|choco)\.exe$'}
+tests:
+  - {name: ngrok, should_match: true, event: {kind: process_start, fields: {comm: ngrok.exe, exe: 'C:\Users\x\ngrok.exe'}}}
+  - {name: notepad, should_match: false, event: {kind: process_start, fields: {comm: notepad.exe}}}
+---
+id: D1g.windows-service-child
+title: IIS/DNS/FTP/SQL service process spawned a shell or recon tool
+severity: high
+tier: 1
+attack: [T1505.003, T1059, T1543.003]
+collect: [process_tree, content_changes, freeze_ring]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - parent.comm: {re: '(?i)^(w3wp|dns|ftpsvc|inetinfo|sqlservr|msftpsvc|splunkd)\.exe$'}
+    - comm: {re: '(?i)^(cmd|powershell|pwsh|wscript|cscript|mshta|rundll32|regsvr32|certutil|bitsadmin|whoami|net1?|nltest|wmic|curl|schtasks|sc|reg|ipconfig|systeminfo|tasklist|netstat|nslookup|arp)\.exe$'}
+tests:
+  - {name: w3wp cmd, should_match: true, event: {kind: process_start, fields: {comm: cmd.exe, pcomm: w3wp.exe}}}
+  - {name: sqlservr whoami nested parent, should_match: true, event: {kind: process_start, fields: {comm: whoami.exe, parent: {comm: sqlservr.exe}}}}
+  - {name: w3wp spawns itself, should_match: false, event: {kind: process_start, fields: {comm: w3wp.exe, pcomm: w3wp.exe}}}
+  - {name: explorer cmd, should_match: false, event: {kind: process_start, fields: {comm: cmd.exe, pcomm: explorer.exe}}}
+---
+id: D6p.dns-plugin-dll
+title: DNS ServerLevelPluginDll set
+severity: critical
+tier: 1
+attack: [T1574.001, T1556]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - event_id: 13
+    - target_object: {re: '(?i)\\Services\\DNS\\Parameters\\ServerLevelPluginDll$'}
+tests:
+  - {name: plugin set, should_match: true, event: {kind: sec_event, fields: {event_id: 13, category: registry, target_object: 'HKLM\System\CurrentControlSet\Services\DNS\Parameters\ServerLevelPluginDll'}}}
+  - {name: other DNS param, should_match: false, event: {kind: sec_event, fields: {event_id: 13, category: registry, target_object: 'HKLM\System\CurrentControlSet\Services\DNS\Parameters\ForwardDelegations'}}}
+---
+id: D6p2.dnscmd-plugin
+title: dnscmd installing a server-level plugin DLL
+severity: critical
+tier: 1
+attack: [T1574.001]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: dnscmd.exe
+    - cmdline: {re: '(?i)/config\s+/serverlevelplugindll'}
+tests:
+  - {name: plugin install, should_match: true, event: {kind: process_start, fields: {comm: dnscmd.exe, cmdline: 'dnscmd /config /serverlevelplugindll c:\x.dll'}}}
+  - {name: zone info, should_match: false, event: {kind: process_start, fields: {comm: dnscmd.exe, cmdline: 'dnscmd /zoneinfo corp.local'}}}
+---
+id: D10k2.fw-tamper-win
+title: Windows firewall disabled or rules changed by netsh/PowerShell
+severity: high
+tier: 1
+attack: [T1686]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: netsh.exe
+        - cmdline: {re: '(?i)(advfirewall\s+set\s+\S+\s+state\s+off|firewall\s+set\s+opmode\s+mode=disable|advfirewall\s+firewall\s+(delete|add|set)\s+rule)'}
+    - all:
+        - comm: {re: '(?i)^(powershell|pwsh)\.exe$'}
+        - cmdline: {re: '(?i)Set-NetFirewallProfile.*-Enabled\s+(False|0)|netsh\s+advfirewall'}
+tests:
+  - {name: firewall off, should_match: true, event: {kind: process_start, fields: {comm: netsh.exe, cmdline: 'netsh advfirewall set allprofiles state off'}}}
+  - {name: powershell, should_match: true, event: {kind: process_start, fields: {comm: powershell.exe, cmdline: 'powershell Set-NetFirewallProfile -Profile Domain -Enabled False'}}}
+  - {name: our restore is tagged, should_match: false, event: {kind: process_start, fields: {comm: netsh.exe, cmdline: 'netsh advfirewall set allprofiles state off', tag: "plan:fw"}}}
+  - {name: show, should_match: false, event: {kind: process_start, fields: {comm: netsh.exe, cmdline: 'netsh advfirewall show allprofiles'}}}
+---
+id: D6g.service-install-suspicious
+title: Service installed with a suspicious image path or outside trusted install paths
+severity: high
+tier: 1
+attack: [T1543.003, T1569.002, T1021.002]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [service_name, image_path]
+when:
+  event: sec_event
+  all:
+    - event_id: [7045, 4697]
+  any:
+    - image_path: {re: '(?i)(%comspec%|cmd(\.exe)?"?\s+/[ckr]|powershell|pwsh|mshta|wscript|cscript|rundll32\s|regsvr32|\\\\\.\\pipe|\\Users\\|\\Temp\\|\\ProgramData\\|\\PerfLogs\\|\.(bat|vbs|ps1)\b)'}
+    - service_name: {re: '(?i)^(sliver|psexesvc|remcom|csexec|paexec)'}
+    - not: {image_path: {re: '(?i)^"?[A-Z]:\\(Windows|Program Files|Program Files \(x86\))\\'}}
+tests:
+  - {name: PSEXESVC, should_match: true, event: {kind: sec_event, fields: {event_id: 7045, service_name: PSEXESVC, image_path: 'C:\Windows\PSEXESVC.exe'}}}
+  - {name: temp path, should_match: true, event: {kind: sec_event, fields: {event_id: 7045, service_name: x, image_path: 'C:\Windows\Temp\a.exe'}}}
+  - {name: stock service, should_match: false, event: {kind: sec_event, fields: {event_id: 7045, service_name: Spooler, image_path: 'C:\Windows\System32\spoolsv.exe'}}}
+  - {name: our install is tagged, should_match: false, event: {kind: sec_event, fields: {event_id: 7045, service_name: Phylax, image_path: 'D:\phylax\phylax.exe', tag: "plan:install"}}}
+---
+id: D6q.task-content
+title: Scheduled task running from a user-writable path or LOLBin, or a non-stock task under \Microsoft\
+severity: high
+tier: 0
+attack: [T1053.005]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [task_name, subject_account]
+when:
+  event: sec_event
+  all:
+    - event_id: [4698, 4702, 106, 140]
+  any:
+    - task_content: {re: '(?i)(\\AppData\\|\\Users\\Public\\|\\Windows\\Temp\\|C:\\Temp\\|C:\\ProgramData\\|C:\\PerfLogs\\|regsvr32|rundll32|mshta|wscript|cscript|certutil|powershell|pwsh|<Arguments>/[ckr] |cmd(\.exe)?</Command>|bitsadmin|curl|\.vbs|\.hta)'}
+    - all:
+        - task_name: {re: '^\\Microsoft\\'}
+        - not: {task_name: {in_profile: reference.windows_tasks}}
+tests:
+  - {name: powershell task, should_match: true, event: {kind: sec_event, fields: {event_id: 4698, task_content: '<Exec><Command>powershell.exe</Command></Exec>'}}}
+  - name: non-stock Microsoft task
+    should_match: true
+    seed: {reference.windows_tasks: ['\Microsoft\Windows\Defrag\ScheduledDefrag']}
+    event: {kind: sec_event, fields: {event_id: 106, task_name: '\Microsoft\Windows\Updater'}}
+  - name: stock task
+    should_match: false
+    seed: {reference.windows_tasks: ['\Microsoft\Windows\Defrag\ScheduledDefrag']}
+    event: {kind: sec_event, fields: {event_id: 106, task_name: '\Microsoft\Windows\Defrag\ScheduledDefrag'}}
+  - {name: benign task, should_match: false, event: {kind: sec_event, fields: {event_id: 4698, task_content: '<Exec><Command>C:\Program Files\App\run.exe</Command></Exec>'}}}
+---
+id: D6r.wmi-subscription
+title: WMI event filter, consumer or binding created
+severity: high
+tier: 0
+attack: [T1546.003]
+collect: [process_tree, wmi_subscriptions]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - event_id: [19, 20, 21, 5861]
+    - not: {name: {re: '^SCM Event Log'}}
+tests:
+  - {name: consumer created, should_match: true, event: {kind: sec_event, fields: {event_id: 20, category: wmi, name: Evil}}}
+  - {name: stock SCM filter, should_match: false, event: {kind: sec_event, fields: {event_id: 19, category: wmi, name: SCM Event Log Filter}}}
+---
+id: D6t.autorun-keys
+title: Autorun, Winlogon or AppInit registry value set
+severity: medium
+tier: 0
+attack: [T1547.001, T1547.004]
+collect: [process_tree, registry_snapshot]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - event_id: [12, 13, 14]
+    - target_object: {re: '(?i)\\(CurrentVersion\\(Run|RunOnce|RunServices|RunServicesOnce|Policies\\Explorer\\Run)|Winlogon\\(Shell|Userinit|Notify|Taskman)|Windows\\(AppInit_DLLs|Load|Run)|Session Manager\\(BootExecute|SetupExecute))(\\[^\\]+)?$'}
+tests:
+  - {name: Run key, should_match: true, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKU\S-1-5\Software\Microsoft\Windows\CurrentVersion\Run\updater'}}}
+  - {name: unrelated key, should_match: false, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKU\S-1-5\Software\Foo\Bar'}}}
+  - {name: tagged, should_match: false, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run\phylax', tag: "plan:install"}}}
+---
+id: D6t2.autorun-suspicious-value
+title: Autorun value points at a user-writable path or script host
+severity: high
+tier: 0
+attack: [T1547.001]
+collect: [process_tree, registry_snapshot]
+when:
+  event: sec_event
+  all:
+    - event_id: 13
+    - target_object: {re: '(?i)\\(CurrentVersion\\Run|RunOnce|Winlogon\\(Shell|Userinit))'}
+    - details: {re: '(?i)(\\Users\\|\\Temp\\|\\ProgramData\\|\\PerfLogs\\|powershell|pwsh|cmd(\.exe)?\s+/[ck]|mshta|wscript|cscript|rundll32|regsvr32|\.(vbs|js|hta|bat|ps1)\b)'}
+tests:
+  - {name: temp payload, should_match: true, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run\x', details: 'C:\Users\Public\a.exe'}}}
+  - {name: program files, should_match: false, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run\x', details: 'C:\Program Files\App\a.exe'}}}
+---
+id: D6u.ifeo-lsa-keys
+title: IFEO debugger, SilentProcessExit, LSA package or AppCert value set
+severity: critical
+tier: 0
+attack: [T1546.012, T1547.002, T1547.005, T1546.009]
+collect: [process_tree, registry_snapshot]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - event_id: [12, 13]
+    - target_object: {re: '(?i)Image File Execution Options\\[^\\]+\\(Debugger|GlobalFlag|MonitorProcess)$|\\SilentProcessExit\\|\\Control\\Lsa\\(Security Packages|Authentication Packages|Notification Packages)$|\\Control\\Session Manager\\AppCertDlls\\'}
+tests:
+  - {name: sethc debugger, should_match: true, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe\Debugger'}}}
+  - {name: LSA packages, should_match: true, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\System\CurrentControlSet\Control\Lsa\Notification Packages'}}}
+  - {name: other lsa value, should_match: false, event: {kind: sec_event, fields: {event_id: 13, target_object: 'HKLM\System\CurrentControlSet\Control\Lsa\LimitBlankPasswordUse'}}}
+---
+id: D6u2.accessibility-binary
+title: Accessibility binary replaced
+severity: critical
+tier: 1
+attack: [T1546.008]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '(?i)\\Windows\\System32\\(sethc|utilman|osk|narrator|magnify|displayswitch|atbroker)\.exe$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: sethc created, should_match: true, event: {kind: file_change, fields: {path: 'C:\Windows\System32\sethc.exe', op: create, actor_exe: 'C:\Windows\System32\cmd.exe'}}}
+  - {name: other exe, should_match: false, event: {kind: file_change, fields: {path: 'C:\Windows\System32\calc.exe', op: create}}}
+---
+id: D6u3.winlogon-child-shell
+title: Shell started by winlogon (sticky-keys shape)
+severity: critical
+tier: 1
+attack: [T1546.008]
+collect: [process_tree]
+when:
+  event: process_start
+  all:
+    - parent.comm: winlogon.exe
+    - comm: {re: '(?i)^(cmd|powershell|pwsh|mshta|wscript|cscript|rundll32|regsvr32|wt)\.exe$'}
+tests:
+  - {name: cmd under winlogon, should_match: true, event: {kind: process_start, fields: {comm: cmd.exe, pcomm: winlogon.exe}}}
+  - {name: userinit, should_match: false, event: {kind: process_start, fields: {comm: userinit.exe, pcomm: winlogon.exe}}}
+---
+id: D5e.system-name-masquerade
+title: System process name running from a non-canonical path
+severity: critical
+tier: 1
+attack: [T1036.005, T1036.004]
+collect: [process_tree, content_changes]
+when:
+  event: process_start
+  all:
+    - comm: {re: '(?i)^(svchost|lsass|csrss|services|smss|wininit|winlogon|spoolsv|taskhostw?|dllhost|conhost)\.exe$'}
+    - not: {exe: {re: '(?i)^[A-Z]:\\Windows\\(System32|SysWOW64)\\'}}
+tests:
+  - {name: svchost from temp, should_match: true, event: {kind: process_start, fields: {comm: svchost.exe, exe: 'C:\Users\x\AppData\svchost.exe'}}}
+  - {name: real svchost, should_match: false, event: {kind: process_start, fields: {comm: svchost.exe, exe: 'C:\Windows\System32\svchost.exe'}}}
+---
+id: D5e2.system-name-typosquat
+title: Typo-squatted system process name
+severity: critical
+tier: 1
+attack: [T1036.005]
+collect: [process_tree, content_changes]
+when:
+  event: process_start
+  all:
+    - comm: {re: '(?i)^(i|1)sass\.exe$|^svch0st|^svhost|^scvhost|^lsasss|^csrs\.exe$|^winlog0n|^expl0rer|^serv1ces|^wininlt'}
+tests:
+  - {name: ISASS, should_match: true, event: {kind: process_start, fields: {comm: ISASS.EXE}}}
+  - {name: lsass, should_match: false, event: {kind: process_start, fields: {comm: lsass.exe}}}
+---
+id: D8d.ad-object-change
+title: AD object change implementing delegation, SID-history, key-credential or GPO backdoors
+severity: high
+tier: 1
+attack: [T1098, T1484.001, T1207, T1550]
+collect: [process_tree, ad_snapshot]
+exempt_tagged: true
+when:
+  event: sec_event
+  any:
+    - all:
+        - event_id: 5136
+        - attribute: [msDS-AllowedToActOnBehalfOfOtherIdentity, msDS-AllowedToDelegateTo, msDS-KeyCredentialLink, sIDHistory, dSHeuristics, gPLink, gPCMachineExtensionNames, gPCUserExtensionNames, scriptPath]
+    - all:
+        - event_id: 5136
+        - object_class: user
+        - attribute: servicePrincipalName
+    - all:
+        - event_id: 5137
+        - object_class: groupPolicyContainer
+    - all:
+        - event_id: [4739, 4742]
+        - allowed_to_delegate_to: {present: true}
+tests:
+  - {name: gPLink changed, should_match: true, event: {kind: sec_event, fields: {event_id: 5136, category: ad_object_change, attribute: gPLink, object_class: organizationalUnit}}}
+  - {name: SPN on user, should_match: true, event: {kind: sec_event, fields: {event_id: 5136, attribute: servicePrincipalName, object_class: user}}}
+  - {name: description edit, should_match: false, event: {kind: sec_event, fields: {event_id: 5136, attribute: description, object_class: user}}}
+---
+id: D8e.dcsync
+title: Directory replication rights exercised by a non-machine account
+severity: critical
+tier: 1
+attack: [T1003.006]
+collect: [process_tree, auth_window_10m]
+entities: [subject_account]
+when:
+  event: sec_event
+  all:
+    - channel: Security
+    - event_id: 4662
+    - replication_rights: true
+    - not: {subject_user_name: {re: '(\$$|^MSOL_|^NT AUT)'}}
+tests:
+  - {name: dcsync by user, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4662, replication_rights: true, subject_user_name: bob, subject_account: 'CORP\bob'}}}
+  - {name: DC replication, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4662, replication_rights: true, subject_user_name: DC02$}}}
+  - {name: no replication right, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4662, replication_rights: false, subject_user_name: bob}}}
+---
+id: D8g.kerberos-anomaly
+title: RC4 service ticket for a user SPN (Kerberoast) or AS-REP without pre-auth
+severity: high
+tier: 1
+attack: [T1558.003, T1558.004]
+collect: [process_tree, auth_window_10m]
+when:
+  event: sec_event
+  all:
+    - channel: Security
+  any:
+    - all:
+        - event_id: 4769
+        - status: "0x0"
+        - rc4_ticket: true
+        - not: {service_name: {re: '(\$$|^krbtgt)'}}
+        - not: {target_user_name: {re: '\$@'}}
+    - all:
+        - event_id: 4768
+        - rc4_ticket: true
+        - service_name: krbtgt
+        - pre_auth_type: 0
+tests:
+  - {name: kerberoast, should_match: true, event: {kind: sec_event, fields: {channel: Security, event_id: 4769, status: "0x0", rc4_ticket: true, service_name: MSSQLSvc, target_user_name: 'bob@CORP'}}}
+  - {name: machine account SPN, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4769, status: "0x0", rc4_ticket: true, service_name: 'HOST$', target_user_name: 'bob@CORP'}}}
+  - {name: AES ticket, should_match: false, event: {kind: sec_event, fields: {channel: Security, event_id: 4769, status: "0x0", rc4_ticket: false, service_name: MSSQLSvc}}}
+---
+id: D10c.defender-tamper
+title: Defender protection disabled or an exclusion added
+severity: critical
+tier: 0
+attack: [T1685]
+collect: [process_tree, registry_snapshot]
+exempt_tagged: true
+when:
+  event: sec_event
+  all:
+    - category: defender_tamper
+  any:
+    - tamper: [realtime_disabled, realtime_config_changed, scanning_disabled, scanning_virus_disabled]
+    - all:
+        - tamper: config_changed
+        - defender_exclusion: true
+        - not: {new_value: {re: '(?i)Exclusions\\Paths\\[A-Z]:\\(ProgramData\\phylax|Program Files\\phylax)'}}
+tests:
+  - {name: realtime off, should_match: true, event: {kind: sec_event, fields: {category: defender_tamper, event_id: 5001, tamper: realtime_disabled}}}
+  - {name: exclusion added, should_match: true, event: {kind: sec_event, fields: {category: defender_tamper, event_id: 5007, tamper: config_changed, defender_exclusion: true, new_value: 'HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths\C:\Temp = 0x0'}}}
+  - {name: our exclusion, should_match: false, event: {kind: sec_event, fields: {category: defender_tamper, event_id: 5007, tamper: config_changed, defender_exclusion: true, new_value: 'HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths\C:\ProgramData\phylax = 0x0'}}}
+  - {name: unrelated config change, should_match: false, event: {kind: sec_event, fields: {category: defender_tamper, event_id: 5007, tamper: config_changed, defender_exclusion: false}}}
+---
+id: D10d.audit-policy-and-log-clear
+title: Event log cleared or audit sub-categories turned off
+severity: critical
+tier: 0
+attack: [T1685.005, T1685.001]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: sec_event
+  any:
+    - event_id: [1102, 104]
+    - all:
+        - event_id: 4719
+        - any:
+            - changes: {re: '%%(8448|8450)'}
+            - audit_policy_changes: {re: '%%(8448|8450)'}
+tests:
+  - {name: security log cleared, should_match: true, event: {kind: sec_event, fields: {event_id: 1102, category: log_cleared}}}
+  - {name: audit success removed, should_match: true, event: {kind: sec_event, fields: {event_id: 4719, changes: '%%8448'}}}
+  - {name: our auditpol is tagged, should_match: false, event: {kind: sec_event, fields: {event_id: 4719, changes: '%%8448', tag: "plan:audit"}}}
+  - {name: audit added, should_match: false, event: {kind: sec_event, fields: {event_id: 4719, changes: '%%8449'}}}
+---
+id: D10e.sysmon-tamper
+title: Sysmon stopped or reconfigured outside a plan
+severity: critical
+tier: 0
+attack: [T1685]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: sec_event
+  any:
+    - all:
+        - event_id: 4
+        - state: Stopped
+    - event_id: 16
+tests:
+  - {name: sysmon stopped, should_match: true, event: {kind: sec_event, fields: {event_id: 4, category: sysmon_state, state: Stopped}}}
+  - {name: config change, should_match: true, event: {kind: sec_event, fields: {event_id: 16, category: sysmon_config}}}
+  - {name: our reconfigure is tagged, should_match: false, event: {kind: sec_event, fields: {event_id: 16, tag: "plan:sysmon"}}}
+  - {name: started, should_match: false, event: {kind: sec_event, fields: {event_id: 4, state: Started}}}
+---
+id: D8c.lsass-access
+title: Process opened lsass.exe with memory-read rights from a non-allow-listed image
+severity: critical
+tier: 1
+attack: [T1003.001]
+collect: [process_tree, memory_artifacts]
+entities: [source_image]
+when:
+  event: sec_event
+  all:
+    - category: process_access
+    - target_lsass: true
+    - granted_access: {re: '(?i)^0x(1038|1438|143a|1fffff|1f3fff|1f1fff|1010|1410|40)$'}
+    - not: {source_image: {re: '(?i)\\(MsMpEng|MpDefenderCoreService|csrss|wininit|services|svchost|lsm|taskmgr|vmtoolsd|VBoxService|wmiprvse|Sysmon64?|phylax)(\.exe)?$'}}
+tests:
+  - {name: mimikatz, should_match: true, event: {kind: sec_event, fields: {category: process_access, target_lsass: true, granted_access: "0x1010", source_image: 'C:\Users\x\m.exe'}}}
+  - {name: defender, should_match: false, event: {kind: sec_event, fields: {category: process_access, target_lsass: true, granted_access: "0x1010", source_image: 'C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe'}}}
+  - {name: other target, should_match: false, event: {kind: sec_event, fields: {category: process_access, target_lsass: false, granted_access: "0x1010", source_image: 'C:\x.exe'}}}
+---
+id: D8h.hive-ntds-dump-exec
+title: Command line dumping registry hives, NTDS.dit or shadow-copy credential files
+severity: critical
+tier: 1
+attack: [T1003.002, T1003.003]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: reg.exe
+        - cmdline: {re: '(?i)\s(save|export)\s.*(hklm|hkey_local_machine)\\(sam|security|system)'}
+    - all:
+        - comm: {re: '(?i)^(ntdsutil|wbadmin|esentutl|diskshadow|vssadmin|wmic|powershell|pwsh)\.exe$'}
+        - cmdline: {re: '(?i)(ntds\.dit|ac i ntds|ifm|create full|get-?versions?.*(sam|ntds)|shadowcopy.*(create|call)|ntdsutil.*activate instance|\\config\\(sam|security|system))'}
+tests:
+  - {name: reg save sam, should_match: true, event: {kind: process_start, fields: {comm: reg.exe, cmdline: 'reg save HKLM\SAM C:\x\sam.hiv'}}}
+  - {name: ntdsutil ifm, should_match: true, event: {kind: process_start, fields: {comm: ntdsutil.exe, cmdline: 'ntdsutil "ac i ntds" ifm "create full c:\x" q q'}}}
+  - {name: reg query, should_match: false, event: {kind: process_start, fields: {comm: reg.exe, cmdline: 'reg query HKLM\Software\Foo'}}}
+---
+id: D13b.c2-pipes
+title: Default C2 or PsExec named pipe
+description: ntsvcs/svcctl are normal Windows pipes and are deliberately not listed.
+severity: critical
+tier: 1
+attack: [T1071, T1021.002, T1055]
+collect: [process_tree]
+when:
+  event: sec_event
+  all:
+    - event_id: [17, 18]
+    - pipe_name: {re: '(?i)^\\(MSSE-[0-9a-f]+-server$|postex_|status_[0-9a-f]|msagent_|mojo_|interprocess_|samr_|netlogon_|srvsvc_|lsarpc_|wkssvc_|csexecsvc$|gruntsvc$|Posh|jaccdpqnvbrrxlaf$|PSEXESVC$|RemCom_communic)'}
+tests:
+  - {name: cobalt strike msse, should_match: true, event: {kind: sec_event, fields: {event_id: 17, category: pipe, pipe_name: '\MSSE-1234-server'}}}
+  - {name: psexec, should_match: true, event: {kind: sec_event, fields: {event_id: 18, category: pipe, pipe_name: '\PSEXESVC'}}}
+  - {name: svcctl is normal, should_match: false, event: {kind: sec_event, fields: {event_id: 17, category: pipe, pipe_name: '\svcctl'}}}
+---
+id: D10j2.timestomp-win
+title: Sysmon file-creation-time change by an unusual process
+severity: low
+tier: 1
+attack: [T1070.006]
+collect: [process_tree]
+when:
+  event: sec_event
+  all:
+    - event_id: 2
+    - not: {exe: {re: '(?i)\\(OneDrive|Teams|msiexec|TiWorker|MsMpEng|svchost)\.exe$'}}
+tests:
+  - {name: timestomp by a dropper, should_match: true, event: {kind: sec_event, fields: {event_id: 2, category: file_time_changed, exe: 'C:\Users\x\a.exe', path: 'C:\x\y.dll'}}}
+  - {name: msiexec, should_match: false, event: {kind: sec_event, fields: {event_id: 2, exe: 'C:\Windows\System32\msiexec.exe'}}}

@@ -1,0 +1,231 @@
+# Network rules (producer: internal/collect/net, kinds net.*). Fields: dir
+# (inbound|outbound), proto, laddr/lport/raddr/rport, service (declared by the
+# manifest), state, comm, exe, uid, exe_deleted, baseline (start-up snapshot),
+# tag (canary). egress_denied carries attributed, attempts, canary_tag.
+id: D3d.risky-listener
+title: Listener on a port that is never legitimate here
+severity: high
+tier: 1
+attack: [T1571, T1190]
+collect: [process_tree]
+exempt_tagged: true
+entities: [port, exe]
+message: "{exe} listens on {proto}/{port}"
+when:
+  event: net.listener_added
+  all:
+    - port: [23, 2375, 2376, 4444, 5555, 31337]
+tests:
+  - {name: telnet, should_match: true, event: {kind: net.listener_added, fields: {proto: tcp, port: 23, exe: /usr/sbin/telnetd}}}
+  - {name: ssh, should_match: false, event: {kind: net.listener_added, fields: {proto: tcp, port: 22, exe: /usr/sbin/sshd, service: ssh}}}
+---
+id: D3.new-listener
+title: New listener not declared by the manifest and not in the learned baseline
+description: baseline listeners (start-up snapshot) and manifest services are exempt; the learning window covers the first minutes of a host.
+severity: high
+tier: 1
+attack: [T1571, T1205]
+collect: [process_tree]
+exempt_tagged: true
+entities: [proto, port, exe]
+message: "new listener {exe} on {proto}/{port}"
+when:
+  event: net.listener_added
+  all:
+    - service: {present: false}
+    - baseline: {present: false}
+    - not: {port: {in_profile: listeners.seen}}
+tests:
+  - name: unexpected listener after learning
+    should_match: true
+    seed: {listeners.seen: {tcp: ["22", "80"]}}
+    event: {kind: net.listener_added, fields: {proto: tcp, port: 8081, exe: /tmp/.x/srv}}
+  - name: declared service
+    should_match: false
+    seed: {listeners.seen: {tcp: ["22"]}}
+    event: {kind: net.listener_added, fields: {proto: tcp, port: 8081, service: web-admin}}
+  - name: known port
+    should_match: false
+    seed: {listeners.seen: {tcp: ["22", "80"]}}
+    event: {kind: net.listener_added, fields: {proto: tcp, port: 80, exe: /usr/sbin/nginx}}
+  - name: start-up snapshot
+    should_match: false
+    seed: {listeners.seen: {tcp: ["22"]}}
+    event: {kind: net.listener_added, fields: {proto: tcp, port: 9999, baseline: true}}
+---
+id: D4.unexpected-outbound
+title: Established outbound connection to a public address from a process not seen making egress
+severity: high
+tier: 1
+attack: [T1071, T1571]
+collect: [process_tree, transactions_window_10m]
+exempt_tagged: true
+entities: [exe, raddr, rport]
+message: "{exe} connected to {raddr}:{rport}"
+when:
+  event: net.connection_opened
+  all:
+    - dir: outbound
+    - state: established
+    - baseline: {present: false}
+    - not: {raddr: {cidr: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, "::1/128", "fe80::/10", "fc00::/7"]}}
+    - not: {exe: {in_profile: egress.exes}}
+tests:
+  - name: new exe talks to the internet
+    should_match: true
+    seed: {egress.exes: [/usr/bin/apt]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+  - name: private peer
+    should_match: false
+    seed: {egress.exes: [/usr/bin/apt]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, raddr: 10.1.1.5, rport: 3306, exe: /tmp/x}}
+  - name: known updater
+    should_match: false
+    seed: {egress.exes: [/usr/bin/apt]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, raddr: 203.0.113.9, rport: 80, exe: /usr/bin/apt}}
+  - name: inbound
+    should_match: false
+    seed: {egress.exes: [/usr/bin/apt]}
+    event: {kind: net.connection_opened, fields: {dir: inbound, state: established, raddr: 203.0.113.9, rport: 5000, exe: /usr/sbin/nginx}}
+---
+id: D4b.relay-proxy
+title: Mail/DNS/FTP daemon holds an outbound connection outside its declared dependencies
+severity: high
+tier: 1
+attack: [T1090, T1071, T1036.005]
+collect: [process_tree, transactions_window_10m]
+exempt_tagged: true
+entities: [comm, raddr, rport]
+when:
+  event: net.connection_opened
+  all:
+    - dir: outbound
+    - state: established
+    - comm: {re: '^(smtp|smtpd|lmtp|master|dovecot|imap(-login)?|pop3(-login)?|vsftpd|proftpd|named|dnsmasq|unbound)$'}
+    - not: {raddr: [127.0.0.1, "::1"]}
+    - not: {raddr: {in_profile: service.dependencies}}
+tests:
+  - name: postfix relays to an unknown peer
+    should_match: true
+    seed: {service.dependencies: [10.0.0.53]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, comm: smtpd, raddr: 198.51.100.7, rport: 25}}
+  - name: declared dependency
+    should_match: false
+    seed: {service.dependencies: [10.0.0.53]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, comm: smtpd, raddr: 10.0.0.53, rport: 53}}
+  - name: other process
+    should_match: false
+    seed: {service.dependencies: [10.0.0.53]}
+    event: {kind: net.connection_opened, fields: {dir: outbound, state: established, comm: curl, raddr: 198.51.100.7, rport: 80}}
+---
+id: D12.denied-egress
+title: Denied outbound attempt from a server
+description: Canary probes (tag canary) are exempt.
+severity: medium
+tier: 1
+attack: [T1071, T1041]
+collect: [process_tree]
+exempt_tagged: true
+entities: [exe, raddr, rport]
+message: "denied egress {exe} -> {raddr}:{rport}"
+when:
+  event: net.egress_denied
+  all:
+    - raddr: {present: true}
+tests:
+  - {name: attributed deny, should_match: true, event: {kind: net.egress_denied, fields: {dir: outbound, raddr: 203.0.113.9, rport: 4444, exe: /tmp/x, attributed: true}}}
+  - {name: canary probe, should_match: false, event: {kind: net.egress_denied, fields: {raddr: 203.0.113.9, rport: 4444, tag: canary}}}
+---
+id: D12b.denied-egress-periodic
+title: Repeated denied egress attempts from one process to one destination
+severity: high
+tier: 1
+attack: [T1071, T1029]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+message: "{exe} keeps trying {raddr}:{rport}"
+when:
+  event: net.egress_denied
+  all:
+    - raddr: {present: true}
+  count:
+    window: 30m
+    gte: 5
+    by: [exe, raddr, rport]
+tests:
+  - name: five attempts in ten minutes
+    should_match: true
+    events:
+      - {kind: net.egress_denied, at: 0s, fields: {raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 2m, fields: {raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 4m, fields: {raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 6m, fields: {raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 8m, fields: {raddr: 203.0.113.9, rport: 443, exe: /tmp/x}}
+  - name: different destinations do not add up
+    should_match: false
+    events:
+      - {kind: net.egress_denied, at: 0s, fields: {raddr: 203.0.113.1, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 1m, fields: {raddr: 203.0.113.2, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 2m, fields: {raddr: 203.0.113.3, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 3m, fields: {raddr: 203.0.113.4, rport: 443, exe: /tmp/x}}
+      - {kind: net.egress_denied, at: 4m, fields: {raddr: 203.0.113.5, rport: 443, exe: /tmp/x}}
+---
+id: V3.egress-canary-leak
+title: Egress canary connected out (the path is open)
+severity: critical
+tier: 1
+attack: [T1048, T1041]
+collect: [process_tree]
+entities: [raddr, rport, canary_tag]
+when:
+  event: net.canary_result
+  all:
+    - result: leak
+tests:
+  - {name: leak, should_match: true, event: {kind: net.canary_result, fields: {result: leak, raddr: 198.51.100.1, rport: 443, tag: canary}}}
+  - {name: blocked as designed, should_match: false, event: {kind: net.canary_result, fields: {result: blocked, expected: true, tag: canary}}}
+---
+id: D5b.deleted-exe-connection
+title: Network connection owned by a process whose executable was deleted
+severity: high
+tier: 1
+attack: [T1620, T1055]
+collect: [process_tree, memory_artifacts]
+exempt_tagged: true
+when:
+  event: [net.connection_opened, net.listener_added]
+  all:
+    - exe_deleted: true
+tests:
+  - {name: deleted exe listener, should_match: true, event: {kind: net.listener_added, fields: {exe_deleted: true, exe: /tmp/x, port: 4000}}}
+  - {name: normal, should_match: false, event: {kind: net.connection_opened, fields: {exe: /usr/bin/curl}}}
+---
+id: D10.audit-rules-changed
+title: Kernel audit ruleset changed
+severity: high
+tier: 0
+attack: [T1685]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: audit.rules_changed
+  all:
+    - kind: audit.rules_changed
+tests:
+  - {name: changed, should_match: true, event: {kind: audit.rules_changed, fields: {hash: abc}}}
+  - {name: tagged reload, should_match: false, event: {kind: audit.rules_changed, fields: {hash: abc, tag: "plan:audit"}}}
+---
+id: D10.telemetry-gap
+title: Telemetry gap reported by a sensor (audit lost events or was tampered with)
+severity: medium
+tier: 1
+attack: [T1685]
+collect: [process_tree]
+entities: [source]
+when:
+  event: telemetry_gap
+  all:
+    - count: {gt: 0}
+tests:
+  - {name: gap, should_match: true, event: {kind: telemetry_gap, fields: {source: audit, count: 12}}}
+  - {name: zero, should_match: false, event: {kind: telemetry_gap, fields: {source: audit, count: 0}}}

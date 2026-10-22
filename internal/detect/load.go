@@ -267,3 +267,30 @@ func (rs *RuleSet) RunTests() []TestResult {
 	}
 	return out
 }
+
+// loadDirs loads several directories as one rule set (profiles are shared).
+func loadDirs(dirs []string, o LoadOptions) (*RuleSet, error) {
+	var nd []namedData
+	for _, dir := range dirs {
+		for _, pat := range []string{"*.yml", "*.yaml"} {
+			m, err := filepath.Glob(filepath.Join(dir, pat))
+			if err != nil {
+				return nil, err
+			}
+			sort.Strings(m)
+			for _, f := range m {
+				b, err := os.ReadFile(f)
+				if err != nil {
+					return nil, err
+				}
+				nd = append(nd, namedData{f, b})
+			}
+		}
+	}
+	return load(nd, o)
+}
+
+// LoadDirWithPending loads dir and dir/pending together, for validation only.
+func LoadDirWithPending(dir string) (*RuleSet, error) {
+	return loadDirs([]string{dir, filepath.Join(dir, "pending")}, LoadOptions{AllowUntested: true})
+}
