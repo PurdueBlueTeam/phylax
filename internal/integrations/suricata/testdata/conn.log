@@ -1,0 +1,5 @@
+#separator \x09
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state
+#types	time	string	addr	port	addr	port	enum	string	interval	count	count	string
+1792144802.400000	Cabc	128.232.110.120	34855	66.35.250.204	80	tcp	http	0.5	100	200	SF
+broken	line

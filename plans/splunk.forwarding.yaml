@@ -1,0 +1,33 @@
+# Forward Phylax alerts + firewall/Palo logs to the scored Splunk host.
+# Touches no scored index. Optional; Phylax never waits on it (see
+# internal/integrations/splunk). HEC token is held in the vault.
+id: splunk.forwarding
+name: Forward Phylax alerts and firewall logs to Splunk
+on_failure: stop_dependents
+vars:
+  splunk: debian-splunk
+  splunk_addr: 10.0.0.20
+  index: phylax
+  token_name: phylax-hec
+nodes:
+  - id: hec-setup
+    action: splunk.hec_setup
+    target: ${splunk}
+    params: {index: "${index}", token_name: "${token_name}"}
+  - id: hec-allow
+    action: firewall.allow
+    target: ${splunk}
+    needs: [hec-setup]
+    deadman_sec: 60
+    params: {ports: "8088", proto: tcp, from: "10.0.0.0/24", name: phylax-hec}
+  - id: hec-probe
+    action: net.tcp_probe
+    target: ${splunk}
+    needs: [hec-allow]
+    params: {host: "${splunk_addr}", port: 8088}
+  - id: syslog-fallback-input
+    action: ini.set
+    target: ${splunk}
+    needs: [hec-setup]
+    note: Syslog fallback for firewall logs (UDP 514 -> index phylax) if HEC is unavailable.
+    params: {path: /opt/splunk/etc/system/local/inputs.conf, stanza: "udp://514", key: index, value: "${index}"}

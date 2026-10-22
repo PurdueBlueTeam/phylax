@@ -1,0 +1,16 @@
+id: fh.web.opencart
+name: OpenCart hardening
+on_failure: continue
+scoring_note: Storefront content is untouched. New admin directory name and password go to the vault.
+probe: storefront GET / returns 200
+vars:
+  web: rocky-web
+  docroot: /var/www/html
+  admin_dir: admin
+  new_admin_dir: adm-phylax
+  store_url: http://10.0.0.30/
+nodes:
+  - {id: rm-install, action: web.remove_dir, target: "${web}", params: {path: "${docroot}/install"}}
+  - {id: rename-admin, action: web.rename_dir, target: "${web}", params: {path: "${docroot}/${admin_dir}", to: "${docroot}/${new_admin_dir}"}}
+  - {id: admin-password, action: sql.query, target: "${web}", params: {engine: mysql, statement: rotate_opencart_admin}}
+  - {id: probe, action: net.http_probe, target: "${web}", needs: [rm-install, rename-admin], params: {url: "${store_url}", expect_status: 200}}

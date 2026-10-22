@@ -1,0 +1,8 @@
+id: fh.net.vyos_review
+name: VyOS snapshot and review
+on_failure: continue
+scoring_note: Soft-revert protocol for any change.
+vars:
+  vyos: vyos-rtr
+nodes:
+  - {id: snapshot, action: vyos.snapshot, target: "${vyos}", params: {out: /var/lib/phylax/depot/vyos-config.txt}}

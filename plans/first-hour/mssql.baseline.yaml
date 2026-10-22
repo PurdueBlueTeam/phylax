@@ -1,0 +1,11 @@
+id: fh.mssql.baseline
+name: MSSQL baseline
+on_failure: continue
+scoring_note: Leaves the login the 1433 check uses.
+vars:
+  sql: win-sql
+nodes:
+  - {id: version, action: sql.query, target: "${sql}", params: {engine: mssql, statement: "SELECT @@VERSION"}}
+  - {id: xp-cmdshell-off, action: sql.query, target: "${sql}", needs: [version], params: {engine: mssql, statement: "EXEC sp_configure 'xp_cmdshell',0; RECONFIGURE"}}
+  - {id: trim-sysadmins, action: sql.query, target: "${sql}", needs: [xp-cmdshell-off], params: {engine: mssql, statement: review_sysadmins}}
+  - {id: review-linked, action: sql.query, target: "${sql}", needs: [trim-sysadmins], params: {engine: mssql, statement: review_linked_servers_and_agent_jobs}}
