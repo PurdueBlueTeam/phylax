@@ -265,6 +265,10 @@ func (c *Controller) DryRun(ctx context.Context, planID string) (plan.DryRun, er
 			checks = append(checks, plan.NodeCheck{NodeID: n.ID, LintReject: why})
 			continue
 		}
+		if nc, ok := c.localCheck(ctx, p.ID, n); ok { // device / Splunk node: checked on the controller (devexec_run.go)
+			checks = append(checks, nc)
+			continue
+		}
 		ag := c.sessionFor(n.Target)
 		if ag == nil {
 			continue // missing
@@ -858,6 +862,10 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 	c := rt.c
 	n := rt.node(id)
 	phase := nr.want
+	if c.isLocalNode(n) { // device / Splunk node: runs on the controller (devexec_run.go)
+		rt.dispatchLocalLocked(id, nr, n)
+		return
+	}
 	ag := c.sessionFor(n.Target)
 	if ag != nil && !ag.reconciled.Load() {
 		return // resume reconciles the new session, then advances every plan
@@ -965,6 +973,9 @@ func (rt *planRT) failLocked(id, reason, phase string) {
 func (rt *planRT) confirmLocked(id string) {
 	n := rt.node(id)
 	nr := rt.nodes[id]
+	if rt.c.isLocalNode(n) {
+		return // no dead-man on controller-side nodes
+	}
 	if plan.EffectiveDeadmanSec(n, rt.run.Risk(id)) <= 0 {
 		return
 	}
