@@ -1,0 +1,36 @@
+# Evidence pack for the endpoint-protection / central-logging injects
+# (SVRA12T, SOFT04A, TOOL29T, SOCS30T). Read-only; screenshots are taken by a human.
+id: wazuh.evidence
+name: Capture Wazuh evidence for the inject response
+on_failure: continue
+vars:
+  manager: ubuntu-wkst
+  manager_addr: 10.0.0.10
+  out: /var/lib/phylax/inject-kit/wazuh
+  test_log: /var/log/phylax-wazuh-test.log
+nodes:
+  - id: health
+    action: wazuh.health
+    target: ${manager}
+    params: {api: "https://${manager_addr}:55000", min_version: "4.14.9"}
+  - id: agent-list
+    action: wazuh.capture
+    target: ${manager}
+    needs: [health]
+    params: {api: "https://${manager_addr}:55000", out: "${out}"}
+    note: Writes agents.json/agents.csv with id, name, ip, version, status, last keepalive.
+  - id: group-config
+    action: file.hash
+    target: ${manager}
+    needs: [health]
+    params: {path: /var/ossec/etc/shared/phylax-fim/agent.conf}
+    note: Group configuration is copied into the pack from the hashed files (fim, rootcheck, sca).
+  - id: test-alert
+    action: wazuh.test_alert
+    target: ${manager}
+    needs: [health]
+    params: {path: "${test_log}", marker: "phylax-wazuh-evidence-test"}
+  - id: screenshot-gate
+    gate: true
+    needs: [agent-list, group-config, test-alert]
+    note: Human takes dashboard screenshots (agents, FIM, SCA, the test alert) into the inject kit.

@@ -1,0 +1,14 @@
+{{define "content"}}
+<h1>Plans</h1>
+<h2>New plan from template</h2>
+<form method="post" action="/plans" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Template <select name="template" required>{{range .Data.Templates}}<option value="{{.Name}}">{{.Name}}{{if .Title}} - {{.Title}}{{end}} ({{.Nodes}} nodes)</option>{{else}}<option value="">(no templates in plans/)</option>{{end}}</select></label>
+<label>Plan id (optional) <input name="plan_id" maxlength="64" pattern="[A-Za-z0-9_.:\-]*"></label>
+<button type="submit">Create draft</button>
+</form>
+<h2>Plans</h2>
+<table><thead><tr><th>Plan</th><th>Name</th><th>State</th><th>By</th><th>Waiting for</th><th>Created</th></tr></thead><tbody>
+{{range .Data.Plans}}<tr><td><a href="/plans/{{.ID | urlq}}">{{.ID}}</a></td><td>{{.Name}}</td><td>{{.State}}</td><td>{{.By}}</td><td>{{.Waiting}}</td><td>{{ts .Created}}</td></tr>
+{{else}}<tr><td colspan="6">No plans.</td></tr>{{end}}</tbody></table>
+{{end}}

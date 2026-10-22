@@ -4,13 +4,37 @@
 {{define "pane-approvals"}}<section class="pane" id="pane-approvals"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
 {{define "pane-roundclock"}}<section class="pane" id="pane-roundclock"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
 {{define "pane-health"}}<section class="pane" id="pane-health"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
-{{define "content"}}
-<div class="dash">
+{{define "dash_ops"}}{{with .Data.Ops}}
+<section class="pane" id="pane-overview"><h2>Agents</h2>
+<p>{{.Agents.Connected}} of {{.Agents.Total}} connected{{if .Agents.Silent}}, <span class="link-down">{{.Agents.Silent}} silent</span>{{end}}{{if .Agents.SafeMode}}, <strong>{{.Agents.SafeMode}} in safe mode</strong>{{end}}</p>
+<table><thead><tr><th>Host</th><th>State</th><th>Config</th><th>Spool</th></tr></thead><tbody>
+{{range .Agents.Rows}}<tr><td><a href="/agents/{{.Host | urlq}}">{{.Host}}</a>{{if .SafeMode}} (safe){{end}}</td><td class="link-{{.State}}">{{.State}}</td><td>{{.Config}} v{{.ConfigVer}}</td><td>{{.SpoolDepth}}</td></tr>
+{{else}}<tr><td colspan="4">No agents enrolled.</td></tr>{{end}}</tbody></table></section>
+<section class="pane" id="pane-alerts"><h2>Open alerts ({{.OpenAlerts}})</h2>
+<ul>{{range .AlertsBySev}}<li>{{.Severity}}: {{.Count}}</li>{{else}}<li>No open alerts.</li>{{end}}</ul>
+<p><a href="/alerts">Alert queue</a></p></section>
+<section class="pane" id="pane-approvals"><h2>Plans awaiting approval</h2>
+<ul>{{range .Awaiting}}<li><a href="/plans/{{.ID | urlq}}">{{.ID}}</a> ({{.State}}): {{.Waiting}}</li>{{else}}<li>Nothing waiting.</li>{{end}}</ul></section>
+<section class="pane" id="pane-roundclock"><h2>Round clock and SLA</h2>
+{{if .Scorer}}<p>{{.Scorer.Round}}{{if .Scorer.Confidence}} (confidence {{.Scorer.Confidence}}){{end}}</p>
+<ul>{{range .Scorer.Lines}}<li>{{.}}</li>{{end}}</ul>
+<table><thead><tr><th>Service</th><th>Streak</th><th>Penalties</th></tr></thead><tbody>
+{{range .Scorer.Services}}<tr><td>{{.Service}}</td><td class="sla-{{.Level}}">{{.Streak}}</td><td>{{.Penalties}}</td></tr>{{end}}</tbody></table>
+{{else}}<p>no scorer data</p>{{end}}</section>
+<section class="pane" id="pane-chains"><h2>Chains and campaigns</h2>
+<ul>{{range .Campaigns}}<li>Campaign {{.ID}}: {{.Name}} ({{.Chains}} chains, last {{ts .Last}})</li>{{end}}
+{{range .Chains}}<li><a href="/chains/{{.ID}}">Chain {{.ID}}</a>: {{.Hosts}}, {{.Hops}} hops, confidence {{.Confidence}}</li>{{else}}<li>No chains yet.</li>{{end}}</ul></section>
+<section class="pane" id="pane-health"><h2>Platform health</h2>
+<ul>{{range .Health}}<li>{{.}}</li>{{end}}</ul></section>
+{{end}}{{end}}
+{{define "dash_live"}}{{if .Data.Ops}}{{template "dash_ops" .}}{{else}}
 {{template "pane-overview" .Data.Overview}}
 {{template "pane-roundclock" .Data.RoundClock}}
 {{template "pane-alerts" .Data.Alerts}}
 {{template "pane-plans" .Data.Plans}}
 {{template "pane-approvals" .Data.Approvals}}
 {{template "pane-health" .Data.Health}}
-</div>
+{{end}}{{end}}
+{{define "content"}}
+<div class="dash" hx-get="/dashboard/live" hx-trigger="every 5s" hx-swap="innerHTML">{{template "dash_live" .}}</div>
 {{end}}

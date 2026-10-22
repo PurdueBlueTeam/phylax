@@ -1,0 +1,9 @@
+id: fh.rhel.cockpit_off
+name: Disable Cockpit on Rocky
+on_failure: continue
+scoring_note: Not scored.
+vars:
+  rocky: [rocky-web]
+nodes:
+  - {id: socket, each: rocky, action: service.state, target: "${host}", params: {unit: cockpit.socket, state: stopped, enable: disabled}}
+  - {id: service, each: rocky, action: service.state, target: "${host}", needs: [socket], params: {unit: cockpit.service, state: stopped, enable: disabled}}
