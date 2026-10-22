@@ -120,7 +120,7 @@ type CheckResult struct {
 	Detail  string
 }
 
-const checkKeep = 2000 // results kept per check
+var checkKeep = 2000 // results kept per check
 
 func recordCheck(ctx context.Context, x interface {
 	execer
@@ -188,9 +188,10 @@ func (s *Store) Checks(ctx context.Context) ([]CheckRow, error) {
 
 // CheckHistory returns a check's results, newest first (limit <= 0: 100).
 func (s *Store) CheckHistory(ctx context.Context, id string, limit int) ([]CheckResult, error) {
-	if limit <= 0 || limit > checkKeep {
+	if limit <= 0 {
 		limit = 100
 	}
+	limit = min(limit, checkKeep)
 	rows, err := s.r.QueryContext(ctx, `SELECT r.check_id, c.service, c.kind, r.vantage, r.time_ns, r.ok, r.detail
 FROM check_results r JOIN checks c ON c.id=r.check_id WHERE r.check_id=? ORDER BY r.time_ns DESC LIMIT ?`, id, limit)
 	if err != nil {

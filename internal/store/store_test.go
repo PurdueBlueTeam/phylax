@@ -652,6 +652,8 @@ func TestAuditPageAndCheckHistory(t *testing.T) {
 		t.Fatalf("actor filter: %d", len(onlyB))
 	}
 
+	checkKeep = 25
+	defer func() { checkKeep = 2000 }()
 	for i := 0; i < checkKeep+10; i++ {
 		if err := s.RecordCheck(ctx, CheckResult{CheckID: "web:http", Service: "web", Kind: "http", Vantage: "controller", Time: now.Add(time.Duration(i) * time.Second), OK: i%2 == 0}); err != nil {
 			t.Fatal(err)
