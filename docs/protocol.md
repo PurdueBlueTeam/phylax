@@ -253,6 +253,13 @@ consumed in the read loop itself). A handler queue overflow ends the session
   causes a harmless resend.
 - The hash chain is verified by the store when events are ordered by `seq`;
   the link guarantees only delivery and de-duplication.
+- **Gap records break plain contiguity tracking.** A spool `spool.gap` record
+  (`kind: spool.gap`, `seq = to+1`) announces a run of sequence numbers that
+  were never stored. The controller therefore does not use `link.Receiver`'s
+  contiguous-sequence tracker for event ingest: its per-agent reorder buffer
+  treats a gap record as covering `from..to`, passes each contiguous run to
+  `store.Ingest`, and acks only after the commit (implementation:
+  internal/controller, 2026-10-22).
 - Reconnect with jittered exponential backoff, 1 s to 30 s (half to full of
   the step), reset after a healthy connection.
 - Chunked transfers resume via `chunk_have` (section 4).
@@ -301,6 +308,10 @@ then generates its own P-256 identity and enrolls (section 3, `hello.token`).
 - Host identity is manifest name + enrolled pin, never an IP address. A new
   pin claiming an existing host identity is an alert until an operator
   approves a re-enrollment (revokes the old pin, issues a fresh token).
+- `welcome` and `ack` carry no epoch or chain hash on the wire (ack is a
+  sequence number only). The controller epoch reaches agents inside the signed
+  `config` and in every signed step. (Noted 2026-10-22 when the controller was
+  built.)
 - Plan steps carry an epoch in addition to a sequence number; restoring the
   controller from a snapshot raises the epoch (needs the plan-signing key).
   After a restore the controller asks agents to resend everything their spools

@@ -653,6 +653,8 @@ The sender drains its queues in strict order, and every message is sent at its r
 - **Per-agent limits** on message rate, bytes per minute and concurrent fetches. SQLite writes are batched in transactions.
 - **Congestion states** reported to the controller: warning at 90% of the spool cap, full, flood, recovered at 70% [OA §5.8].
 
+
+Implementation notes (2026-10-22): the controller's per-agent reorder buffer understands spool gap records (a gap covers `from..to`, so plain contiguous-sequence tracking would stall), and acks only after the store commit. `welcome` and `ack` carry no epoch or hash; the epoch travels in the signed config and steps. See docs/protocol.md §6 and §9.
 ### The spool
 
 The spool is segment files, not one file [CR §3.10, OA §5.8]:
