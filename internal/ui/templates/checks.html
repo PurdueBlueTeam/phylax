@@ -1,0 +1,13 @@
+{{define "content"}}
+<h1>Service checks</h1>
+{{if .Data.Note}}<p class="notice">{{.Data.Note}}</p>{{end}}
+{{range .Data.Services}}
+<h2>{{.Service}} <small>SLA streak <span class="sla-{{.Level}}">{{.Streak}}</span>, penalties {{.Penalties}}</small></h2>
+<table><thead><tr><th>Check</th><th>Type</th><th>Vantage</th><th>Last result</th><th>When</th><th>Elapsed</th><th>Recent (newest first)</th><th>Up</th></tr></thead><tbody>
+{{range .Checks}}<tr><td><a href="/checks/{{.ID | urlq}}">{{.ID}}</a></td><td>{{.Kind}}</td><td>{{.Vantage}}</td>
+<td>{{if .Known}}{{if .OK}}<span class="val-pass">up</span>{{else}}<span class="link-down">down</span> {{.Class}} {{.Err}}{{end}}{{else}}no result{{end}}</td>
+<td>{{ts .Time}}</td><td>{{.Elapsed}}</td>
+<td class="mono">{{range .Recent}}{{if .}}<span class="val-pass">+</span>{{else}}<span class="link-down">x</span>{{end}}{{end}}</td><td>{{if .Samples}}{{.UpPercent}}% of {{.Samples}}{{end}}</td></tr>{{end}}
+</tbody></table>
+{{else}}<p>No check results yet. Results arrive from probe runs on the controller and from <span class="mono">vantage.check</span> events of the Kali check runner.</p>{{end}}
+{{end}}

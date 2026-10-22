@@ -35,6 +35,7 @@ func (s *Server) opsRoutes() {
 	h("POST /plans/{id}/nodes/{node}/approve", s.postApproveNode)
 	h("POST /plans/{id}/apply", s.postApply)
 	h("POST /plans/{id}/rollback", s.postRollback)
+	s.reportRoutes()
 }
 
 // ops returns the backend, or answers 404 when none is configured.

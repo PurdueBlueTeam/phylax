@@ -91,6 +91,7 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	var chainErr error
 	var pending []*event.Event // unstored events below the restore point, not yet tied to it
 	var last *event.Event      // previous event in this batch, for link checks
+	var newly []event.Event    // events this transaction stored, for the ingest hook
 	for i := range evs {
 		if err := ctx.Err(); err != nil {
 			return start, err
@@ -153,6 +154,7 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 						if err := insertEvent(ctx, ins, p); err != nil {
 							return start, err
 						}
+						newly = append(newly, *p)
 						ack.Backfilled++
 					}
 					pending = pending[:0]
@@ -202,11 +204,17 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 				return start, err
 			}
 		}
+		newly = append(newly, *ev)
 		curSeq, curHash = ev.Seq, ev.Hash
 		ack.Accepted++
 		last = ev
 	}
 
+	if h := s.hook.Load(); h != nil && len(newly) > 0 {
+		if err := (*h)(ctx, &IngestTx{ctx: ctx, tx: tx}, newly); err != nil {
+			return start, fmt.Errorf("store: ingest hook: %w", err)
+		}
+	}
 	if curSeq != a.LastSeq {
 		if _, err := tx.ExecContext(ctx, `UPDATE agents SET last_seq=?, last_hash=?, epoch=(SELECT CAST(value AS INTEGER) FROM meta WHERE key='epoch') WHERE id=?`,
 			curSeq, curHash, agent); err != nil {

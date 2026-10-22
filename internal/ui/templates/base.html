@@ -17,6 +17,10 @@
 <a href="/alerts"{{if eq .Nav "alerts"}} aria-current="page"{{end}}>Alerts</a>
 <a href="/plans"{{if eq .Nav "plans"}} aria-current="page"{{end}}>Plans</a>
 <a href="/chains"{{if eq .Nav "chains"}} aria-current="page"{{end}}>Chains</a>
+<a href="/reports"{{if eq .Nav "reports"}} aria-current="page"{{end}}>Reports</a>
+<a href="/checks"{{if eq .Nav "checks"}} aria-current="page"{{end}}>Checks</a>
+<a href="/health"{{if eq .Nav "health"}} aria-current="page"{{end}}>Health</a>
+<a href="/audit"{{if eq .Nav "audit"}} aria-current="page"{{end}}>Audit</a>
 <a href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>Account</a>
 </nav>
 <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><span class="user">{{.User}}</span> <button type="submit">Sign out</button></form>

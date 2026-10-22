@@ -89,6 +89,7 @@ type Controller struct {
 	ctlMu   sync.Mutex // serialises control signing and queueing
 	closed  atomic.Bool
 	cfgs    cfgState // agent config generation (agentconfig.go)
+	checks  *ChecksHub
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -135,6 +136,12 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
+	c.checks = newChecksHub(c)
+	// Alert-queue rows and check results are written in the ingest
+	// transaction; anything stored before that (or lost) is replayed now.
+	st.SetIngestHook(c.ingestHook)
+	c.replayAgentAlerts(ctx)
+	c.checks.rebuild(ctx)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()
 		return nil, err
