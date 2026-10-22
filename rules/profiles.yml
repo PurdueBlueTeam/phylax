@@ -30,4 +30,4 @@ profiles:
   - name: service.dependencies     # declared outbound peers of the host's services
   - name: device.admins            # admin logins allowed on network devices
   - name: reference.windows_tasks  # stock scheduled task names
-  - name: reference.scorer_sources  # scorer, vantage and team console source addresses (never scan fan-in)
+  - name: reference.scorer_sources  # scorer, vantage and team console source addresses (never scan fan-in); seeded by the controller from the manifest (scanner/canary hosts, their translated source, the controller host) and Controller.NoteScorerSource

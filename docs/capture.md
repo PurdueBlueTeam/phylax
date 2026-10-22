@@ -215,15 +215,183 @@ Shared helpers: `ntlm` (NTLMSSP types 1-3 from SPNEGO blobs and HTTP headers),
     -v /tmp/capture.test:/capture.test:ro alpine:3 /capture.test -test.run AFPacket -test.v
   ```
 
+## The agent module
+
+`internal/capture/module.go` (registered by `internal/agent/mods/capture.go`) is the
+agent's `capture` module. The signed `AgentConfig` decides **whether** it runs (the
+host has the `capture` role; Linux only, Windows reports it unavailable) and **which
+ports are scored** (every port in the net module's service map, decoys included).
+Local knobs live in an optional `capture.json` in the agent state directory, because
+`plan.AgentConfig` has no capture section yet (adding one is a `plan` change):
+
+```
+{"interface": "eth0",              // default: all interfaces
+ "exclude": ["10.0.0.5:8443"],     // the controller link: never captured
+ "local_addrs": ["10.0.0.10"],     // default: the interface's addresses
+ "ring_mb": 256, "hold_mb": 256,   // ring and freeze budgets
+ "disk_budget_mb": 512,            // pcaps under <state>/capture
+ "freeze_before_sec": 300, "freeze_after_sec": 600,
+ "scan_threshold": 20, "scan_window_sec": 10, "scored_ports": [8080]}
+```
+
+It opens AF_PACKET with the scored-port BPF (everything else at 128 bytes, so SYN
+scans of unscored ports are still seen), runs the engine, and publishes through the
+agent's emit (rate limited, then the spool). The engine callbacks run under its lock,
+so they only convert and queue (4096 events); a full queue sheds and counts. Per-class
+token buckets bound the rates (net.txn 300/s, net.flow 300/s, net.scan 20/s) on top of
+the supervisor's 600/s budget; `capture.stats` (every 60 s) reports packets, kernel
+drops, ring occupancy and every drop counter. A finite source (tests) ends without
+stopping the module, so freezes still work.
+
+| Event | Priority | Fields |
+| --- | --- | --- |
+| `http_request` | normal | as `HTTPEvents` (method, host, uri, ua, status, src/dst ip and port, community_id, dst_org, dst_cloud) |
+| `net.txn` | normal | `proto type src_ip src_port dst_ip dst_port community_id ok duration_ms`, `attr` and `list` (the scorer feature keys, values clipped to 512 bytes, 64 items), `cred {user domain mech}`, `sealed`, `secrets_dropped` |
+| `net.flow` | bulk | one per ended flow including SYN-only (`handshake: timeout`) and refused ones: `community_id proto src_* dst_* start end pkts/bytes/payload each way handshake end_reason service scan truncated`, and when the host's addresses are known `dir raddr laddr lport rport` (the names the network rules use) |
+| `net.scan` | high | `src_ip start end targets hosts final` |
+| `capture.evidence` | high | see below |
+| `capture.stats` | normal | counters |
+
+**Secrets.** Parsers list credential-derived fields in `Txn.Secret`; the module never
+puts them in an event in the clear. With a 32-byte hex key in `<state>/capture.seal`
+they are sealed with AES-256-GCM (`enc1:` + base64) under `sealed`; without it they are
+dropped and named in `secrets_dropped`. `Cred.PassHash` is always treated as secret,
+whether a parser listed it or not, and attribute keys that look like passwords are
+dropped. Tests prove the password and its hash are in neither the events nor the spool
+files.
+
+## Freeze on alert
+
+The module subscribes to the agent's event stream. A `detect.alert` for this host whose
+rule collects `freeze_ring` freezes the ring for **alert minus 5 min to plus 10 min**
+for the remote addresses the alert involves (entities and evidence fields; loopback and
+the host's own addresses never filter, because every packet involves them; no remote
+address means all traffic). The hold id is a hash of the rule and addresses, so a repeat
+extends the same window rather than starting another; at most 8 windows are open at once
+(the rest are counted as skipped). Two `capture.evidence` events follow: one at once
+(what the ring held), one when the window closes (`final: true`), same file replaced
+atomically. Fields: `id rule alert_time from to ips path bytes packets sha256 final`,
+plus `truncated` (hold budget hit), `evicted` and `error`. The IR drafter attaches
+`path` (on the agent, `<state>/capture/<id>.pcap`; a Wireshark-readable pcap) or fetches
+it by id. **Disk budget:** pcaps under `<state>/capture` total at most `disk_budget_mb`
+(default 512). A capture bigger than the whole budget is refused (evidence carries the
+error); otherwise the oldest other pcaps are deleted to make room. The agent does not
+yet serve the controller `fetch` message for these files (see gaps).
+
+## Controller wiring
+
+* **Controller-scope rules.** `internal/controller/capture_ingest.go` runs the rules whose
+  `scope` is `controller` (P88 D13e, D18b) over the stored events of all agents.
+  `net.flow` events with a direction are translated to `net.connection_opened`
+  (`dir raddr laddr lport`), the agents' own `net.connection_opened` are fed as is, and
+  alerts go to the operator queue with the flow events as evidence. Only events at or
+  below the ingest ack are fed, so a re-sent batch is never counted twice. The engine
+  is rebuilt, and re-seeded, when the config inputs change. Alerts are alert-only.
+* **`reference.scorer_sources`** is seeded (`seed_sources.go`) from the manifest: hosts with the
+  `scanner` or `canary` role (the Kali), their public address and their segment's
+  translated source (device `external_ip`), and the controller host (team console). The
+  scorer itself is recognised by behaviour, so its addresses are not guessed:
+  `Controller.NoteScorerSource(addr)` adds an address that scorer discovery or the
+  operator confirmed (bounded at 256, in memory, survives rule reloads, not a restart).
+  Agents' own detection configs do not carry this seed yet (`genconfig.go` is another
+  task's file; `ManifestScorerSources` is ready to be added to `detectSeeds`).
+* The controller does not yet act on `collect: [freeze_ring]` of a controller-scope
+  alert (sending `freeze_capture` controls to the agents that saw the flows).
+
+## Updating the network lists (Microsoft and cloud CIDRs)
+
+`internal/capture/orgnets.json` is embedded in the agent (offline) and labels `http_request`
+destinations (`dst_org`, `dst_cloud`) for P82. It ships as a **bootstrap seed** of coarse
+prefixes; regenerate it before the event on a connected machine and commit the result:
+
+```
+# download: Azure "Service Tags - Public" JSON (Microsoft Download Center, weekly),
+#   https://endpoints.office.com/endpoints/worldwide?clientrequestid=<uuid>  (-m365),
+#   https://ip-ranges.amazonaws.com/ip-ranges.json                          (-aws),
+#   plus any provider lists you want as one CIDR per line
+go run ./internal/capture/cmd/orgnetgen -azure ServiceTags_Public_*.json -m365 m365.json \
+   -aws ip-ranges.json -list digitalocean=cloud:do.txt > internal/capture/orgnets.json
+go test ./internal/capture/...
+```
+
+`microsoft` is `dst_org` only (not cloud); `cloud: true` orgs set `dst_cloud`. A host can
+override the list with `<state>/orgnets.json` (same format; an invalid file fails the
+module build rather than silently using the seed). The file is capped at 60 000 prefixes.
+
+## Lab Quotient pcaps (run 2026-10-22)
+
+`internal/capture/lab_test.go` runs `/tmp/qlab/final/lab_{svc1,svc2,web1b,db}.pcap`
+(`PHYLAX_QLAB` overrides the directory; skipped when absent) through `NewPCAPSource`
+and asserts each parser against the scorer's checks. The lab is two teams, 84 rounds
+(delay 20 s) of a real Quotient, five runner source addresses (172.28.77.132-136), no
+NAT between runners and boxes, so the **source-address check at drop passes in the lab**
+(real client addresses, never a firewall's); the Palo question stays open for the event.
+
+Result: no decode errors, parser panics, reassembly gaps or caps in any file.
+
+| Check | Parser result | Scorer classifier (successful sessions) |
+| --- | --- | --- |
+| smtp | EHLO localhost, AUTH PLAIN, `BODY=8BITMIME`, 16-char subject, 64-hex body, delivered; 84 per team | scorer, 84/84 (svc2: 82 scorer, 2 likely) |
+| imap | LOGIN LIST LOGOUT, 6-char tag | likely_scorer |
+| pop3 | USER PASS NOOP STAT QUIT | likely_scorer |
+| ftp | USER PASS FEAT TYPE OPTS EPSV RETR QUIT, `RETR readme.txt`, passive data channel followed (81 `ftp-data(passive)` flows) | likely_scorer |
+| smb | dialects 0x0311..0x0202, NTLM flags `0xe2888215`, domain_is_server, tree `\\ip\shared`, file `important.txt` | scorer, 79-84 per team |
+| winrm | POST `/wsman`, `Go-http-client/1.1`, first request without auth (401), two exchanges per round | likely_scorer |
+| dns | A (and MX) queries, `rd` set, no EDNS, answers listed; responses unpaired as documented | unknown (no DNS rule scores above 0.28) |
+| icmp | the scorer's ping: 24-byte payload, seq 0, one per round | likely_scorer (0.53) |
+| ssh | both HASSHes (`0a07365c...` BadAttempts, `a7230c16...` the real login), encrypted, dwell | scorer (0.90 on HASSH) |
+| tls (web1b) | JA4 `t13i131000_f57a46bbacb6_ab7e3b40a677`, JA3 `006598cf32b8feecd39e4337bdba9c44`, no SNI, empty ALPN list: **the recorded values reproduce on the real scorer's traffic** | scorer, 0.99 |
+| http (web1b) | GET, HTTP/1.1, header order `Host User-Agent Accept-Encoding Connection`, Host carries `:80` | likely_scorer (0.74) |
+| db (MySQL) | no parser; 168 established TCP flows and 13 unanswered SYN flows still become `net.flow` | n/a |
+
+Credential hashes: every `PassHash` of a successful smtp/ftp/imap/pop3 login equals
+`HashSecret("LabPass-<user>-<n>")` (322 of 325 in svc1; the other 3 are logins during
+PCR windows with the new password).
+
+**Findings from the real traffic (not fixed here, outside this task's files):**
+
+1. **`icmp.iputils_pattern` is wrong for 64-bit iputils.** Real Linux ping sends a
+   16-byte `struct timeval` and then `0x10 0x11 ...`; the parser (`internal/parsers/icmp`)
+   starts the pattern at byte 8, so all 56-byte pings (168 per file, the lab harness's own
+   pings) report `false`. Fix: accept the pattern at offset 16 (64-bit) as well as 8.
+2. **Failed logins have no fingerprint.** After a wrong password the scorer sends
+   `USER PASS QUIT` (ftp, pop3) or just `LOGIN` (imap); `ftp.cmds`/`pop3.cmds`/`imap.cmds`
+   rules only know the success sequences, so those sessions classify `unknown` (2-4 per
+   file, during PCR windows). A scorer table rule for the failed shape would close it.
+3. **Banner-only SSH.** The `tcp22` check and the custom `pyprobe` each open port 22,
+   read the banner and close: 2 per round, reported as `ssh/session` with no client banner,
+   `ssh.encrypted=false`, and classify `unknown`. A rule on "no client banner, no KEXINIT"
+   would label them.
+4. **DNS, RDP-style connects and the custom checks** have no table rule that reaches
+   `likely_scorer` (DNS 0.28, rdp 0.37); they are only separable by burst/port/account.
+5. **Capture loss in the lab file.** In `lab_svc2.pcap` at +248.27 s a burst overran the
+   lab's tcpdump: clients ACK server data that is not in the file, cutting 6 in-flight
+   smtp/ftp/pop3 sessions short. The engine flushes them without error; the test tolerates
+   up to 6. Real AF_PACKET reports kernel drops in `capture.stats`.
+
+## Tests added with the module
+
+* `module_test.go`: lifecycle over a PCAP source (http_request, net.txn with feature
+  lists, SYN-only inbound flows, net.scan), secrets (dropped, sealed and opened with the
+  key, absent from the spool's files), freeze-on-alert (valid pcap, within budget, the
+  involved addresses only, hold released, alerts without `freeze_ring` or for another
+  host ignored), disk budget (refusal, eviction of the oldest), rate limits.
+* `internal/controller/capture_test.go`: a rotating-source SYN scan through the capture
+  module, the agent spool, the real link and controller ingest raises P88 in the operator
+  queue; the Kali's own address and a learned scorer source do not; unstored events and
+  direction-less flows are not counted.
+* `orgnets_test.go`, `cmd/orgnetgen`, `internal/agent/mods/capture_test.go`.
+
 ## Needs a real capture run
 
-* The lab Quotient pcaps through `NewPCAPSource`: confirm each parser's features
-  against the real scorer (SMB, WinRM, mail, FTP, DNS, ICMP shapes), and the
-  source-address check at drop.
-* AF_PACKET on a real NIC under load: drop counts, block sizing, VLAN-tagged
-  and bonded interfaces, and CPU against the 3% budget; promiscuous mode is
-  intentionally absent, so only traffic to and from the host is seen.
-* Windows raw-socket coverage (T26) and a Windows `Source`.
+* AF_PACKET on a real NIC under load: drop counts, block sizing, VLAN-tagged and bonded
+  interfaces, and CPU against the 3% budget (the module has only been run on pcaps and
+  in the Docker loopback test); promiscuous mode is intentionally absent.
+* Windows raw-socket coverage (T26) and a Windows `Source`; the manifest gives Windows
+  hosts the `capture` role, so their config reports `degraded` until then.
 * Ring sizing against free disk, and whether a file-backed ring is needed.
-* Controller integration: wiring `OnTxn`/`OnFlow`/`OnScan` to the spool, the
-  freeze-on-alert trigger, and field encryption of `Secret` fields.
+* `capture.json` should become a signed `AgentConfig` section; the agent should answer
+  the controller's `fetch` (pcap) and `freeze_capture` control for these files; the
+  controller should send `freeze_capture` for controller-scope alerts.
+* The seal key has no distribution mechanism yet (a file in the state directory).
+* The Palo's inbound NAT behaviour (does the scorer's source survive).
