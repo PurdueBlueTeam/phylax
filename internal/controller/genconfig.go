@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest/render"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
@@ -18,6 +19,9 @@ type ConfigInputs struct {
 	Manifest *manifest.Manifest
 	Rules    []plan.RuleFile
 	Ledger   plan.LedgerRef
+	// Tokens is a snapshot of the honeytoken registry (secrets included), set
+	// by the controller when it builds a config; see deception_config.go.
+	Tokens []honeytokens.Token
 }
 
 // Per-module event budgets (events per second sustained / burst) applied at
@@ -128,8 +132,10 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 	}
 	if len(in.Rules) > 0 {
 		d := &plan.DetectSettings{ModuleLimits: lim("detect"), Rules: in.Rules, Seeds: detectSeeds(m, host, h, svcs, comms)}
+		d.Seeds = append(d.Seeds, honeySeeds(in.Tokens)...)
 		cfg.Modules.Detect = d
 	}
+	cfg.Modules.Deception = deceptionSettings(in, host, h)
 	return cfg, warnings, nil
 }
 
