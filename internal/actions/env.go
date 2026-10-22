@@ -56,8 +56,8 @@ func (e *Env) Resolve(p string) string {
 		return filepath.Clean(p)
 	}
 	p = filepath.ToSlash(p)
-	if len(p) > 1 && p[1] == ':' { // drive letter
-		p = p[2:]
+	if len(p) > 1 && p[1] == ':' { // drive letter (also on a Linux test host)
+		p = strings.ReplaceAll(p[2:], `\`, "/")
 	}
 	return filepath.Join(e.Root, filepath.FromSlash(filepath.Clean("/"+p)))
 }
