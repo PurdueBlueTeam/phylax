@@ -105,17 +105,7 @@ func (l *linter) finish() []Finding {
 			l.fs[i].Accepted = true
 		}
 	}
-	rank := map[Severity]int{SevError: 0, SevWarn: 1, SevInfo: 2}
-	sort.SliceStable(l.fs, func(i, j int) bool {
-		a, b := l.fs[i], l.fs[j]
-		if rank[a.Severity] != rank[b.Severity] {
-			return rank[a.Severity] < rank[b.Severity]
-		}
-		if a.ID != b.ID {
-			return a.ID < b.ID
-		}
-		return a.Subject < b.Subject
-	})
+	SortFindings(l.fs)
 	return l.fs
 }
 
@@ -407,4 +397,19 @@ func base(p string) string {
 		return p[i+1:]
 	}
 	return p
+}
+
+// SortFindings orders findings by severity (errors first), ID, then subject.
+func SortFindings(fs []Finding) {
+	rank := map[Severity]int{SevError: 0, SevWarn: 1, SevInfo: 2}
+	sort.SliceStable(fs, func(i, j int) bool {
+		a, b := fs[i], fs[j]
+		if rank[a.Severity] != rank[b.Severity] {
+			return rank[a.Severity] < rank[b.Severity]
+		}
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		return a.Subject < b.Subject
+	})
 }
