@@ -1,0 +1,1346 @@
+{
+ "tables": [
+  {
+   "name": "phylax",
+   "family": 1,
+   "chains": [
+    {
+     "name": "input",
+     "type": "filter",
+     "hook": 1,
+     "priority": 0,
+     "policy": 0,
+     "rules": [
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 4,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AQAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AAhsb29wYmFjaw=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "AQAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 0,
+          "Chain": ""
+         }
+        }
+       ]
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "BgAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABdlc3RhYmxpc2hlZCBhbmQgcmVsYXRlZA=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "aHAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "aHAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ACRtYW5hZ2VtZW50IGZsb3dzICh0YWJsZSBwaHlsYXhfbWdtdCk="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AQ=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AC9JQ01QIHN0YXlzIChwaW5nIGlzIHNjb3JlZDsgcnVsZXMgcmVxdWlyZSBJQ01QKQ=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Og=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ACdJQ01QdjY6IG5laWdoYm91ciBkaXNjb3ZlcnksIFBNVFUsIGVjaG8="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "EQ=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 0,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AEM="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AEQ="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABFESENQIHNlcnZlciByZXBseQ=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "EQ=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 0,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AiM="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AiI="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABNESENQdjYgc2VydmVyIHJlcGx5"
+      }
+     ]
+    },
+    {
+     "name": "output",
+     "type": "filter",
+     "hook": 3,
+     "priority": 0,
+     "policy": 1,
+     "rules": [
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 5,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AQAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AAhsb29wYmFjaw=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "AQAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 0,
+          "Chain": ""
+         }
+        }
+       ]
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "BgAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABdlc3RhYmxpc2hlZCBhbmQgcmVsYXRlZA=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "aHAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "aHAAAA=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ACRtYW5hZ2VtZW50IGZsb3dzICh0YWJsZSBwaHlsYXhfbWdtdCk="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AQ=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AC9JQ01QIHN0YXlzIChwaW5nIGlzIHNjb3JlZDsgcnVsZXMgcmVxdWlyZSBJQ01QKQ=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Og=="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ACdJQ01QdjY6IG5laWdoYm91ciBkaXNjb3ZlcnksIFBNVFUsIGVjaG8="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "EQ=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 0,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AEQ="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AEM="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABNESENQIGNsaWVudCByZXF1ZXN0"
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "EQ=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 0,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AiI="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "AiM="
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ABVESENQdjYgY2xpZW50IHJlcXVlc3Q="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 15,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Ag=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 1,
+          "Offset": 16,
+          "Len": 4,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "rBEAAg=="
+         }
+        },
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Bg=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Lookup",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 0,
+          "IsDestRegSet": false,
+          "SetID": 0,
+          "SetName": "port_af02630408",
+          "Invert": false
+         }
+        },
+        {
+         "t": "Limit",
+         "d": {
+          "Type": 0,
+          "Rate": 20,
+          "Over": false,
+          "Unit": 1,
+          "Burst": 40
+         }
+        },
+        {
+         "t": "Log",
+         "d": {
+          "Level": 0,
+          "Flags": 0,
+          "Key": 6,
+          "Snaplen": 0,
+          "Group": 101,
+          "QThreshold": 0,
+          "Data": "cGh5bGF4LWNhbmFyeTog"
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 0,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AEBlZ3Jlc3MgY2FuYXJ5IHRvIGthbGk6IGV4cGVjdGVkIHRvIGJlIGJsb2NrZWQsIGxvZ2dlZCBzZXBhcmF0ZWx5"
+      }
+     ]
+    }
+   ],
+   "sets": [
+    {
+     "name": "port_af02630408",
+     "key_name": "inet_service",
+     "key_bytes": 2,
+     "key_magic": 13,
+     "elems": [
+      {
+       "key": "EVw="
+      },
+      {
+       "key": "Irg="
+      },
+      {
+       "key": "Iyk="
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "phylax_mgmt",
+   "family": 1,
+   "chains": [
+    {
+     "name": "input",
+     "type": "filter",
+     "hook": 1,
+     "priority": -10,
+     "policy": 1,
+     "rules": [
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 15,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Ag=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 1,
+          "Offset": 12,
+          "Len": 4,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Lookup",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 0,
+          "IsDestRegSet": false,
+          "SetID": 0,
+          "SetName": "addr4_ff61eb74b2",
+          "Invert": false
+         }
+        },
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Bg=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "HRM="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "CAAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "l4///w==",
+          "Xor": "aHAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": true,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AFphZ2VudCBzdHJlYW1zIGFuZCBib290c3RyYXAgZG93bmxvYWRzOiBMQU4gYWdlbnRzLCByZWxheXMgYW5kIHRoZSBLYWxpJ3MgdHJhbnNsYXRlZCBzb3VyY2U="
+      }
+     ]
+    },
+    {
+     "name": "output",
+     "type": "filter",
+     "hook": 3,
+     "priority": -10,
+     "policy": 1,
+     "rules": [
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 15,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Ag=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 1,
+          "Offset": 16,
+          "Len": 4,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "rBTwyA=="
+         }
+        },
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Bg=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Abs="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "CAAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "l4///w==",
+          "Xor": "aHAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": true,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "ACBkZXZpY2UgbWFuYWdlbWVudDogcGFsbzEgKHBhbm9zKQ=="
+      },
+      {
+       "exprs": [
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 15,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Ag=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 1,
+          "Offset": 16,
+          "Len": 4,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "rBAA/g=="
+         }
+        },
+        {
+         "t": "Meta",
+         "d": {
+          "Key": 16,
+          "SourceRegister": false,
+          "Register": 1
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 0,
+          "Register": 1,
+          "Data": "Bg=="
+         }
+        },
+        {
+         "t": "Payload",
+         "d": {
+          "OperationType": 0,
+          "DestRegister": 1,
+          "SourceRegister": 0,
+          "Base": 2,
+          "Offset": 2,
+          "Len": 2,
+          "CsumType": 0,
+          "CsumOffset": 0,
+          "CsumFlags": 0
+         }
+        },
+        {
+         "t": "Lookup",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 0,
+          "IsDestRegSet": false,
+          "SetID": 0,
+          "SetName": "port_5064ab291b",
+          "Invert": false
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 0,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "CAAAAA==",
+          "Xor": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Cmp",
+         "d": {
+          "Op": 1,
+          "Register": 1,
+          "Data": "AAAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": false,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Bitwise",
+         "d": {
+          "SourceRegister": 1,
+          "DestRegister": 1,
+          "Len": 4,
+          "Mask": "l4///w==",
+          "Xor": "aHAAAA=="
+         }
+        },
+        {
+         "t": "Ct",
+         "d": {
+          "Register": 1,
+          "SourceRegister": true,
+          "Key": 3,
+          "Direction": 0
+         }
+        },
+        {
+         "t": "Verdict",
+         "d": {
+          "Kind": 1,
+          "Chain": ""
+         }
+        }
+       ],
+       "userdata": "AB9kZXZpY2UgbWFuYWdlbWVudDogdnlvczEgKHZ5b3Mp"
+      }
+     ]
+    }
+   ],
+   "sets": [
+    {
+     "name": "addr4_ff61eb74b2",
+     "key_name": "ipv4_addr",
+     "key_bytes": 4,
+     "key_magic": 7,
+     "interval": true,
+     "elems": [
+      {
+       "key": "rBTwAA=="
+      },
+      {
+       "key": "rBTxAA==",
+       "end": true
+      },
+      {
+       "key": "rB8VAg=="
+      },
+      {
+       "key": "rB8VAw==",
+       "end": true
+      }
+     ]
+    },
+    {
+     "name": "port_5064ab291b",
+     "key_name": "inet_service",
+     "key_bytes": 2,
+     "key_magic": 13,
+     "elems": [
+      {
+       "key": "ABY="
+      },
+      {
+       "key": "Abs="
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
