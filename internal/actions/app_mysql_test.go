@@ -63,7 +63,7 @@ func newFakeMySQL(t *testing.T, plugin, password string) *fakeMySQL {
 	return m
 }
 
-func (m *fakeMySQL) getVersion() string { m.mu.Lock(); defer m.mu.Unlock(); return m.version }
+func (m *fakeMySQL) getVersion() string  { m.mu.Lock(); defer m.mu.Unlock(); return m.version }
 func (m *fakeMySQL) setVersion(v string) { m.mu.Lock(); m.version = v; m.mu.Unlock() }
 func (m *fakeMySQL) setInfile()          { m.mu.Lock(); m.infile = true; m.mu.Unlock() }
 func (m *fakeMySQL) isLocked(i int) bool { m.mu.Lock(); defer m.mu.Unlock(); return m.users[i].locked }
