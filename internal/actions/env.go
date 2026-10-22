@@ -36,6 +36,9 @@ type Env struct {
 	Tags     TagSink
 	Accounts AccountBackend
 	Services ServiceManager
+	// Linux holds the optional backends of the Linux/application actions
+	// (linux_*.go, app_*.go); nil selects real defaults.
+	Linux *LinuxEnv
 	// Win carries the Windows, AD, network-device and Splunk backends (win_env.go).
 	Win WinEnv
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
