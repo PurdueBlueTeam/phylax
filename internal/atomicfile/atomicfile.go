@@ -29,7 +29,22 @@ var ErrTooLarge = errors.New("atomicfile: existing file too large")
 // file gets perm. If path is a symlink the link's target is replaced and the
 // link is kept. On any error the original file is left untouched and the temp
 // file is removed.
-func Write(path string, perm fs.FileMode, fn func(w io.Writer) error) (err error) {
+func Write(path string, perm fs.FileMode, fn func(w io.Writer) error) error {
+	return write(path, perm, false, fn)
+}
+
+// WriteExactMode is Write, but the new file always gets exactly perm (full
+// mode bits) before it is renamed into place, even when path already exists.
+// Ownership and labels are still preserved. Callers that restore a snapshot
+// use it so no reader can observe the new content with the old mode.
+func WriteExactMode(path string, data []byte, perm fs.FileMode) error {
+	return write(path, perm, true, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+func write(path string, perm fs.FileMode, exact bool, fn func(w io.Writer) error) (err error) {
 	target := path
 	if r, rerr := filepath.EvalSymlinks(path); rerr == nil {
 		target = r
@@ -69,7 +84,8 @@ func Write(path string, perm fs.FileMode, fn func(w io.Writer) error) (err error
 		if err = copyMetadata(target, old, tmp, tmpName); err != nil {
 			return fmt.Errorf("atomicfile: preserve metadata of %s: %w", target, err)
 		}
-	} else {
+	}
+	if statErr != nil || exact {
 		if err = tmp.Chmod(perm); err != nil {
 			return fmt.Errorf("atomicfile: chmod: %w", err)
 		}
