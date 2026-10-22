@@ -6,12 +6,15 @@ require (
 	filippo.io/age v1.3.1
 	github.com/elastic/go-libaudit/v2 v2.6.2
 	github.com/go-ole/go-ole v1.3.0
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/godbus/dbus/v5 v5.2.4
 	github.com/google/gopacket v1.1.19
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.20.3
+	github.com/ledongthuc/pdf v0.0.0-20261020125853-5e46805f718e
 	github.com/ulikunitz/xz v0.5.17
 	golang.org/x/crypto v0.58.0
+	golang.org/x/image v0.47.0
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
