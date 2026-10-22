@@ -1,0 +1,27 @@
+{{define "base.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false,"selfRequestsOnly":true}'>
+<title>{{.Title}} - Phylax</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body hx-headers='{{.HXHeaders}}'>
+{{if .User}}<header class="top">
+<strong>Phylax</strong>
+<nav>
+<a href="/"{{if eq .Nav "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
+<a href="/agents"{{if eq .Nav "agents"}} aria-current="page"{{end}}>Agents</a>
+<a href="/account"{{if eq .Nav "account"}} aria-current="page"{{end}}>Account</a>
+</nav>
+<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><span class="user">{{.User}}</span> <button type="submit">Sign out</button></form>
+</header>{{end}}
+<main>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}
