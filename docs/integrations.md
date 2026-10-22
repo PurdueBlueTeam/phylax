@@ -23,11 +23,6 @@ action's catalog risk.
 
 These are declared as data in `plans/actions.yaml` so templates validate today; the agent must implement them
 (`catalog.Missing()` lists them; a stub is rejected once the real action exists):
-`pkg.install`
-`pkg.remove`
-`firewall.allow`
-`ini.set`
-`xml.set`
 `registry.set`
 `windows.smb1`
 `ad.secure_channel`
@@ -38,19 +33,7 @@ These are declared as data in `plans/actions.yaml` so templates validate today; 
 `splunk.rest`
 `splunk.password`
 `splunk.hec_setup`
-`web.remove_dir`
-`web.rename_dir`
-`kernel.module_block`
-`sysctl.set`
-`command.check`
-`sql.query`
-`net.http_probe`
-`net.tcp_probe`
-`wazuh.health`
-`wazuh.capture`
-`wazuh.test_alert`
 `vyos.snapshot`
-`agentopt.set`
 
 Also: `file.write` validates paths as POSIX on the controller, so Windows paths need a platform-aware validator
 (worked around with `agentopt.set`). Palo steps must be their own commits (no commit-confirm on PAN-OS).

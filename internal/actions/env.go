@@ -36,6 +36,9 @@ type Env struct {
 	Tags     TagSink
 	Accounts AccountBackend
 	Services ServiceManager
+	// Linux holds the optional backends of the Linux/application actions
+	// (linux_*.go, app_*.go); nil selects real defaults.
+	Linux *LinuxEnv
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
 	QuarantineDir string
 	Now           func() time.Time
@@ -70,11 +73,15 @@ func (e *Env) guard() ScoringGuard {
 // DeadmanHandlers returns the rollback handlers for the kinds this package
 // arms; pass them in deadman.Options.Handlers.
 func DeadmanHandlers(env *Env) map[string]deadman.Handler {
-	return map[string]deadman.Handler{
+	h := map[string]deadman.Handler{
 		kindQuarantineUndo: undoQuarantine,
 		kindPerms:          undoPerms,
 		kindServiceState:   func(ctx context.Context, en deadman.Entry) error { return restoreServices(ctx, env, en) },
 	}
+	for k, v := range linuxHandlers(env) {
+		h[k] = v
+	}
+	return h
 }
 
 // Request is one action invocation.

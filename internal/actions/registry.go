@@ -52,5 +52,14 @@ func Core() *Registry {
 	for _, a := range coreActions() {
 		r.Register(a)
 	}
+	for _, f := range extraActionSets {
+		for _, a := range f() {
+			r.Register(a)
+		}
+	}
 	return r
 }
+
+// extraActionSets are additional action groups registered by init functions
+// in registry_*.go files (one per feature area, so areas do not conflict).
+var extraActionSets []func() []Action
