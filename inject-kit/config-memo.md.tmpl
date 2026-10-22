@@ -1,0 +1,46 @@
+# Inject {{.Num}} - {{cell .Code "inject code from the prompt"}} - {{cell .Title "title exactly as the prompt writes it"}}
+
+MEMORANDUM
+
+To: {{f "to" "the role the inject names"}}
+From: {{f "from" "business-style team name (no team number, no school name)"}}
+Date: {{.Date}}
+Subject: Inject {{.Num}} - {{cell .Code "inject code"}} - {{cell .Title "inject title"}}
+
+## 1. EXECUTIVE SUMMARY
+{{f "summary" "we completed the task on N of N hosts or devices; the risk it reduces and why; scored services re-tested and still up; exceptions and why"}}
+
+## 2. SCOPE AND SUMMARY TABLE
+| Host / device | Role | OS or platform | What was changed | Method (tool / setting) | Verified | Figure |
+|---|---|---|---|---|---|---|
+{{- range .Hosts}}
+| {{cell .Host "host"}} | {{cell .Role "role"}} | {{cell .OS "os"}} | {{cell .Change "what was changed"}} | {{cell .Method "tool or setting"}} | {{cell .Verified "yes or no and the test"}} | {{.FigureRef}} |
+{{- else}}
+| {{p "host"}} | {{p "role"}} | {{p "os"}} | {{p "what was changed"}} | {{p "tool or setting"}} | {{p "verified"}} | {{p "figure"}} |
+{{- end}}
+
+One row per host the prompt covers. If the prompt says each server, every server is listed.
+
+## 3. IMPLEMENTATION
+### 3.1 Linux
+{{f "impl_linux" "commands or config file and the lines changed, or write: not applicable"}}
+
+### 3.2 Windows
+{{f "impl_windows" "GPO, PowerShell or registry setting, or write: not applicable"}}
+
+### 3.3 Network / firewall devices
+{{f "impl_network" "rule table or config excerpt, or write: not applicable"}}
+
+## 4. VERIFICATION
+{{f "verification" "the test that proves the change works, from outside the host where possible; scored services still pass; before and after"}}
+
+## 5. EXCEPTIONS, RISKS AND ROLLBACK
+{{f "exceptions" "what was deliberately not changed and why; how to undo each change"}}
+
+## 6. NEXT STEPS
+{{f "next_steps" "review cadence, monitoring, dependent injects"}}
+
+## EVIDENCE BY HOST
+{{evidenceTable .Hosts .Figures}}
+{{appendices .Groups}}
+{{attachments .Attachments}}

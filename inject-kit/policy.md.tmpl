@@ -1,0 +1,44 @@
+# Inject {{.Num}} - {{cell .Code "inject code from the prompt"}} - {{cell .Title "title exactly as the prompt writes it"}}
+
+{{f "company" "company or business-style team name (no team number, no school name)"}}
+{{cell .Title "policy title as the prompt names it"}}
+
+Policy number: {{f "policy_number" "e.g. POL-001"}}
+Effective date: {{f "effective_date" "date"}}    Last revised: {{f "last_revised" "date"}}
+Owner: {{f "owner" "role"}}    Approved by: {{f "approved_by" "role"}}
+Applies to: {{f "applies_to" "employees, contractors, vendors, systems"}}
+Date prepared: {{.Date}}
+
+## 1. PURPOSE
+{{f "purpose" "why the policy exists, one paragraph, in business terms"}}
+
+## 2. SCOPE
+{{f "scope" "who and what it covers; what is out of scope"}}
+
+## 3. DEFINITIONS
+{{f "definitions" "terms the policy uses"}}
+
+## 4. POLICY STATEMENTS
+{{range $i, $s := .Statements}}
+4.{{inc $i}} {{cell $s.Text "requirement: must / must not, testable"}}{{if $s.Control}} [control reference: {{$s.Control}}]{{end}}
+{{else}}
+4.1 {{p "requirement: must / must not, testable"}} [control reference: {{p "standard and control number"}}]
+{{end}}
+## 5. ROLES AND RESPONSIBILITIES
+{{f "roles" "what employees, management and IT-security must do; how to report a problem"}}
+
+## 6. ENFORCEMENT AND EXCEPTIONS
+{{f "enforcement" "consequences; exception request and approval process"}}
+
+## 7. IMPLEMENTATION AND EVIDENCE
+{{f "implementation" "where it is enforced (GPO, PAM, banner), the setting, and the figure; or write: not requested"}}
+{{figures .Figures}}
+## 8. REVIEW
+{{f "review" "review cadence and who reviews"}}
+
+## 9. ACKNOWLEDGEMENT
+Name: ____________  Signature: ____________  Date: ________
+
+## SOURCES
+{{f "sources" "standards and references with control numbers"}}
+{{attachments .Attachments}}
