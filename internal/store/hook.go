@@ -31,9 +31,14 @@ func (s *Store) SetIngestHook(h IngestHook) {
 
 // IngestTx is the slice of the ingest transaction a hook may use.
 type IngestTx struct {
-	ctx context.Context
-	tx  *sql.Tx
+	ctx   context.Context
+	tx    *sql.Tx
+	after []func()
 }
+
+// OnCommit registers f to run once, after the transaction committed (never
+// when it rolled back). Use it for in-memory state derived from stored rows.
+func (t *IngestTx) OnCommit(f func()) { t.after = append(t.after, f) }
 
 // FindEventAt returns the stored event of the agent and kind with exactly
 // this timestamp (the lowest seq when several), including events written

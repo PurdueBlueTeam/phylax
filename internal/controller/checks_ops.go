@@ -62,6 +62,9 @@ func (o *WebOps) Checks(ctx context.Context) (ui.ChecksView, error) {
 		perV := map[string][]store.CheckResult{}
 		var order []string
 		for _, r := range hist { // newest first
+			if m := parseCheckDetail(r.Detail).Mode; m != "" && m != "faithful" {
+				continue // sweeps and auth-only runs are in the history page, not the service summary
+			}
 			if _, seen := perV[r.Vantage]; !seen {
 				order = append(order, r.Vantage)
 			}

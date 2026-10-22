@@ -68,20 +68,12 @@ func (c *Controller) ingestHook(ctx context.Context, tx *store.IngestTx, evs []e
 				if err := tx.RecordCheck(cr); err != nil {
 					return err
 				}
+				// The in-memory SLA streak moves only once the row is committed.
+				tx.OnCommit(func() { c.checks.observeEvent(e) })
 			}
 		}
 	}
 	return nil
-}
-
-// afterIngest runs once a batch is durably stored: in-memory consumers of
-// derived data (SLA streaks) see only committed results.
-func (c *Controller) afterIngest(run []event.Event, stored uint64) {
-	for _, e := range run {
-		if e.Kind == kindVantageCheck && e.Seq <= stored {
-			c.checks.observeEvent(e)
-		}
-	}
 }
 
 // replayAgentAlerts queues every stored detect.alert event that has no queue

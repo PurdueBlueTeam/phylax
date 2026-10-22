@@ -5,8 +5,8 @@ external typesetter: Markdown is the source, `go-pdf/fpdf` renders the PDF with 
 (ToUnicode map included), so NISE and `ledongthuc/pdf` can extract the text.
 
 **Design change (recorded here because the design doc said Typst):** rendering is a pure-Go Markdown subset
--> PDF, not a Typst host binary. HTML output is not produced. Update `phylax_design.md` when the controller
-integration lands.
+-> PDF, not a Typst host binary. HTML output is not produced. `phylax_design.md` records the change in the IR
+rendering paragraph.
 
 ## Entry points the controller and UI call
 
@@ -67,8 +67,42 @@ From line must carry it); optional forbidden words (school name); every attachme
 
 ## Gaps
 
-- Not wired into the controller/UI yet; callers build `IRInput` from the store (`chains.LoadAll`, `traceback.Tracer`).
+- Fills for generic placeholders are text substitutions on the generated Markdown. The rubric checklist is the
+  drafter's own, so an item that depends on a section's placeholders (for example impact) only turns `met` when the
+  structured field (downtime, data statement, detection, retests) is filled, not when its placeholder is replaced by
+  a generic fill. `PB-placeholders` is recomputed after the fills.
+- Removing a figure renumbers the later ones; retest lines that cite a figure number must be edited.
+- Attachments other than screenshots are not uploaded through the UI (`Attachments` stays empty).
 - No HTML output; PDF layout is plain (no syntax highlighting, bold/italic inline markup is flattened).
 - Fonts are Latin only; other scripts become `?`.
 - Rubric text is encoded from the ccdc-private notes; if the graders change, edit `irchecklist.go`.
 - Screenshot properties (cursor, cropping) and whether the NISE upload accepts the PDF are untested.
+
+## Controller and UI integration
+
+Code: `internal/controller/report_*.go` (drafts, evidence, render, download) and `internal/ui/reports.go` with the
+`draft.html` and `reports.html` templates. Drafts live in the store table `report_drafts` (migration 4): a JSON spec
+with the chain or campaign ids, the operator's raw field text, the fills (`what` -> text) and the figure list.
+Nothing is cached: every view re-drafts from the stored chains, applies the fills, renders the PDF and runs
+`ValidateSubmission`, so the page, the validator and the download always agree.
+
+Config (controller JSON): `team` (1..99, required for drafts), `next_incident` and `next_inject` (first number offered;
+later drafts continue after the highest used), `forbidden_words` (school name spellings the validator rejects).
+
+| Route | Does |
+| --- | --- |
+| `GET /reports` | Drafts list; new inject form (template, number, code, title). |
+| `POST /reports/ir` (`chain` or `campaign`) | "Draft IR": `IRInput` from the chains, the earliest alert pointing at them (detection time and method) and its trace-back (collected-file hashes). |
+| `GET /reports/{id}` | Review: validation result, field form, placeholder table, rubric checklist (met / partial / unmet / operator-only), figures, text preview. |
+| `POST /reports/{id}/save` | Store fields and fills, regenerate. Unparseable times or lines are refused (400). |
+| `POST /reports/{id}/upload` | PNG/JPEG screenshot, at most 8 MiB, sniffed and decoded, stored as `<data_dir>/reports/<id>/<sha256[:16]>.png`; the full hash is kept and re-checked on every render. |
+| `POST /reports/{id}/hostevidence` | Log-excerpt figure from the newest stored events of one host (and optional kind). |
+| `POST /reports/{id}/evidence/{n}/delete`, `/validate` | Detach a figure; record an explicit validation run in the audit log. |
+| `GET /reports/{id}/download` | `incidentNN_teamTT.pdf` / `injectNN_teamTT.pdf`, only when `ValidateSubmission` has no failure and no stored figure file changed; otherwise 409 naming the failed checks. Audited. |
+
+All POSTs go through `ui.Handle` (session, CSRF, audit before the handler). The multipart upload reads the CSRF token
+from its first form field (or the `X-CSRF-Token` header); only that route has the larger body cap.
+
+Inject drafts: the form lists the template's `{{f "key" "hint"}}` inputs (parsed from the template) plus pipe-separated
+lines for deliverables, hosts, statements, finished and remaining items. The config memo's per-host figure column
+finds figures by host name, which the host-evidence button sets.

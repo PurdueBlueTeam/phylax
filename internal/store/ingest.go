@@ -210,8 +210,9 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 		last = ev
 	}
 
+	itx := &IngestTx{ctx: ctx, tx: tx}
 	if h := s.hook.Load(); h != nil && len(newly) > 0 {
-		if err := (*h)(ctx, &IngestTx{ctx: ctx, tx: tx}, newly); err != nil {
+		if err := (*h)(ctx, itx, newly); err != nil {
 			return start, fmt.Errorf("store: ingest hook: %w", err)
 		}
 	}
@@ -223,6 +224,9 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	}
 	if err := tx.Commit(); err != nil {
 		return start, err
+	}
+	for _, f := range itx.after {
+		f()
 	}
 	ack.Seq, ack.Hash = curSeq, curHash
 	return ack, chainErr

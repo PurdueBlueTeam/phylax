@@ -542,4 +542,3 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, r, http.StatusOK, "audit", pageData{Title: "Audit log", Nav: "audit", Data: v})
 }
-

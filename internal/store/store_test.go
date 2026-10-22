@@ -617,3 +617,48 @@ func TestPlansAndStepSeq(t *testing.T) {
 		t.Fatal(p.State)
 	}
 }
+
+func TestAuditPageAndCheckHistory(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	for i := 0; i < 7; i++ {
+		actor := "a"
+		if i%2 == 1 {
+			actor = "b"
+		}
+		if err := s.AppendAudit(ctx, AuditRow{Time: now, Actor: actor, Action: "act", Detail: "d"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p1, next, err := s.AuditPage(ctx, AuditFilter{Limit: 3})
+	if err != nil || len(p1) != 3 || next == 0 {
+		t.Fatalf("page 1: %d next %d %v", len(p1), next, err)
+	}
+	p2, next2, _ := s.AuditPage(ctx, AuditFilter{Limit: 3, Before: next})
+	if len(p2) != 3 || p2[0].ID >= p1[2].ID || next2 == 0 {
+		t.Fatalf("page 2: %+v", p2)
+	}
+	p3, next3, _ := s.AuditPage(ctx, AuditFilter{Limit: 3, Before: next2})
+	if len(p3) != 1 || next3 != 0 {
+		t.Fatalf("page 3: %+v next %d", p3, next3)
+	}
+	onlyB, _, _ := s.AuditPage(ctx, AuditFilter{Actor: "b"})
+	if len(onlyB) != 3 {
+		t.Fatalf("actor filter: %d", len(onlyB))
+	}
+
+	for i := 0; i < checkKeep+10; i++ {
+		if err := s.RecordCheck(ctx, CheckResult{CheckID: "web:http", Service: "web", Kind: "http", Vantage: "controller", Time: now.Add(time.Duration(i) * time.Second), OK: i%2 == 0}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.CheckHistory(ctx, "web:http", 5000)
+	if err != nil || len(h) != checkKeep || !h[0].Time.After(h[1].Time) {
+		t.Fatalf("history kept %d (%v), want %d newest first", len(h), err, checkKeep)
+	}
+}
