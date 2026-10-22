@@ -1432,11 +1432,11 @@ The `scan` module runs the pinned YARA-X binary every 5 minutes over process mem
 
 ### The alert and the response
 
-The alert carries the hash, the ledger verdict, the signer, the owning package, the expected file and its source, the process tree and the network behaviour. **There is no automatic restore.** The one-click tier-1 response is: quarantine the file as evidence (hash, mtime, copy), restore the known-good file from the **local depot**, restart the service, and verify with the scorer-mimic probe.
+The alert carries the hash, the ledger verdict, the signer, the owning package, the expected file and its source, the process tree and the network behaviour. **There is no automatic restore.** The one-click tier-1 response is: quarantine the file as evidence (hash, mtime, copy), restore the known-good file from the **local depot** (service binaries; command tools are in the [trusted tool depot](#trusted-tool-depot)), restart the service, and verify with the scorer-mimic probe.
 
 ### The local depot
 
-Known-good copies of service binaries and their packages for the announced OS versions, plus the vendor packages the ledger fetched. It is a signed release asset (small tier) and a controller cache (large tier), so a restore never depends on the internet (D-5). DePaul's "offline depot" is the model [PRO §2].
+See also the [trusted tool depot](#trusted-tool-depot) for command-line tools. Known-good copies of service binaries and their packages for the announced OS versions, plus the vendor packages the ledger fetched. It is a signed release asset (small tier) and a controller cache (large tier), so a restore never depends on the internet (D-5). DePaul's "offline depot" is the model [PRO §2].
 
 ### Limits
 
@@ -1775,6 +1775,7 @@ Sizes are estimates to be measured in M0. A tier must be complete before the fea
 | --- | --- | --- | --- |
 | 0: in the release | `phylax` binaries, rules (hand-written and Sigma-derived), YARA C2 corpus, Sysmon config, decoy pools, inject-kit templates, ATT&CK dataset, ledger indexes (path to hash, compressed) for the announced OS versions, the cache index | tens of MB | Everything at `init` |
 | 1: fetched at init, small and critical | Sysmon (fetched from Microsoft; not redistributable), YARA-X binaries, Typst, Winbindex extract for Server 2019, 2022 and Windows 11, the Wazuh offline bundle and agent installers, Suricata rules, the nmap/xfreerdp pins for the Kali | hundreds of MB | Telemetry, ledger on Windows, OSS deploys |
+| 1b: release asset | The tool depot (signed manifest + static tools, § Trusted tool depot); Windows Sysinternals fetched at init | tens of MB | Operator response, `phylax depot` |
 | 2: background, large | The depot: distro packages for the service stacks (httpd, php, postfix, dovecot, openssh, sudo, polkit and their dependency closure) per OS, the exact vendor package versions for ledger proofs, security-relevant OS updates, optionally Windows cumulative updates | GB | Patch windows, restores, ledger vendor proofs |
 
 ### How caches are built and refreshed
@@ -1787,6 +1788,16 @@ Sizes are estimates to be measured in M0. A tier must be complete before the fea
 - **Offline drill.** A lab test runs the whole cold start with the internet blocked (T40).
 
 **Complexity flag:** the cache is a content-addressed store with a signed index, a CI build job and a sync client. It is bounded by tiers, by reusing the release signing path, and by the rule that no feature requires a live fetch.
+
+### Trusted tool depot
+
+Operators and Phylax must not trust host tools during a response: the red team replaces binaries (Postfix, `dns.exe`, `nologin`, `dash`). The depot is DePaul's offline depot of known-good static tools [PRO §2, patterns idea 4], signed with the same release key as the ledger (`integrity.Signer`).
+
+- **Signed manifest.** Name, version, OS/arch, sha256, size, source URL, licence, build recipe and applet names. Content-addressed store; tools deploy to a hidden per-event directory (D-8, derived from the event secret) with mode 0700/0500.
+- **Linux:** static musl builds from reproducible recipes (`depot/recipes`, not run in CI): busybox, coreutils, procps-ng, iproute2, lsof, net-tools, tcpdump, strace, curl, socat, OpenSSH client, file, findutils, grep, tar, gzip, xz; nmap optional. GPL tools ship with the pinned source reference. **Windows:** our own Go tools plus Sysinternals fetched from Microsoft at `phylax init` (no redistribution; pinned hash, as for Sysmon).
+- **Use.** `phylax depot run|shell` re-hashes the tool before every use and executes the hashed bytes from a sealed memfd, with a rebuilt environment (PATH = depot only, no `LD_*`). `phylax depot verify|list`. `phylax tools ps|ss|ls|hash|lsof` are Go-native fallbacks reading `/proc` and netlink when not even a static binary can be copied in.
+- **Network.** Only the controller fetches (cache path, tier 1 for vendor downloads); agents get tools from the controller. Details: `docs/depot.md`.
+- **Limits.** Defeats replaced binaries and poisoned environments, not a kernel rootkit. The static binaries need a lab build (T-depot): build, fill source hashes, pack and sign, run `depot verify`/`run` on each target OS image.
 
 ## Controller
 
