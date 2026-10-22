@@ -112,8 +112,8 @@ func TestTokenContents(t *testing.T) {
 		tokByID[tk.ID] = tk
 	}
 	for _, a := range p.Actions {
-		if a.Action != "file.write" || a.Host != "rocky-ecom" || !a.OnlyIfAbsent {
-			t.Errorf("action %+v must be a guarded file.write on the host", a)
+		if a.Action != "file.plant" || a.Host != "rocky-ecom" || !a.OnlyIfAbsent {
+			t.Errorf("action %+v must be a guarded file.plant on the host", a)
 		}
 		if len(a.SecretParams) == 0 || a.Params["mode"] == "" {
 			t.Errorf("secrets/mode not set: %+v", a)

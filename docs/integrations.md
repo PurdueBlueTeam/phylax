@@ -78,6 +78,23 @@ real host.
 - `web.remove_dir`, `web.rename_dir` (fixes `HTTP_SERVER`/`HTTPS_SERVER` and absolute paths in `config.php`),
   `web.opencart_audit` (install dir, default admin dir, writable config, PHP in upload dirs, vendor hash diff,
   extension list, admin users and installed extensions from the database).
+- SQL Server (`mssql_*.go`, pure-Go `go-mssqldb`; any platform builds, run on the Windows SQL host): `sql.query` with
+  `engine: mssql` (named statements `version`, `sysadmins`/`review_sysadmins`, `logins`, `weak_logins`, `config`,
+  `linked_servers`, `agent_jobs`, `review_linked_servers_and_agent_jobs`, `startup_procs`, `trustworthy_dbs`,
+  `server_triggers`, `audit`, or one T-SQL statement with `?` placeholders; writes need `write: true`; `sp_configure`,
+  `xp_cmdshell`, `OPENROWSET`, `SHUTDOWN`, comments and multi-statement batches are refused; login DDL and
+  `ALTER SERVER ROLE` go through the scoring guard), `mssql.audit` (read-only findings, `fail_on_critical`), and
+  `mssql.lock` (`sp_configure` off for xp_cmdshell / Ole Automation / CLR by default, optionally external scripts and
+  ad hoc distributed queries; `disable_logins`, `remove_sysadmins`; `disable_unscored` / `sysadmin_sweep` with `keep`
+  need a non-default scoring guard). Rollback (kind `mssql.undo`, no credentials) restores the prior option values,
+  re-enables logins and re-adds sysadmin members. Connection is loopback only, Windows integrated authentication
+  unless `MSSQLConfig.Auth` (set by the agent from the vault) returns a SQL login; encryption is login-only with the
+  server certificate not validated, and the actions never set the server's ForceEncryption (it can break the scorer).
+  The blank / same-as-name password check is a fixed comparison of the stored hash against two candidates, never
+  guessing. The lock never changes a scored login (disable, role removal) and never the connection's own login,
+  `sa`'s role membership, `NT SERVICE\*`, `NT AUTHORITY\*` or Windows groups (lockout risk) unless the agent is a
+  direct sysadmin member. The build check flags 2019 builds below 15.0.2190.7 (GDR) / 15.0.4490.9 (CU). The real-server
+  test runs only with `PHYLAX_MSSQL_DSN=user:password@127.0.0.1:1433`.
 - `net.tcp_probe`, `net.http_probe`, `command.check` (sudo, pkexec, ssh, kernel, user-namespace probes with the
   known vulnerable ranges), `wazuh.health`, `wazuh.capture`, `wazuh.test_alert`.
 
@@ -90,7 +107,8 @@ service. The rules are skipped only when the guard lists this host's scored serv
 
 ## Wazuh (`internal/integrations/wazuh`)
 
-API client: JWT auth with re-auth on 401, `/manager/info`, `/agents`, `Health` (active, disconnected,
+API client: JWT auth with re-auth on 401, `/manager/info`, `/agents`, `/groups` (`Groups`: name, agent count, config
+checksums; `wazuh.capture` writes `group_details.json` and lists agent-less groups in `groups.json`), `Health` (active, disconnected,
 never-connected). Version pin: `CheckManager` refuses a manager < 4.14.9 (CVE-2025-24016 and the 2026 bugs),
 `CheckAgents` refuses any agent newer than the manager; comparison is numeric. TLS verify is on unless
 `InsecureTLS` (lab self-signed certs) or a CA is given. Alerts come from the Wazuh indexer

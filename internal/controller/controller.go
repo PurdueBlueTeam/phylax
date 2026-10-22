@@ -62,6 +62,9 @@ type Options struct {
 	// agents of its nodes to reconnect before it fails applies for absent
 	// hosts (default StepTimeout).
 	ResumeGrace time.Duration
+	// Vault holds the honeytoken secret material (deception_registry.go).
+	// Nil disables honeytoken generation; plans never carry secrets either way.
+	Vault SecretVault
 }
 
 const alertRing = 256
@@ -91,6 +94,9 @@ type Controller struct {
 	cfgs    cfgState                // agent config generation (agentconfig.go)
 	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
 	checks  *ChecksHub
+
+	honey    honeyState // honeytoken registry (deception_registry.go)
+	honeyGen sync.Mutex // serialises GenerateHoneytokens
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -138,15 +144,20 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
 	c.checks = newChecksHub(c)
-	// Alert-queue rows and check results are written in the ingest
-	// transaction; anything stored before that (or lost) is replayed now.
-	st.SetIngestHook(c.ingestHook)
-	c.replayAgentAlerts(ctx)
-	c.checks.rebuild(ctx)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()
 		return nil, err
 	}
+	if err := c.loadHoneytokens(ctx); err != nil {
+		st.Close()
+		return nil, err
+	}
+	// Alert-queue rows (attributed against the honeytoken registry loaded
+	// above) and check results are written in the ingest transaction;
+	// anything stored before that (or lost) is replayed now.
+	st.SetIngestHook(c.ingestHook)
+	c.replayAgentAlerts(ctx)
+	c.checks.rebuild(ctx)
 	// Unfinished plans come back from the store; running ones resume when
 	// their agents reconnect (restore.go).
 	if err := c.loadPlans(ctx); err != nil {

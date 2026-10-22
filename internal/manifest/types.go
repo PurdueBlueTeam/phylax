@@ -418,11 +418,14 @@ type HostDecoys struct {
 	HoneyFiles  []string        `yaml:"honey_files,omitempty" json:"honey_files,omitempty"`
 	Honeytokens []Honeytoken    `yaml:"honeytokens,omitempty" json:"honeytokens,omitempty"`
 	Exposure    string          `yaml:"exposure,omitempty" json:"exposure,omitempty"` // lan | public | both (default both)
+	// Domain is the AD DNS domain (corp.example). Needed on a domain controller
+	// for the ad_spn / ad_asrep / ad_admin honeytokens.
+	Domain string `yaml:"domain,omitempty" json:"domain,omitempty"`
 }
 
 // DecoyListener is a decoy service port.
 type DecoyListener struct {
-	Kind string `yaml:"kind" json:"kind"` // ssh | mysql | redis | telnet | winrm | rdp | http_admin
+	Kind string `yaml:"kind" json:"kind"` // ssh | mysql | redis | telnet | winrm | rdp | http_admin | smb (banner only, never 445)
 	Port uint16 `yaml:"port" json:"port"`
 }
 

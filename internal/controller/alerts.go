@@ -29,7 +29,7 @@ func (c *Controller) recordAgentAlerts(ctx context.Context, run []event.Event, s
 func fstr(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 
 func (c *Controller) recordAgentAlert(ctx context.Context, e event.Event) error {
-	row, err := agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
+	row, err := c.agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
 		found, err := c.st.Events(ctx, store.Query{Agent: e.Agent, Kind: kind, From: t, To: t.Add(time.Nanosecond), Limit: 1})
 		if err != nil || len(found) != 1 {
 			return 0, false
@@ -52,7 +52,7 @@ func (c *Controller) ingestHook(ctx context.Context, tx *store.IngestTx, evs []e
 	for _, e := range evs {
 		switch e.Kind {
 		case kindDetectAlert:
-			row, err := agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
+			row, err := c.agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
 				seq, ok, err := tx.FindEventAt(e.Agent, kind, t)
 				return seq, ok && err == nil
 			})
@@ -100,7 +100,7 @@ func (c *Controller) replayAgentAlerts(ctx context.Context) {
 
 // agentAlertRow builds the queue row for a stored detect.alert event. find
 // resolves a matched event (kind and exact time) to its stored seq.
-func agentAlertRow(e event.Event, find func(kind string, t time.Time) (uint64, bool)) (store.AlertRow, error) {
+func (c *Controller) agentAlertRow(e event.Event, find func(kind string, t time.Time) (uint64, bool)) (store.AlertRow, error) {
 	k := alertKeys{Title: fstr(e.Fields, "title"), Message: fstr(e.Fields, "message"), Entities: map[string]string{}}
 	if t, ok := e.Fields["tier"].(json.Number); ok {
 		n, _ := t.Int64()
@@ -139,6 +139,7 @@ func agentAlertRow(e event.Event, find func(kind string, t time.Time) (uint64, b
 			}
 		}
 	}
+	c.attributeHoneytoken(e, &k)
 	raw, err := json.Marshal(k)
 	if err != nil {
 		return store.AlertRow{}, err

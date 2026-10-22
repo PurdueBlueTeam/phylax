@@ -46,7 +46,24 @@ type Spec struct {
 	Risk     Risk
 	ReadOnly bool // Apply only reads; "already done" is never short-circuited
 	Params   []ParamSpec
+	// Runs says where the action executes. The zero value is RunsAgent (on the
+	// target host's agent); API-only actions run on the controller.
+	Runs Runs
+	// NeedsConsoleAck marks controller-run network-device actions that need a
+	// Network-role console acknowledgement before a lockout-risk change.
+	NeedsConsoleAck bool
 }
+
+// Runs is an action's execution location.
+type Runs string
+
+const (
+	RunsAgent      Runs = "" // default: on the agent of the target host
+	RunsController Runs = "controller"
+)
+
+// OnController reports whether the action runs on the controller.
+func (s Spec) OnController() bool { return s.Runs == RunsController }
 
 // Params is a validated, typed parameter set.
 type Params struct {

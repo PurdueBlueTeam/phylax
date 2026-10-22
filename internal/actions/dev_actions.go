@@ -86,7 +86,7 @@ func writeEvidence(env *Env, path string, data []byte) error {
 type paloPermittedIPs struct{ devBase }
 
 func (paloPermittedIPs) Spec() Spec {
-	return Spec{Name: "palo.permitted_ips", Risk: RiskLockout,
+	return Spec{Name: "palo.permitted_ips", Runs: RunsController, NeedsConsoleAck: true, Risk: RiskLockout,
 		Doc: "Add (and optionally remove) management permitted-IP entries on a Palo Alto firewall as its own management-scoped commit. Additive first: a brand-new connection must work after the commit or the change is rolled back; removal goes in a separate call once the new entry is proven. Needs the Network role's console acknowledgement (PAN-OS has no commit-confirm).",
 		Params: []ParamSpec{
 			{Name: "add", Type: String, Required: true, Max: 1024, Check: checkAddrList},
@@ -254,7 +254,7 @@ func safeChangeOutput(r *devices.Result) Output {
 type paloCommit struct{ devBase }
 
 func (paloCommit) Spec() Spec {
-	return Spec{Name: "palo.commit", Risk: RiskNone, ReadOnly: true,
+	return Spec{Name: "palo.commit", Runs: RunsController, NeedsConsoleAck: true, Risk: RiskNone, ReadOnly: true,
 		Doc:    "Management-path commit check. palo.permitted_ips and palo.apply already commit through the safe-change protocol (their own scoped commit, verified on a brand-new connection); this step proves a fresh connection works and that no uncommitted candidate changes remain, and fails otherwise. It never commits other people's staged changes.",
 		Params: []ParamSpec{{Name: "description", Type: String, Max: 256}, devParam}}
 }
@@ -300,7 +300,7 @@ func (paloCommit) Verify(context.Context, *Env, Params) error { return nil }
 type paloApply struct{ devBase }
 
 func (paloApply) Spec() Spec {
-	return Spec{Name: "palo.apply", Risk: RiskService,
+	return Spec{Name: "palo.apply", Runs: RunsController, NeedsConsoleAck: true, Risk: RiskService,
 		Doc: "Push the manifest's Palo intent through the safe-change protocol. scope=policy stages the tagged address objects, NAT and security rules and commits only them; scope=management is the additive permitted-IP half of the lockdown (its own commit), with remove_old=true running the removal commit afterwards. Policy health requires every scored flow to still match an allow rule.",
 		Params: []ParamSpec{
 			{Name: "scope", Type: Enum, Required: true, Enum: []string{devices.ScopePolicy, devices.ScopeManagement}},
@@ -403,7 +403,7 @@ func (s devSnapshot) Spec() Spec {
 	if s.kind == devices.VyOS {
 		name, doc = "vyos.snapshot", "Export the VyOS configuration commands to an evidence file."
 	}
-	return Spec{Name: name, Risk: RiskNone, ReadOnly: true, Doc: doc,
+	return Spec{Name: name, Runs: RunsController, NeedsConsoleAck: true, Risk: RiskNone, ReadOnly: true, Doc: doc,
 		Params: []ParamSpec{{Name: "out", Type: Path, Required: true}, devParam}}
 }
 func (devSnapshot) Locks(Params) []string { return nil }
@@ -455,7 +455,7 @@ func (s devSnapshot) Verify(_ context.Context, env *Env, p Params) error {
 type vyosApply struct{ devBase }
 
 func (vyosApply) Spec() Spec {
-	return Spec{Name: "vyos.apply", Risk: RiskLockout,
+	return Spec{Name: "vyos.apply", Runs: RunsController, NeedsConsoleAck: true, Risk: RiskLockout,
 		Doc: "Push the manifest's VyOS intent (source NAT and forward firewall rules, phylax-managed only) with an SSH-armed soft revert: the router reverts on its own unless the change is confirmed after a fresh connection and health check. scope=management applies the SSH/HTTPS lockdown as its own change.",
 		Params: []ParamSpec{
 			{Name: "scope", Type: Enum, Required: true, Enum: []string{devices.ScopePolicy, devices.ScopeManagement}},

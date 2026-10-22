@@ -147,6 +147,49 @@ type DetectSettings struct {
 	MaxKeys    int  `json:"max_keys,omitempty"`
 }
 
+// DecoyListenerSettings is one decoy service port.
+type DecoyListenerSettings struct {
+	Kind string `json:"kind"`
+	Port uint16 `json:"port"`
+}
+
+// HoneyToken is the agent-side view of a registered honeytoken (the fields of
+// honeytokens.Token). Secret is the planted password / secret key: the decoys
+// compare what an attacker types against it. Honey values are fake by
+// construction, but the config is still only ever sent over the agent link.
+type HoneyToken struct {
+	ID          string `json:"id"`
+	Host        string `json:"host"`
+	Kind        string `json:"kind"`
+	Path        string `json:"path,omitempty"`
+	User        string `json:"user,omitempty"`
+	Secret      string `json:"secret,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	SPN         string `json:"spn,omitempty"`
+}
+
+// DeceptionSettings configures the decoy services and honey-file watch. It
+// supersedes the unsigned <state dir>/deception.json (still read when the
+// signed config carries no deception section, for migration).
+type DeceptionSettings struct {
+	Bind      string                  `json:"bind,omitempty"`
+	Listeners []DecoyListenerSettings `json:"listeners,omitempty"`
+	// ScoredPorts are the ports of the scored services on this host: a decoy
+	// is refused on any of them.
+	ScoredPorts []uint16 `json:"scored_ports,omitempty"`
+	// Tokens are every registered honeytoken (a credential planted on host A is
+	// tried at the decoys of host B).
+	Tokens []HoneyToken `json:"tokens,omitempty"`
+	// WatchPaths are the honey files planted on this host (fanotify / SACL).
+	WatchPaths []string `json:"watch_paths,omitempty"`
+	// SandboxUser is the account the decoy child process runs as on Linux
+	// (default "nobody"). "-" runs it with the agent's identity (tests).
+	SandboxUser string `json:"sandbox_user,omitempty"`
+	// InProcess runs the listeners inside the agent instead of an unprivileged
+	// child process (Windows always does; see docs/deception.md).
+	InProcess bool `json:"in_process,omitempty"`
+}
+
 // ModuleSettings holds one optional section per module; a nil section means
 // the module does not run on this host.
 type ModuleSettings struct {
@@ -156,6 +199,7 @@ type ModuleSettings struct {
 	Winevt    *WinevtSettings    `json:"winevt,omitempty"`
 	Integrity *IntegritySettings `json:"integrity,omitempty"`
 	Detect    *DetectSettings    `json:"detect,omitempty"`
+	Deception *DeceptionSettings `json:"deception,omitempty"`
 }
 
 // Budgets are agent-wide resource budgets.
