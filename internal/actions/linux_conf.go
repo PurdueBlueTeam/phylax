@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 )
 
 // ---- ini.set / conf.set ----
@@ -49,7 +47,7 @@ func (confSet) Locks(p Params) []string  { return lockForPath(p.Str("path")) }
 func (confSet) Touches(p Params) []Touch { return []Touch{pathTouch(p.Str("path"), OpModify)} }
 
 func (c confSet) edit(env *Env, p Params) (old, new []byte, exists, changed bool, err error) {
-	path := env.Resolve(p.Str("path"))
+	path := env.resolveAny(p.Str("path"))
 	old, exists, err = readFileIfExists(path)
 	if err != nil {
 		return
@@ -80,19 +78,18 @@ func (c confSet) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
 }
 
 func (confSet) Capture(_ context.Context, env *Env, p Params) (Rollback, error) {
-	return snapshotRollback(env.Resolve(p.Str("path")))
+	return snapshotRollback(env.resolveAny(p.Str("path")))
 }
 
-func (c confSet) Apply(_ context.Context, env *Env, p Params) (Output, error) {
-	path := env.Resolve(p.Str("path"))
-	return nil, atomicfile.Modify(path, 0o644, func(old []byte, _ bool) ([]byte, error) {
+func (c confSet) Apply(ctx context.Context, env *Env, p Params) (Output, error) {
+	return nil, env.writeValidated(ctx, p.Str("path"), 0o644, func(old []byte, _ bool) ([]byte, error) {
 		out, _, err := editConf(string(old), c.styleOf(p), p.Str("stanza"), p.Str("key"), p.Str("value"))
 		return []byte(out), err
 	})
 }
 
-func (c confSet) Verify(ctx context.Context, env *Env, p Params) error {
-	b, _, err := readBounded(env.Resolve(p.Str("path")))
+func (c confSet) Verify(_ context.Context, env *Env, p Params) error {
+	b, _, err := readBounded(env.resolveAny(p.Str("path")))
 	if err != nil {
 		return err
 	}
@@ -105,7 +102,7 @@ func (c confSet) Verify(ctx context.Context, env *Env, p Params) error {
 			return fmt.Errorf("%s reads back as %q", p.Str("key"), g)
 		}
 	}
-	return env.validateConf(ctx, p.Str("path"))
+	return nil
 }
 
 // confValidator returns the argv that syntax-checks the service config that

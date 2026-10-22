@@ -225,7 +225,7 @@ func (s serviceConfig) Touches(p Params) []Touch {
 
 func (s serviceConfig) edit(env *Env, p Params, lint bool) (old []byte, out string, changed bool, notes []string, err error) {
 	c := s.cfg(p)
-	old, _, err = readFileIfExists(env.Resolve(c.path))
+	old, _, err = readFileIfExists(env.resolveAny(c.path))
 	if err != nil {
 		return
 	}
@@ -271,7 +271,7 @@ func (s serviceConfig) Plan(_ context.Context, env *Env, p Params) (Plan, error)
 
 func (s serviceConfig) Capture(_ context.Context, env *Env, p Params) (Rollback, error) {
 	c := s.cfg(p)
-	fr, err := deadman.SnapshotFiles(env.Resolve(c.path))
+	fr, err := deadman.SnapshotFiles(env.resolveAny(c.path))
 	if err != nil {
 		return Rollback{}, err
 	}
@@ -284,7 +284,7 @@ func (s serviceConfig) Capture(_ context.Context, env *Env, p Params) (Rollback,
 
 func (s serviceConfig) Apply(ctx context.Context, env *Env, p Params) (Output, error) {
 	c := s.cfg(p)
-	err := atomicfile.Modify(env.Resolve(c.path), 0o644, func(old []byte, _ bool) ([]byte, error) {
+	err := env.writeValidated(ctx, c.path, 0o644, func(old []byte, _ bool) ([]byte, error) {
 		out := string(old)
 		for k, v := range p.Map("settings") {
 			var err error
@@ -295,11 +295,7 @@ func (s serviceConfig) Apply(ctx context.Context, env *Env, p Params) (Output, e
 		return []byte(out), nil
 	})
 	if err != nil {
-		return nil, err
-	}
-	// Check the new config before any restart, so a bad edit never reaches the daemon.
-	if err := env.validateConf(ctx, c.path); err != nil {
-		return nil, err
+		return nil, err // the file is already back to its old content
 	}
 	if p.Bool("restart") && len(c.units) > 0 && env.Services != nil {
 		return nil, env.Services.Restart(ctx, c.units[0])
@@ -309,7 +305,7 @@ func (s serviceConfig) Apply(ctx context.Context, env *Env, p Params) (Output, e
 
 func (s serviceConfig) Verify(ctx context.Context, env *Env, p Params) error {
 	c := s.cfg(p)
-	b, _, err := readBounded(env.Resolve(c.path))
+	b, _, err := readBounded(env.resolveAny(c.path))
 	if err != nil {
 		return err
 	}

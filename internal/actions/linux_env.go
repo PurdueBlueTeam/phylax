@@ -242,3 +242,35 @@ func undoRestoreThen(ctx context.Context, env *Env, e deadman.Entry) error {
 	}
 	return errors.Join(errs...)
 }
+
+// resolveAny is Resolve for paths that may be Windows-style (C:\dir\file),
+// which the controller sends for hosts of either family.
+func (e *Env) resolveAny(p string) string { return e.Resolve(strings.ReplaceAll(p, "\\", "/")) }
+
+// writeValidated applies mutate to the file atomically, runs the service's
+// own config check, and puts the old content back if the check fails, so a
+// bad edit never survives even when no dead-man switch is armed.
+func (e *Env) writeValidated(ctx context.Context, logical string, perm os.FileMode, mutate func(old []byte, exists bool) ([]byte, error)) error {
+	path := e.resolveAny(logical)
+	old, exists, err := readFileIfExists(path)
+	if err != nil {
+		return err
+	}
+	var mode os.FileMode = perm
+	if st, serr := os.Stat(path); serr == nil {
+		mode = st.Mode().Perm()
+	}
+	if err := atomicfile.Modify(path, perm, mutate); err != nil {
+		return err
+	}
+	if verr := e.validateConf(ctx, logical); verr != nil {
+		var rerr error
+		if exists {
+			rerr = atomicfile.WriteExactMode(path, old, mode)
+		} else {
+			rerr = os.Remove(path)
+		}
+		return errors.Join(verr, rerr)
+	}
+	return nil
+}

@@ -91,6 +91,12 @@ func isComment(t string) bool {
 // ("" = before the first section). It returns the new text; changed is false
 // when the key already has that value everywhere it is active.
 func editConf(src string, style confStyle, stanza, key, value string) (out string, changed bool, err error) {
+	return editConfSep(src, style, stanza, key, value, "")
+}
+
+// editConfSep is editConf with the separator used for newly added keys
+// (default " = " or a single space for the space style).
+func editConfSep(src string, style confStyle, stanza, key, value, newSep string) (out string, changed bool, err error) {
 	if !confKeyRe.MatchString(key) {
 		return "", false, fmt.Errorf("invalid key %q", key)
 	}
@@ -198,6 +204,9 @@ func editConf(src string, style confStyle, stanza, key, value string) (out strin
 		sep := " = "
 		if style == styleSpace {
 			sep = " "
+		}
+		if newSep != "" {
+			sep = newSep
 		}
 		nl := confLine{text: key + sep + value}
 		switch style {

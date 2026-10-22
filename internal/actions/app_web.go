@@ -368,7 +368,9 @@ func (a webOpenCartAudit) Apply(ctx context.Context, env *Env, p Params) (Output
 		seen[rel] = true
 		want, known := vendor[rel]
 		if !known {
-			if !strings.HasPrefix(rel, "extension/") && !strings.HasPrefix(rel, admin+"/") || codeExtRe.MatchString(rel) {
+			// Third-party extensions are reviewed through the extension list; the
+			// installer is already reported as a whole.
+			if !strings.HasPrefix(rel, "extension/") && !strings.HasPrefix(rel, "install/") && (codeExtRe.MatchString(rel) || strings.HasSuffix(rel, ".htaccess")) {
 				extra++
 				add("warning", rel, "not in the vendor release")
 			}

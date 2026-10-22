@@ -73,7 +73,7 @@ func applyAgentOpts(src string, kv [][2]string) (string, bool) {
 	changed := false
 	for _, e := range kv {
 		var c bool
-		src, c, _ = editConf(src, styleEquals, "", e[0], e[1])
+		src, c, _ = editConfSep(src, styleEquals, "", e[0], e[1], "=")
 		changed = changed || c
 	}
 	return src, changed
@@ -81,7 +81,7 @@ func applyAgentOpts(src string, kv [][2]string) (string, bool) {
 
 func (agentOptSet) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
 	kv, _ := parseAgentKeys(p.Str("keys"))
-	old, exists, err := readFileIfExists(env.Resolve(p.Str("path")))
+	old, exists, err := readFileIfExists(env.resolveAny(p.Str("path")))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -92,18 +92,18 @@ func (agentOptSet) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
 	return Plan{Diff: renderDiff(old, []byte(out))}, nil
 }
 func (agentOptSet) Capture(_ context.Context, env *Env, p Params) (Rollback, error) {
-	return snapshotRollback(env.Resolve(p.Str("path")))
+	return snapshotRollback(env.resolveAny(p.Str("path")))
 }
 func (agentOptSet) Apply(_ context.Context, env *Env, p Params) (Output, error) {
 	kv, _ := parseAgentKeys(p.Str("keys"))
-	return nil, atomicfile.Modify(env.Resolve(p.Str("path")), 0o640, func(old []byte, _ bool) ([]byte, error) {
+	return nil, atomicfile.Modify(env.resolveAny(p.Str("path")), 0o640, func(old []byte, _ bool) ([]byte, error) {
 		out, _ := applyAgentOpts(string(old), kv)
 		return []byte(out), nil
 	})
 }
 func (agentOptSet) Verify(_ context.Context, env *Env, p Params) error {
 	kv, _ := parseAgentKeys(p.Str("keys"))
-	b, _, err := readBounded(env.Resolve(p.Str("path")))
+	b, _, err := readBounded(env.resolveAny(p.Str("path")))
 	if err != nil {
 		return err
 	}

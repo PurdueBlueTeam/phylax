@@ -268,7 +268,7 @@ func (xmlSet) Spec() Spec {
 func (xmlSet) Locks(Params) []string    { return nil }
 func (xmlSet) Touches(p Params) []Touch { return []Touch{pathTouch(p.Str("path"), OpModify)} }
 func (xmlSet) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
-	old, _, err := readBounded(env.Resolve(p.Str("path")))
+	old, _, err := readBounded(env.resolveAny(p.Str("path")))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -282,10 +282,10 @@ func (xmlSet) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
 	return Plan{Diff: renderDiff(old, out)}, nil
 }
 func (xmlSet) Capture(_ context.Context, env *Env, p Params) (Rollback, error) {
-	return snapshotRollback(env.Resolve(p.Str("path")))
+	return snapshotRollback(env.resolveAny(p.Str("path")))
 }
 func (xmlSet) Apply(_ context.Context, env *Env, p Params) (Output, error) {
-	return nil, atomicfile.Modify(env.Resolve(p.Str("path")), 0o640, func(old []byte, exists bool) ([]byte, error) {
+	return nil, atomicfile.Modify(env.resolveAny(p.Str("path")), 0o640, func(old []byte, exists bool) ([]byte, error) {
 		if !exists {
 			return nil, errors.New("file does not exist")
 		}
@@ -294,7 +294,7 @@ func (xmlSet) Apply(_ context.Context, env *Env, p Params) (Output, error) {
 	})
 }
 func (xmlSet) Verify(_ context.Context, env *Env, p Params) error {
-	b, _, err := readBounded(env.Resolve(p.Str("path")))
+	b, _, err := readBounded(env.resolveAny(p.Str("path")))
 	if err != nil {
 		return err
 	}
