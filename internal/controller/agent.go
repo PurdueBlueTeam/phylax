@@ -362,7 +362,6 @@ func (a *agentConn) drain(ctx context.Context) error {
 			st.acked = ack.Seq
 			progressed = true
 		}
-		c.recordAgentAlerts(ctx, run, ack.Seq) // stored events only (alerts.go)
 		if err != nil {
 			st.buf = map[uint64]event.Event{}
 			st.gapFrom = map[uint64]uint64{}

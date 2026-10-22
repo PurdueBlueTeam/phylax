@@ -53,6 +53,7 @@ type UIOptions struct {
 // srv.EnsureAdmin.
 func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 	ops := NewWebOps(c, opt.PlansDir, opt.Chains)
+	c.checks.attach(ops)
 	if opt.Logger == nil {
 		opt.Logger = c.log
 	}

@@ -1913,7 +1913,7 @@ Service data is backed up by agent actions and pulled to the controller, so rest
 | Attack path and remediation | The chain's remediation items, with their verified state, and the proof the hole is closed |
 | Containment | The response audit trail |
 
-This maps onto the red-team lead's rubric: proof, time of compromise, how it was detected, what the attack was and its impact, how it was mitigated, and (half the marks) remediation of the attack path [TTP §0]. Rendering: Markdown with front matter through Typst (one static binary on the controller) to PDF and self-contained HTML. One to two pages, exploitation and unsolicited access only, every claim traced to evidence. The upload path (NISE at `injects.ccdc.events`) is tested at the first event, with the Nextcloud share and a browser print as fallbacks.
+This maps onto the red-team lead's rubric: proof, time of compromise, how it was detected, what the attack was and its impact, how it was mitigated, and (half the marks) remediation of the attack path [TTP §0]. Rendering: Markdown through the pure-Go renderer in `internal/report` (go-pdf/fpdf with embedded Go TrueType fonts, text-extractable) to PDF; no host binary and no HTML output (changed from Typst, see docs/report.md). One to two pages, exploitation and unsolicited access only, every claim traced to evidence. The upload path (NISE at `injects.ccdc.events`) is tested at the first event, with the Nextcloud share and a browser print as fallbacks.
 
 ### Inject kit
 

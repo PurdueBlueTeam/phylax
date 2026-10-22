@@ -3,6 +3,7 @@
 {{range .Data}}
 <h2>Campaign {{.ID}}: {{.Name}}</h2>
 <p>{{ts .First}} to {{ts .Last}}{{if .Sources}}; sources {{join .Sources ", "}}{{end}}{{if .Accounts}}; accounts {{join .Accounts ", "}}{{end}}</p>
+{{if .ID}}<form method="post" action="/reports/ir"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="campaign" value="{{.ID}}"><button type="submit">Draft IR for this campaign</button></form>{{end}}
 <table><thead><tr><th>Chain</th><th>Hosts</th><th>Hops</th><th>Confidence</th><th>Created</th></tr></thead><tbody>
 {{range .Chains}}<tr><td><a href="/chains/{{.ID}}">{{.ID}}</a></td><td>{{.Hosts}}</td><td>{{.Hops}}</td><td>{{.Confidence}}</td><td>{{ts .Created}}</td></tr>{{end}}</tbody></table>
 {{else}}<p>No chains yet. Trace back from an alert to create one.</p>{{end}}

@@ -28,6 +28,7 @@ type WebOps struct {
 	chainCfg chains.Config
 
 	traceMu sync.Mutex // one chain build at a time
+	dmu     sync.Mutex // serialises report/inject draft edits (report_ops.go)
 
 	smu      sync.Mutex
 	est      *scorer.Estimator

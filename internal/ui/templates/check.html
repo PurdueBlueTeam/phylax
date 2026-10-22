@@ -1,0 +1,7 @@
+{{define "content"}}
+<h1>Check {{.Data.ID}}</h1>
+<p><a href="/checks">All checks</a>. Service {{.Data.Service}} ({{.Data.Kind}}); SLA streak <span class="sla-{{.Data.Level}}">{{.Data.Streak}}</span>, penalties {{.Data.Penalties}}.</p>
+<table><thead><tr><th>Time (UTC)</th><th>Vantage</th><th>Result</th><th>Class</th><th>Error</th><th>Mode</th><th>Item</th><th>Elapsed</th></tr></thead><tbody>
+{{range .Data.Rows}}<tr><td>{{ts .Time}}</td><td>{{.Vantage}}</td><td>{{if .OK}}<span class="val-pass">up</span>{{else}}<span class="link-down">down</span>{{end}}</td><td>{{.Class}}</td><td>{{.Err}}</td><td>{{.Mode}}</td><td>{{.Item}}</td><td>{{.Elapsed}}</td></tr>
+{{else}}<tr><td colspan="8">No results stored.</td></tr>{{end}}</tbody></table>
+{{end}}

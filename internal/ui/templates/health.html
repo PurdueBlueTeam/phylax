@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Platform health</h1>
+{{if .Data.Problems}}<div class="warn"><strong>Needs attention</strong><ul>{{range .Data.Problems}}<li>{{.}}</li>{{end}}</ul></div>{{else}}<p class="val-pass">No problems detected.</p>{{end}}
+<div class="cols">
+<div><h2>Controller</h2><table>{{range .Data.Platform}}<tr><th>{{.Key}}</th><td>{{.Value}}</td></tr>{{end}}</table></div>
+<div><h2>Store</h2><table>{{range .Data.Store}}<tr><th>{{.Key}}</th><td>{{.Value}}</td></tr>{{end}}</table></div>
+</div>
+<h2>Agents</h2>
+<table><thead><tr><th>Host</th><th>Link</th><th>Last seen</th><th>Clock skew</th><th>Spool</th><th>Congestion</th><th>Dropped events</th><th>Gap records</th><th>Modules</th><th>Module errors</th></tr></thead><tbody>
+{{range .Data.Agents}}<tr><td><a href="/agents/{{.Host | urlq}}">{{.Host}}</a></td><td class="link-{{.State}}">{{.State}}</td><td>{{ago .LastSeen}}</td>
+<td{{if .SkewBad}} class="link-down"{{end}}>{{dur .ClockSkew}}</td><td>{{.SpoolDepth}}</td><td>{{.Congestion}}</td><td>{{.Dropped}}</td><td>{{.GapRecords}}</td><td>{{.Modules}}</td>
+<td>{{range .ModuleErrors}}<span class="link-down">{{.}}</span><br>{{else}}none{{end}}</td></tr>
+{{else}}<tr><td colspan="10">No agents enrolled.</td></tr>{{end}}</tbody></table>
+<p><a href="/audit">Audit log</a></p>
+{{end}}

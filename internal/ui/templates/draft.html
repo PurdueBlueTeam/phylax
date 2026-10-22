@@ -1,0 +1,74 @@
+{{define "content"}}
+<h1>{{if eq .Data.Kind "incident"}}Incident report{{else}}Inject{{end}} {{.Data.Number}}: <span class="mono">{{.Data.Filename}}</span></h1>
+<p><a href="/reports">All drafts</a>. {{.Data.Source}} Updated {{ts .Data.Updated}}. {{.Data.Title}}</p>
+
+<h2 id="validation">Pre-submit validation</h2>
+{{with .Data.Validation}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{else}}
+<p>{{.Pages}} page(s), {{.Words}} words. {{if .OK}}<strong class="val-pass">All required checks pass.</strong>{{else}}<strong class="error">Download is blocked until the failed checks are fixed.</strong>{{end}}</p>
+<table><thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead><tbody>
+{{range .Checks}}<tr><td>{{.Name}}</td><td class="val-{{.Severity}}">{{.Severity}}</td><td>{{.Detail}}</td></tr>{{end}}</tbody></table>
+{{end}}{{end}}
+<div class="actions">
+<form method="post" action="/reports/{{.Data.ID}}/validate"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Run validation</button></form>
+{{if .Data.Validation.OK}}<a class="button" href="/reports/{{.Data.ID}}/download">Download {{.Data.Filename}}</a>{{else}}<button type="button" disabled>Download {{.Data.Filename}} (blocked)</button>{{end}}
+</div>
+
+<h2>Fill in the details</h2>
+{{range .Data.Help}}<p class="notice">{{.}}</p>{{end}}
+<form method="post" action="/reports/{{.Data.ID}}/save" class="wide">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+{{range .Data.Fields}}<label>{{.Label}}{{if .Hint}} <small>({{.Hint}})</small>{{end}}
+{{if .Multiline}}<textarea name="f_{{.Name}}" rows="4">{{.Value}}</textarea>{{else}}<input name="f_{{.Name}}" value="{{.Value}}">{{end}}</label>
+{{end}}
+{{if .Data.Fills}}<h3>Placeholders ({{.Data.OpenFills}} open)</h3>
+<table><thead><tr><th>Section</th><th>What goes here</th><th>Your text</th></tr></thead><tbody>
+{{range .Data.Fills}}<tr><td>{{.Section}}</td><td>{{.What}}</td><td><input type="hidden" name="what" value="{{.What}}"><input name="fill" value="{{.Value}}"{{if not .Open}} class="filled"{{end}}></td></tr>{{end}}</tbody></table>
+{{else}}<p>No placeholders remain.</p>{{end}}
+<button type="submit">Save and regenerate</button>
+</form>
+
+{{if .Data.Checklist}}
+<h2>Rubric self-score</h2>
+<p>{{range .Data.Scores}}{{.Rubric}}: {{.Earned}} of {{.Total}} points satisfied by the draft. {{end}}No partial points are given.</p>
+<table><thead><tr><th>Item</th><th>Weight</th><th>Status</th><th>What</th><th>Detail</th></tr></thead><tbody>
+{{range .Data.Checklist}}<tr><td class="mono">{{.ID}}</td><td>{{if .Weight}}{{.Weight}}%{{end}}</td><td class="chk-{{.Status}}">{{.Status}}</td><td>{{.Name}}</td><td>{{.Detail}}{{range .Lines}}<br>{{.}}{{end}}</td></tr>{{end}}</tbody></table>
+{{end}}
+
+<h2>Evidence</h2>
+<table><thead><tr><th>Fig.</th><th>Kind</th><th>Host</th><th>Caption</th><th>Taken</th><th>Tags</th><th>SHA-256</th><th></th></tr></thead><tbody>
+{{range .Data.Evidence}}<tr><td>{{.N}}</td><td>{{.Kind}}{{if .Annotated}} (annotated){{end}}</td><td>{{.Host}}</td><td>{{.Caption}}</td><td>{{.Taken}}</td><td>{{.Tags}}</td><td class="mono">{{.SHA256}}</td>
+<td><form method="post" action="/reports/{{$.Data.ID}}/evidence/{{.N}}/delete"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Remove</button></form></td></tr>
+{{else}}<tr><td colspan="8">No figures yet.</td></tr>{{end}}</tbody></table>
+
+<h3>Attach a screenshot (PNG or JPEG, up to 8 MiB)</h3>
+<form method="post" action="/reports/{{.Data.ID}}/upload" enctype="multipart/form-data" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Image <input type="file" name="file" accept="image/png,image/jpeg" required></label>
+<label>Host <input name="host" maxlength="128"></label>
+<label>What it proves <input name="caption" maxlength="300"></label>
+<label>Taken (Central, YYYY-MM-DD HH:MM) <input name="taken" maxlength="32"></label>
+<fieldset><legend>Supports</legend>
+{{range $t := strs "red_activity" "vuln" "detection" "eradication" "remediation" "verification" "firewall"}}<label class="inl"><input type="checkbox" name="tag" value="{{$t}}"> {{$t}}</label>{{end}}
+</fieldset>
+<label class="inl"><input type="checkbox" name="annotated" value="1"> I drew arrows or boxes, hid the cursor and cropped nothing</label>
+<button type="submit">Upload</button>
+</form>
+
+<h3>Add a log excerpt from stored events</h3>
+<form method="post" action="/reports/{{.Data.ID}}/hostevidence" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Host <input name="host" list="hosts" required maxlength="128"></label>
+<datalist id="hosts">{{range .Data.Hosts}}<option value="{{.}}">{{end}}</datalist>
+<label>Event kind (empty: all kinds) <input name="kind" maxlength="64"></label>
+<label>Newest events to include (1 to 40) <input name="limit" value="10" inputmode="numeric"></label>
+<label>What it proves <input name="caption" maxlength="300"></label>
+<fieldset><legend>Supports</legend>
+{{range $t := strs "red_activity" "vuln" "detection" "eradication" "remediation" "verification" "firewall"}}<label class="inl"><input type="checkbox" name="tag" value="{{$t}}"> {{$t}}</label>{{end}}
+</fieldset>
+<button type="submit">Add excerpt</button>
+</form>
+
+<h2>Text preview</h2>
+<pre class="preview">{{.Data.Markdown}}</pre>
+{{end}}
