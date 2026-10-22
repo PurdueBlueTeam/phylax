@@ -1,0 +1,4 @@
+Server Administration|Sign in to manage this server|nginx/1.18.0
+Backup Console|Backup Manager login|Apache/2.4.52 (Ubuntu)
+Device Manager|Management portal|lighttpd/1.4.59
+Admin Portal|Administrator login|Apache/2.4.57 (Debian)

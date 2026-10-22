@@ -1,0 +1,6 @@
+SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.10
+SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3
+SSH-2.0-OpenSSH_8.0
+SSH-2.0-OpenSSH_7.4
+SSH-2.0-OpenSSH_9.6p1 Ubuntu-3ubuntu13.5
+SSH-2.0-OpenSSH_for_Windows_8.1
