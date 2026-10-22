@@ -30,7 +30,7 @@ type ActionSpec struct {
 	// and be redacted from diffs.
 	SecretParams []string `json:"secret_params,omitempty"`
 	// OnlyIfAbsent: the planner must skip the step if the target exists
-	// (file.write replaces; never clobber a real history or credentials file).
+	// (file.plant skips an existing file; never clobber a real history or credentials file).
 	OnlyIfAbsent bool   `json:"only_if_absent,omitempty"`
 	Token        string `json:"token"` // token ID the step plants
 	Note         string `json:"note,omitempty"`
@@ -315,12 +315,12 @@ func (g *Generator) watchFor(spec HostSpec, p *HostPlan, t Token) {
 	p.Watches = append(p.Watches, Watch{Host: spec.Host, Path: t.Path, Method: m, Token: t.ID})
 }
 
-// plantFile appends the token and the file.write step for it.
+// plantFile appends the token and the file.plant step for it.
 func (g *Generator) plantFile(spec HostSpec, p *HostPlan, t Token, content string, mode string, onlyIfAbsent bool) {
 	if !slices.ContainsFunc(p.Tokens, func(o Token) bool { return o.ID == t.ID }) {
 		p.Tokens = append(p.Tokens, t)
 	}
-	p.Actions = append(p.Actions, ActionSpec{Action: "file.write", Host: spec.Host, Risk: "service", Token: t.ID,
+	p.Actions = append(p.Actions, ActionSpec{Action: "file.plant", Host: spec.Host, Risk: "service", Token: t.ID,
 		Params:       map[string]any{"path": t.Path, "content": content, "mode": mode},
 		SecretParams: []string{"content"}, OnlyIfAbsent: onlyIfAbsent})
 	g.watchFor(spec, p, t)

@@ -52,5 +52,8 @@ func Core() *Registry {
 	for _, a := range coreActions() {
 		r.Register(a)
 	}
+	for _, a := range deceptionActions() { // registry_deception.go
+		r.Register(a)
+	}
 	return r
 }

@@ -269,7 +269,11 @@ func (c *Controller) DryRun(ctx context.Context, planID string) (plan.DryRun, er
 		if ag == nil {
 			continue // missing
 		}
-		st, err := sg.Issue(p, tmp, n.ID, plan.IssueOpts{Phase: plan.PhaseCheck, Validity: c.opt.StepValidity})
+		secrets, err := c.stepSecrets(n) // deception_plan.go: vault refs -> step secrets
+		if err != nil {
+			return plan.DryRun{}, err
+		}
+		st, err := sg.Issue(p, tmp, n.ID, plan.IssueOpts{Phase: plan.PhaseCheck, Validity: c.opt.StepValidity, Secrets: secrets})
 		if err != nil {
 			return plan.DryRun{}, err
 		}
@@ -868,7 +872,10 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 	sg, err := c.signer(ctx)
 	var st *plan.Step
 	if err == nil {
-		st, err = sg.Issue(rt.p, rt.run, id, plan.IssueOpts{Phase: phase, Validity: c.opt.StepValidity})
+		var secrets []byte
+		if secrets, err = c.stepSecrets(n); err == nil { // deception_plan.go
+			st, err = sg.Issue(rt.p, rt.run, id, plan.IssueOpts{Phase: phase, Validity: c.opt.StepValidity, Secrets: secrets})
+		}
 	}
 	if err != nil {
 		rt.failLocked(id, "cannot issue step: "+err.Error(), phase)

@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
@@ -86,6 +88,14 @@ type Config struct {
 	// refuses any listener on one of them.
 	ScoredPorts []uint16
 	Tokens      TokenMatcher
+	// HostKey is the persistent SSH host key (the agent keeps it in its state
+	// directory so the decoy keeps its identity across restarts). Nil = an
+	// ephemeral per-process key.
+	HostKey ssh.Signer
+	// Prebound maps a port to an already-bound listener. The sandbox binds the
+	// ports in the privileged parent and hands the sockets to the unprivileged
+	// child, which then serves without ever needing the privilege.
+	Prebound map[uint16]net.Listener
 	// AllowEphemeral permits Port 0 (OS-chosen), for tests only.
 	AllowEphemeral bool
 
@@ -253,7 +263,11 @@ func (m *Module) Start(ctx context.Context, emit agent.Emit) error {
 		}
 	}
 	for _, l := range m.cfg.Listeners {
-		ln, err := net.Listen("tcp", net.JoinHostPort(m.cfg.Bind, strconv.Itoa(int(l.Port))))
+		ln, ok := m.cfg.Prebound[l.Port]
+		var err error
+		if !ok {
+			ln, err = net.Listen("tcp", net.JoinHostPort(m.cfg.Bind, strconv.Itoa(int(l.Port))))
+		}
 		if err != nil {
 			closeAll()
 			return fmt.Errorf("decoys: listen %s on %d: %w", l.Kind, l.Port, err)
