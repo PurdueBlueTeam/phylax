@@ -1,0 +1,349 @@
+# Linux file-change rules (producer: internal/collect/audit file_change; ops are
+# create, modify, rename, delete, attr; path is the new name on rename, old_path the old).
+# Events carrying a Phylax plan/patch-window tag are exempt (exempt_tagged).
+id: D6h.ssh-persistence-files
+title: SSH key or sshd persistence file changed outside a plan
+severity: high
+tier: 1
+attack: [T1098.004, T1021.004, T1556]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+message: "{path} {op} by {exe}"
+when:
+  event: file_change
+  all:
+    - path: {re: '(^|/)\.ssh/(authorized_keys2?|rc|environment)$|^/etc/ssh/(sshrc|sshd_config|ssh_config)(\.d/[^/]+)?$'}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: authorized_keys edited, should_match: true, event: {kind: file_change, fields: {path: /home/azul/.ssh/authorized_keys, op: modify, exe: /usr/bin/vim.basic}}}
+  - {name: sshd_config.d drop-in, should_match: true, event: {kind: file_change, fields: {path: /etc/ssh/sshd_config.d/10-x.conf, op: create}}}
+  - {name: our hardening is tagged, should_match: false, event: {kind: file_change, fields: {path: /etc/ssh/sshd_config, op: modify, tag: "plan:harden-ssh"}}}
+  - {name: known_hosts is not persistence, should_match: false, event: {kind: file_change, fields: {path: /home/azul/.ssh/known_hosts, op: modify}}}
+---
+id: D7b.sudoers-change
+title: sudoers or sudoers.d changed outside a plan
+severity: high
+tier: 1
+attack: [T1548.003, T1098]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/sudoers(\.d/.+|\.tmp)?$'}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: sudoers.d drop-in, should_match: true, event: {kind: file_change, fields: {path: /etc/sudoers.d/backdoor, op: create}}}
+  - {name: visudo tmp rename, should_match: true, event: {kind: file_change, fields: {path: /etc/sudoers, old_path: /etc/sudoers.tmp, op: rename}}}
+  - {name: tagged plan step, should_match: false, event: {kind: file_change, fields: {path: /etc/sudoers, op: modify, tag: "plan:p1"}}}
+  - {name: sudo.conf is different, should_match: false, event: {kind: file_change, fields: {path: /etc/sudo.conf, op: modify}}}
+---
+id: D7a.passwd-shadow-change
+title: Account database file changed outside a plan
+description: /etc/passwd, shadow, group, gshadow written by anything other than a tagged plan step. Our own chattr +i hardening produces no write; useradd/passwd by an operator is tier 1 so it costs one click.
+severity: high
+tier: 1
+attack: [T1136.001, T1098, T1078.003]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/(passwd|shadow|group|gshadow|passwd-|shadow-)$|^/etc/(passwd|shadow|group|gshadow)\.(tmp|new|lock)$'}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: passwd rewritten by useradd, should_match: true, event: {kind: file_change, fields: {path: /etc/passwd, op: rename, old_path: /etc/passwd+, exe: /usr/sbin/useradd}}}
+  - {name: tagged, should_match: false, event: {kind: file_change, fields: {path: /etc/shadow, op: modify, tag: "plan:rotate"}}}
+  - {name: nsswitch, should_match: false, event: {kind: file_change, fields: {path: /etc/nsswitch.conf, op: modify}}}
+---
+id: D6c2.pkg-pin-file
+title: Package pin or versionlock file changed
+severity: high
+tier: 1
+attack: [T1556.003]
+collect: [content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/(apt/preferences(\.d/.+)?|dnf/plugins/versionlock\.(list|conf)|yum/pluginconf\.d/versionlock\.list)$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: apt preferences pin, should_match: true, event: {kind: file_change, fields: {path: /etc/apt/preferences.d/pam, op: create}}}
+  - {name: sources.list is not a pin, should_match: false, event: {kind: file_change, fields: {path: /etc/apt/sources.list, op: modify}}}
+---
+id: D6i.pam-change
+title: PAM module or configuration changed
+severity: critical
+tier: 1
+attack: [T1556.003]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/pam\.d/|^/etc/pam\.conf$|^/etc/security/|^/(usr/)?lib(64)?/(x86_64-linux-gnu/|aarch64-linux-gnu/)?security/'}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: pam_unix.so replaced, should_match: true, event: {kind: file_change, fields: {path: /lib/x86_64-linux-gnu/security/pam_unix.so, op: modify}}}
+  - {name: sshd pam config, should_match: true, event: {kind: file_change, fields: {path: /etc/pam.d/sshd, op: modify}}}
+  - {name: patch window, should_match: false, event: {kind: file_change, fields: {path: /lib/x86_64-linux-gnu/security/pam_unix.so, op: modify, tag: "patch-window"}}}
+  - {name: unrelated lib, should_match: false, event: {kind: file_change, fields: {path: /usr/lib/x86_64-linux-gnu/libc.so.6, op: modify}}}
+---
+id: D6d.ld-so-preload-file
+title: Dynamic loader preload or loader config changed
+severity: critical
+tier: 1
+attack: [T1574.006]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/ld\.so\.preload$|^/etc/ld\.so\.conf\.d/.+'}
+    - op: [create, modify, rename]
+tests:
+  - {name: ld.so.preload created, should_match: true, event: {kind: file_change, fields: {path: /etc/ld.so.preload, op: create}}}
+  - {name: ld.so.cache is regenerated by ldconfig, should_match: false, event: {kind: file_change, fields: {path: /etc/ld.so.cache, op: modify}}}
+---
+id: D6l.systemd-generator-override
+title: systemd generator, drop-in or non-service unit added
+severity: high
+tier: 1
+attack: [T1543.002, T1037]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/(etc|usr/lib|usr/local/lib|run)/systemd/(system|user)-generators/|^/(etc|run)/systemd/(system|user)/[^/]+\.d/[^/]+\.conf$|^/(etc|usr/lib)/systemd/(system|user)/[^/]+\.(path|socket|mount|automount)$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: drop-in override, should_match: true, event: {kind: file_change, fields: {path: /etc/systemd/system/ssh.service.d/override.conf, op: create}}}
+  - {name: generator, should_match: true, event: {kind: file_change, fields: {path: /etc/systemd/system-generators/evil, op: create}}}
+  - {name: plain service unit is D6a, should_match: false, event: {kind: file_change, fields: {path: /etc/systemd/system/foo.service, op: create}}}
+---
+id: D6a.unit-or-cron-file
+title: Service unit, timer or cron file written
+severity: high
+tier: 1
+attack: [T1543.002, T1053.003, T1053.006]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/(etc|usr/lib|lib)/systemd/system/[^/]+\.(service|timer)$|^/etc/(cron\.(d|hourly|daily|weekly|monthly)/.+|crontab|anacrontab)$|^/var/spool/cron(/crontabs)?/.+|^/var/spool/at/.+'}
+    - op: [create, modify, rename]
+tests:
+  - {name: new timer, should_match: true, event: {kind: file_change, fields: {path: /etc/systemd/system/update.timer, op: create}}}
+  - {name: cron.d, should_match: true, event: {kind: file_change, fields: {path: /etc/cron.d/x, op: create}}}
+  - {name: crontab tagged, should_match: false, event: {kind: file_change, fields: {path: /etc/crontab, op: modify, tag: "plan:p2"}}}
+  - {name: cron.deny is not a job, should_match: false, event: {kind: file_change, fields: {path: /etc/cron.deny, op: modify}}}
+---
+id: D6e.shell-hook-files
+title: Login or shell hook file changed
+severity: high
+tier: 1
+attack: [T1546.004, T1037.004, T1547.013]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/(profile|bash\.bashrc|bashrc|environment|inputrc|zsh/[^/]+|csh\.(cshrc|login)|profile\.d/.+|bash_completion\.d/.+|update-motd\.d/.+|xdg/autostart/.+)$|^/(root|home/[^/]+)/\.(bashrc|bash_profile|bash_login|bash_logout|profile|zshrc|zprofile|screenrc|tmux\.conf|vimrc|inputrc|config/autostart/.+)$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: bashrc, should_match: true, event: {kind: file_change, fields: {path: /home/azul/.bashrc, op: modify}}}
+  - {name: profile.d script, should_match: true, event: {kind: file_change, fields: {path: /etc/profile.d/x.sh, op: create}}}
+  - {name: bash_history is not a hook, should_match: false, event: {kind: file_change, fields: {path: /home/azul/.bash_history, op: modify}}}
+---
+id: D5f.binary-dir-write
+title: Write into a system binary directory
+severity: high
+tier: 1
+attack: [T1036.005, T1222.002]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/(usr/(local/)?)?(s?bin|libexec)/'}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: binary replaced, should_match: true, event: {kind: file_change, fields: {path: /usr/sbin/postfix, op: modify, exe: /bin/cp}}}
+  - {name: package manager in patch window, should_match: false, event: {kind: file_change, fields: {path: /usr/bin/ssh, op: modify, tag: "patch-window"}}}
+  - {name: /usr/share untouched, should_match: false, event: {kind: file_change, fields: {path: /usr/share/doc/x, op: create}}}
+---
+id: D11b2.kmod-file
+title: Kernel module file or module-load config written
+severity: high
+tier: 1
+attack: [T1547.006]
+collect: [content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '\.ko(\.[gx]z|\.zst)?$|^/etc/(modules-load\.d|modprobe\.d)/.+|^/etc/modules$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: dropped ko, should_match: true, event: {kind: file_change, fields: {path: /tmp/diamorphine.ko, op: create}}}
+  - {name: modules-load.d, should_match: true, event: {kind: file_change, fields: {path: /etc/modules-load.d/x.conf, op: create}}}
+  - {name: unrelated, should_match: false, event: {kind: file_change, fields: {path: /tmp/token.kos, op: create}}}
+---
+id: D6o.hook-dirs
+title: apt/dnf/udev/logrotate/rc hook directory changed
+severity: high
+tier: 1
+attack: [T1546.016, T1037.004, T1546.017, T1053]
+collect: [process_tree, content_changes]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/(apt/apt\.conf\.d/.+|dnf/plugins/.+|yum/pluginconf\.d/.+|udev/rules\.d/.+|logrotate\.d/.+|rc\.local|rc\.common|init\.d/.+|rc[0-6S]\.d/.+|dracut\.conf\.d/.+)$|^/(usr/lib|lib)/udev/rules\.d/.+|^/usr/lib/dracut/modules\.d/.+'}
+    - op: [create, modify, rename]
+tests:
+  - {name: apt hook, should_match: true, event: {kind: file_change, fields: {path: /etc/apt/apt.conf.d/99x, op: create}}}
+  - {name: rc.local, should_match: true, event: {kind: file_change, fields: {path: /etc/rc.local, op: modify}}}
+  - {name: patch window, should_match: false, event: {kind: file_change, fields: {path: /etc/logrotate.d/apache2, op: modify, tag: "patch-window"}}}
+---
+id: D2h.mail-hooks
+title: Postfix/Dovecot configuration or per-user mail hook changed
+severity: high
+tier: 1
+attack: [T1546, T1114.003, T1098]
+collect: [content_changes, process_tree]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/etc/(postfix/[^/]+|aliases|dovecot/.+|mail/.+)$|(^|/)\.(forward|procmailrc|dovecot\.sieve|qmail)$|^/var/lib/dovecot/sieve/.+\.sieve$'}
+    - not: {path: {re: '\.(db|lmdb|cache|lock)$'}}
+    - op: [create, modify, rename, delete]
+tests:
+  - {name: master.cf pipe, should_match: true, event: {kind: file_change, fields: {path: /etc/postfix/master.cf, op: modify}}}
+  - {name: .forward, should_match: true, event: {kind: file_change, fields: {path: /home/bob/.forward, op: create}}}
+  - {name: postmap output, should_match: false, event: {kind: file_change, fields: {path: /etc/postfix/transport.db, op: modify}}}
+---
+id: D2i.db-plugin-and-config
+title: Database plugin, auth or config file changed
+severity: high
+tier: 1
+attack: [T1505, T1098, T1556]
+collect: [content_changes, process_tree]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '^/usr/lib(64)?/(x86_64-linux-gnu/)?(mysql|mariadb)/plugin/.+\.so$|^/etc/(my\.cnf(\.d/.+)?|mysql/.+|postgresql/.+/(pg_hba|postgresql)\.conf)$|^/var/lib/pgsql/data/pg_hba\.conf$'}
+    - op: [create, modify, rename]
+tests:
+  - {name: mysql plugin dropped, should_match: true, event: {kind: file_change, fields: {path: /usr/lib/mysql/plugin/udf.so, op: create}}}
+  - {name: pg_hba, should_match: true, event: {kind: file_change, fields: {path: /etc/postgresql/14/main/pg_hba.conf, op: modify}}}
+  - {name: datadir is not config, should_match: false, event: {kind: file_change, fields: {path: /var/lib/mysql/ibdata1, op: modify}}}
+---
+id: D10i.monitoring-config-change
+title: Splunk/Wazuh/Cribl configuration or active-response script changed
+severity: high
+tier: 1
+attack: [T1685, T1059, T1543]
+collect: [content_changes, process_tree]
+exempt_tagged: true
+when:
+  event: file_change
+  all:
+    - path: {re: '/splunk(forwarder)?/etc/(apps/[^/]+/(default|local)/(inputs|outputs|props|transforms|restmap|commands|alert_actions|savedsearches)\.conf|system/local/[^/]+\.conf|deployment-apps/.+)$|^/var/ossec/(etc/(ossec\.conf|shared/.+)|active-response/bin/.+)$|/cribl/(local|default)/.+'}
+    - op: [create, modify, rename]
+tests:
+  - {name: scripted input, should_match: true, event: {kind: file_change, fields: {path: /opt/splunk/etc/apps/search/local/inputs.conf, op: modify}}}
+  - {name: ossec.conf, should_match: true, event: {kind: file_change, fields: {path: /var/ossec/etc/ossec.conf, op: modify}}}
+  - {name: splunk var data, should_match: false, event: {kind: file_change, fields: {path: /opt/splunk/var/lib/splunk/x, op: modify}}}
+---
+id: D2g.webroot-dangerous-ext
+title: Executable or double-extension file appeared in a web content tree
+severity: high
+tier: 1
+attack: [T1505.003, T1036.008]
+collect: [content_changes, process_tree, transactions_window_10m]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {re: '^/(var/www|srv/(www|http)|usr/share/nginx|opt/lampp/htdocs)/'}
+    - op: [create, rename]
+    - path: {re: '(?i)\.(php[0-9]?|phtml|pht|phar|inc|aspx?|ashx|asmx|jsp[xf]?|cgi|pl)(\.[a-z0-9]{2,5})?$|\.(jpe?g|png|gif|ico|txt|css|js)\.(php[0-9]?|phtml|aspx?)$'}
+tests:
+  - {name: php dropped in uploads, should_match: true, event: {kind: file_change, fields: {path: /var/www/html/uploads/x.php, op: create}}}
+  - {name: double extension, should_match: true, event: {kind: file_change, fields: {path: /var/www/html/img/a.jpg.php, op: create}}}
+  - {name: deploy is tagged, should_match: false, event: {kind: file_change, fields: {path: /var/www/html/index.php, op: create, tag: "plan:deploy"}}}
+  - {name: image upload, should_match: false, event: {kind: file_change, fields: {path: /var/www/html/uploads/a.jpg, op: create}}}
+---
+id: D2a.webroot-change
+title: Untagged change to scored web content
+description: Any untagged create/modify/delete/rename in a content root. Attaches the writer so the trace-back is immediate.
+severity: medium
+tier: 1
+attack: [T1491.001, T1505.003]
+collect: [content_changes, process_tree, transactions_window_10m]
+exempt_tagged: true
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - path: {startswith_any: [/var/www/, /srv/www/, /usr/share/nginx/]}
+    - op: [create, modify, rename, delete]
+    - not: {path: {re: '\.(log|swp|tmp|cache|sock|pid)$'}}
+    - not: {self_tamper: true}
+tests:
+  - {name: index defaced, should_match: true, event: {kind: file_change, fields: {path: /var/www/html/index.html, op: modify, exe: /usr/bin/vim}}}
+  - {name: tagged deploy, should_match: false, event: {kind: file_change, fields: {path: /var/www/html/index.html, op: modify, tag: "plan:deploy"}}}
+  - {name: cache file, should_match: false, event: {kind: file_change, fields: {path: /var/www/html/cache/a.tmp, op: create}}}
+---
+id: D17b.config-moved
+title: Service config or content deleted or moved away
+severity: high
+tier: 1
+attack: [T1485, T1489, T1070.004]
+collect: [content_changes, process_tree]
+exempt_tagged: true
+entities: [path, old_path, exe]
+when:
+  event: file_change
+  all:
+    - any:
+        - all:
+            - op: delete
+            - path: {re: '^/etc/(apache2|httpd|nginx|postfix|dovecot|bind|named|mysql|ssh)/|^/var/www/|^/srv/www/|^/etc/(named\.conf|my\.cnf|vsftpd\.conf|proftpd/)'}
+        - all:
+            - op: rename
+            - old_path: {re: '^/etc/(apache2|httpd|nginx|postfix|dovecot|bind|named|mysql|ssh)/|^/var/www/|^/srv/www/|^/etc/(named\.conf|my\.cnf|vsftpd\.conf|proftpd/)'}
+    - not: {path: {re: '(~|\.sw[a-p]|\.tmp|\.part|\.lock|\.pid|\.sock|\.cache)$'}}
+tests:
+  - {name: config deleted, should_match: true, event: {kind: file_change, fields: {path: /etc/nginx/nginx.conf, op: delete}}}
+  - {name: config moved away, should_match: true, event: {kind: file_change, fields: {path: /root/x, old_path: /etc/postfix/main.cf, op: rename}}}
+  - {name: editor swap file, should_match: false, event: {kind: file_change, fields: {path: /etc/nginx/.nginx.conf.swp, op: delete}}}
+  - {name: unrelated delete, should_match: false, event: {kind: file_change, fields: {path: /tmp/a, op: delete}}}
+---
+id: D5h.agent-self-tamper
+title: Phylax agent binary, unit or config touched by someone else
+severity: critical
+tier: 1
+attack: [T1685]
+collect: [process_tree, content_changes]
+entities: [path, exe]
+when:
+  event: file_change
+  all:
+    - self_tamper: true
+tests:
+  - {name: agent binary replaced, should_match: true, event: {kind: file_change, fields: {path: /usr/local/bin/phylax, op: modify, self_tamper: true, exe: /bin/cp}}}
+  - {name: ordinary file, should_match: false, event: {kind: file_change, fields: {path: /etc/hosts, op: modify}}}

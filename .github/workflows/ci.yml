@@ -2,18 +2,25 @@ name: ci
 
 on:
   push:
+    branches: [main, v3]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mise-actions/setup-mise@v3
-      - name: Static build (linux)
-        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/phylax ./cmd/phylax
-      - name: Static build (windows)
-        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o bin/phylax-windows-amd64.exe ./cmd/phylax
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Static build (linux, windows)
+        run: make build build-windows
       - name: Size gate (40 MB / 15 MB gz)
         run: make size
       - name: Vet (linux, windows)
