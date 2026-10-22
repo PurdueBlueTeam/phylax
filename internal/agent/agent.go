@@ -159,7 +159,7 @@ func (a *Agent) emit(e event.Event) error {
 }
 
 // HealthSource implementation.
-func (a *Agent) SpoolStats() spool.Stats          { return a.sp.Stats() }
+func (a *Agent) SpoolStats() spool.Stats { return a.sp.Stats() }
 func (a *Agent) Modules() map[string]ModuleStatus {
 	a.mu.Lock()
 	sup := a.sup
