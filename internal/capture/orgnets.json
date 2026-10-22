@@ -1,0 +1,17 @@
+{
+  "comment": "Destination network labels for http_request events (dst_org, dst_cloud). BOOTSTRAP SEED only: coarse, hand-maintained prefixes of the large Microsoft and commodity-cloud ranges. Regenerate from the vendors' published lists before the event (docs/capture.md, 'Updating the network lists'); the live ranges change weekly.",
+  "generated": "2026-10-22",
+  "sources": ["hand-maintained seed"],
+  "nets": [
+    {"org": "microsoft", "cloud": false, "cidrs": [
+      "13.64.0.0/11", "13.96.0.0/13", "13.104.0.0/14", "20.33.0.0/16", "20.34.0.0/15", "20.36.0.0/14", "20.40.0.0/13",
+      "20.48.0.0/12", "20.64.0.0/10", "20.128.0.0/16", "40.64.0.0/10", "40.96.0.0/12", "40.112.0.0/13", "40.120.0.0/14",
+      "51.104.0.0/14", "52.96.0.0/12", "52.112.0.0/14", "52.120.0.0/14", "104.40.0.0/13", "104.208.0.0/13",
+      "137.116.0.0/15", "150.171.0.0/16", "168.61.0.0/16", "191.232.0.0/13", "204.79.195.0/24"
+    ]},
+    {"org": "aws", "cloud": true, "cidrs": ["3.0.0.0/8", "13.52.0.0/14", "18.128.0.0/9", "34.192.0.0/10", "35.152.0.0/13", "44.192.0.0/10", "54.64.0.0/10"]},
+    {"org": "digitalocean", "cloud": true, "cidrs": ["138.68.0.0/16", "159.65.0.0/16", "159.89.0.0/16", "167.99.0.0/16", "178.128.0.0/16", "206.189.0.0/16"]},
+    {"org": "linode", "cloud": true, "cidrs": ["172.104.0.0/15", "139.162.0.0/16", "45.79.0.0/16"]},
+    {"org": "vultr", "cloud": true, "cidrs": ["45.32.0.0/16", "45.63.0.0/16", "108.61.0.0/16", "149.28.0.0/16"]}
+  ]
+}
