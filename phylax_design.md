@@ -854,7 +854,7 @@ The manifest is a set of YAML files, validated against a JSON Schema in CI and a
 | File | Declares |
 | --- | --- |
 | `topology.yml` | Controller host and ports, segments, relays, NAT mappings, the Kali path, backup targets |
-| `hosts.yml` | Hosts: segment, internal and public address, OS, default credentials reference, roles |
+| `hosts.yml` | Hosts: segment, internal and public address, OS, default credentials reference, roles, `domain_member` (the DC a host joins), `rpc_range` (the DC's pinned RPC range) |
 | `services.yml` | Services: kind, scored flag, listeners, process identity and binary pins, content roots, data, dependencies, health checks, transport |
 | `accounts.yml` | Managed accounts: scope, scored flag and credlist, rotation policy, files that embed them |
 | `scorer.yml` | The scorer: engine (`quotient`), team Identifier scheme, portal URL, known or estimated Delay, Jitter, Timeout, SLA threshold, credlist paths, portal poll setting |
@@ -953,6 +953,7 @@ scorer:
 ### Rules
 
 - **No hand-edited generated files.** Change the manifest or an override.
+- **Domain membership is declared, never inferred.** A host with `domain_member: <dc>` gets the full member-to-DC allowance set rendered on its host firewall (and on the Palo and VyOS when the pair crosses segments), and the DC with the `domain_controller` role gets the matching inbound rules: DNS 53, Kerberos 88 and 464, LDAP 389 and 636, global catalog 3268 and 3269, SMB 445 (SYSVOL, Netlogon), RPC endpoint mapper 135 plus the RPC dynamic range, and NTP 123/udp. Without them default-deny egress breaks domain auth and every scored check that uses domain accounts. The DC's dynamic RPC range is pinned with `rpc_range` (the plans apply it on the DC); unpinned, 49152-65535 is opened and the lint warns. The lint errors on a Windows host in a segment with a DC that is not a member while a scored service or account uses domain auth. Ports accept ranges (`port_range`, `port_ranges`).
 - **CI checks:** schema validity, dependency cycles, a firewall lint that fails if any scored port, declared dependency, DHCP, ICMP or IPv6 need would be blocked, and rendering of every output for the reference manifest.
 - **Drift detection** compares declared state with what agents observe: undeclared listeners, services, scheduled tasks, accounts and outbound peers.
 

@@ -84,6 +84,18 @@ var enums = map[string][]string{
 	"FirewallPolicy.ipv6":  {"allow", "drop"},
 }
 
+// patterns maps "Type.yamlField" to a regular expression (applied to items
+// for arrays).
+var patterns = map[string]string{
+	"Listener.port_range":     portRangePattern,
+	"Dependency.port_ranges":  portRangePattern,
+	"EgressAllow.port_ranges": portRangePattern,
+	"Host.rpc_range":          portRangePattern,
+	"Host.domain_member":      `^.+$`,
+}
+
+const portRangePattern = `^[0-9]{1,5}(-[0-9]{1,5})?$`
+
 var (
 	scoredType     = reflect.TypeOf(Scored(""))
 	durationType   = reflect.TypeOf(Duration{})
@@ -133,6 +145,13 @@ func typeSchema(t reflect.Type) map[string]any {
 					s["items"] = map[string]any{"type": "string", "enum": vals}
 				} else {
 					s["enum"] = vals
+				}
+			}
+			if pat, ok := patterns[t.Name()+"."+name]; ok {
+				if s["type"] == "array" {
+					s["items"] = map[string]any{"type": "string", "pattern": pat}
+				} else {
+					s["pattern"] = pat
 				}
 			}
 			props[name] = s

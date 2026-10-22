@@ -2,7 +2,6 @@ package render
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
@@ -18,6 +17,7 @@ const (
 	RuleAgentLink  = "FW106"
 	RuleDefaults   = "FW107"
 	RuleBlindDrop  = "FW108"
+	RuleDomain     = "FW110" // domain member to DC allowances missing
 )
 
 // CheckHostPolicy verifies the invariants a host policy must hold, independent
@@ -36,20 +36,15 @@ func CheckHostPolicy(m *manifest.Manifest, hp *HostPolicy) []manifest.Finding {
 		}
 		return false
 	}
-	covers := func(r Rule, d Direction, proto string, ports []uint16) bool {
+	covers := func(r Rule, d Direction, proto string, want manifest.Ports) bool {
 		if r.Dir != d || (r.Proto != "" && r.Proto != proto) {
 			return false
 		}
-		have := r.LocalPorts
+		have := manifest.Ports{Ports: r.LocalPorts, Ranges: r.LocalRanges}
 		if d == Out {
-			have = r.RemotePorts
+			have = manifest.Ports{Ports: r.RemotePorts, Ranges: r.RemoteRanges}
 		}
-		for _, p := range ports {
-			if !slices.Contains(have, p) {
-				return false
-			}
-		}
-		return true
+		return have.Covers(want)
 	}
 
 	// Scored ports: unrestricted accept from any source.
@@ -59,9 +54,9 @@ func CheckHostPolicy(m *manifest.Manifest, hp *HostPolicy) []manifest.Finding {
 			continue
 		}
 		for _, l := range s.Listen {
-			ok := has(func(r Rule) bool { return len(r.Peers) == 0 && covers(r, In, l.Proto, []uint16{l.Port}) })
+			ok := has(func(r Rule) bool { return len(r.Peers) == 0 && covers(r, In, l.Proto, l.PortSet()) })
 			if !ok {
-				add(RuleScoredPort, manifest.SevError, "scored service %s (%s/%d) is not accepted from all sources", id, l.Proto, l.Port)
+				add(RuleScoredPort, manifest.SevError, "scored service %s (%s/%s) is not accepted from all sources", id, l.Proto, l.PortSet())
 			}
 		}
 	}
@@ -88,8 +83,8 @@ func CheckHostPolicy(m *manifest.Manifest, hp *HostPolicy) []manifest.Finding {
 				if proto == "" {
 					proto = "tcp"
 				}
-				if !has(func(r Rule) bool { return covers(r, Out, proto, d.Ports) && peerCovers(m, r, d.To) }) {
-					add(RuleDependency, manifest.SevError, "dependency %s of %s (%s %v to %s) would be blocked", d.Egress, id, proto, d.Ports, d.To)
+				if !has(func(r Rule) bool { return covers(r, Out, proto, d.PortSet()) && peerCovers(m, r, d.To) }) {
+					add(RuleDependency, manifest.SevError, "dependency %s of %s (%s %s to %s) would be blocked", d.Egress, id, proto, d.PortSet(), d.To)
 				}
 			}
 		}
@@ -98,13 +93,36 @@ func CheckHostPolicy(m *manifest.Manifest, hp *HostPolicy) []manifest.Finding {
 	ctl := m.ControllerHost()
 	if hp.Host == ctl {
 		if !has(func(r Rule) bool {
-			return r.Kind == KindAgentLink && r.Dir == In && covers(r, In, "tcp", []uint16{m.Topology.Controller.AgentPort})
+			return r.Kind == KindAgentLink && r.Dir == In && covers(r, In, "tcp", manifest.Ports{Ports: []uint16{m.Topology.Controller.AgentPort}})
 		}) {
 			add(RuleAgentLink, manifest.SevError, "controller does not accept agent streams on %d", m.Topology.Controller.AgentPort)
 		}
 	} else {
 		if !has(func(r Rule) bool { return r.Kind == KindAgentLink && r.Dir == Out }) {
 			add(RuleAgentLink, manifest.SevError, "no outbound agent link rule: the agent could not reach the controller")
+		}
+	}
+	// Domain membership: the member reaches its DC on every AD port, and the
+	// DC accepts the member (both ends rendered, so default-deny cannot cut
+	// Kerberos, LDAP, DNS, SMB or RPC).
+	if dc := m.Hosts[hp.Host].DomainMember; dc != "" {
+		for _, a := range m.DomainAllowances(dc) {
+			want := manifest.Ports{Ports: a.Ports, Ranges: a.Ranges}
+			if !has(func(r Rule) bool {
+				return r.Kind == KindDomain && covers(r, Out, a.Proto, want) && peerCovers(m, r, dc)
+			}) {
+				add(RuleDomain, manifest.SevError, "domain member of %s: %s %s to the DC would be blocked", dc, a.Proto, want)
+			}
+		}
+	}
+	if m.Hosts[hp.Host].IsDomainController() {
+		for _, mn := range m.DomainMembers(hp.Host) {
+			for _, a := range m.DomainAllowances(hp.Host) {
+				want := manifest.Ports{Ports: a.Ports, Ranges: a.Ranges}
+				if !has(func(r Rule) bool { return r.Kind == KindDomain && covers(r, In, a.Proto, want) && peerCovers(m, r, mn) }) {
+					add(RuleDomain, manifest.SevError, "domain controller does not accept member %s on %s %s", mn, a.Proto, want)
+				}
+			}
 		}
 	}
 	// Defaults: servers are default-deny both ways.

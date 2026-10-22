@@ -40,6 +40,8 @@ table inet phylax {
 		udp sport 68 udp dport 67 accept comment "DHCP client request"
 		udp sport 546 udp dport 547 accept comment "DHCPv6 client request"
 		ip daddr 10.10.1.10/32 tcp dport 389 accept comment "mail-smtp: ldap -> dc"
+		ip daddr 10.10.1.10/32 tcp dport { 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 50000-50199 } accept comment "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (dc)"
+		ip daddr 10.10.1.10/32 udp dport { 53, 88, 123, 389, 464 } accept comment "AD udp: DNS, Kerberos, NTP, CLDAP (dc)"
 		limit rate 100/second burst 200 packets log group 100 prefix "phylax-egress-deny: " comment "denied egress; the policy then drops"
 	}
 }
@@ -53,6 +55,7 @@ table inet phylax_nat {
 		ct state != new return
 		ip daddr 10.10.2.10/32 tcp dport 7444 return comment "agent link to the segment relay web"
 		ip daddr 10.10.1.10/32 tcp dport 389 return comment "mail-smtp: ldap -> dc"
+		ip daddr 10.10.1.10/32 tcp dport { 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 50000-50199 } return comment "AD tcp: DNS, Kerberos, LDAP(S), GC, SMB, RPC 135 + dynamic range (dc)"
 		meta l4proto tcp redirect to :7480 comment "sinkhole: record what the implant would have said"
 	}
 }

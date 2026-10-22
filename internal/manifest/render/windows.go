@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
 
 // WinGroup names for Windows Firewall rule groups. Management is its own
@@ -15,24 +17,27 @@ var winGroups = map[Group]string{
 	GroupDependency: "Phylax Dependency",
 	GroupDecoy:      "Phylax Decoy",
 	GroupEgress:     "Phylax Egress",
+	GroupDomain:     "Phylax Domain",
 	GroupCanary:     "Phylax Canary",
 }
 
 // WinRule is one Windows Firewall rule intent. It is typed data for the
 // agent's COM firewall action (`fw.apply`), not PowerShell.
 type WinRule struct {
-	Group         string   `json:"group"` // Windows rule group (DisplayGroup)
-	Name          string   `json:"name"`  // unique, stable
-	Description   string   `json:"description,omitempty"`
-	Direction     string   `json:"direction"` // Inbound | Outbound
-	Action        string   `json:"action"`    // Allow | Block
-	Protocol      string   `json:"protocol"`  // TCP | UDP | ICMPv4 | ICMPv6 | Any
-	LocalPorts    []uint16 `json:"local_ports,omitempty"`
-	RemotePorts   []uint16 `json:"remote_ports,omitempty"`
-	RemoteAddress []string `json:"remote_addresses,omitempty"` // CIDRs; empty means Any
-	ICMPTypes     string   `json:"icmp_types,omitempty"`       // "*" for all types and codes
-	Profiles      string   `json:"profiles"`                   // Any
-	Enabled       bool     `json:"enabled"`
+	Group         string               `json:"group"` // Windows rule group (DisplayGroup)
+	Name          string               `json:"name"`  // unique, stable
+	Description   string               `json:"description,omitempty"`
+	Direction     string               `json:"direction"` // Inbound | Outbound
+	Action        string               `json:"action"`    // Allow | Block
+	Protocol      string               `json:"protocol"`  // TCP | UDP | ICMPv4 | ICMPv6 | Any
+	LocalPorts    []uint16             `json:"local_ports,omitempty"`
+	RemotePorts   []uint16             `json:"remote_ports,omitempty"`
+	LocalRanges   []manifest.PortRange `json:"local_ranges,omitempty"`     // inclusive, "lo-hi" in JSON
+	RemoteRanges  []manifest.PortRange `json:"remote_ranges,omitempty"`    // inclusive, "lo-hi" in JSON
+	RemoteAddress []string             `json:"remote_addresses,omitempty"` // CIDRs; empty means Any
+	ICMPTypes     string               `json:"icmp_types,omitempty"`       // "*" for all types and codes
+	Profiles      string               `json:"profiles"`                   // Any
+	Enabled       bool                 `json:"enabled"`
 }
 
 // WinPolicy is the Windows Firewall intent for one host.
@@ -71,6 +76,7 @@ func WindowsRules(hp *HostPolicy) (*WinPolicy, error) {
 			Direction:  map[Direction]string{In: "Inbound", Out: "Outbound"}[r.Dir],
 			Action:     map[Action]string{Accept: "Allow", Drop: "Block"}[r.Action],
 			LocalPorts: r.LocalPorts, RemotePorts: r.RemotePorts,
+			LocalRanges: r.LocalRanges, RemoteRanges: r.RemoteRanges,
 		}
 		switch r.Proto {
 		case "tcp":
