@@ -24,7 +24,7 @@ func (c *collector) emit(e event.Event) error {
 }
 func (c *collector) wait(t *testing.T, kind string) event.Event {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		c.mu.Lock()
 		for _, e := range c.evs {

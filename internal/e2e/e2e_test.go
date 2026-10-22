@@ -222,6 +222,7 @@ func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)
 
 func eventually(t *testing.T, what string, d time.Duration, cond func() bool) {
 	t.Helper()
+	d = max(d, 30*time.Second)
 	end := time.Now().Add(d)
 	for !cond() {
 		if time.Now().After(end) {

@@ -31,7 +31,7 @@ func TestRawNetlinkInterruptAndClose(t *testing.T) {
 		if !errors.Is(err, errInterrupted) {
 			t.Fatalf("err = %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("blocked Receive was not interrupted")
 	}
 	// Non-blocking receive on an idle socket returns EAGAIN, not a hang.

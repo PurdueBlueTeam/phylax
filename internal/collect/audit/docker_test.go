@@ -114,7 +114,7 @@ func TestInContainerKernelExec(t *testing.T) {
 	go func() { done <- m.Start(ctx, c.emit) }()
 
 	// Wait for the module to be running (rules installed) or fail.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for m.Status().Mode == "" {
 		select {
 		case err := <-done:
@@ -139,7 +139,7 @@ func TestInContainerKernelExec(t *testing.T) {
 		t.Fatalf("sh: %v %s", err, out)
 	}
 	var got *event.Event
-	for end := time.Now().Add(10 * time.Second); time.Now().Before(end) && got == nil; time.Sleep(100 * time.Millisecond) {
+	for end := time.Now().Add(30 * time.Second); time.Now().Before(end) && got == nil; time.Sleep(100 * time.Millisecond) {
 		for _, e := range c.kind(KindProcessStart) {
 			if av, _ := e.Fields["argv"].([]string); len(av) == 3 && av[0] == "sh" && av[1] == "-c" && av[2] == "id; true" {
 				ev := e

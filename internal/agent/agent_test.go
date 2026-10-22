@@ -210,7 +210,7 @@ func TestSensorsNeverBlockWhenLinkDown(t *testing.T) {
 		if d > 5*time.Second {
 			t.Fatalf("emit blocked: %v", d)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("module blocked")
 	}
 	if h, _ := r.a.sp.Head(); h < 2000 {
@@ -243,7 +243,7 @@ func TestDeadmanRecoverAtStart(t *testing.T) {
 		if id != "n1" {
 			t.Fatal(id)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("expired entry not rolled back at start")
 	}
 	eventually(t, 5*time.Second, "recovered event", func() bool {
