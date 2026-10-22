@@ -532,6 +532,9 @@ func (c *Controller) takePending(key stepKey) *pending {
 }
 
 func (c *Controller) stepTimedOut(key stepKey) {
+	if c.closed.Load() {
+		return
+	}
 	pd := c.takePending(key)
 	if pd == nil {
 		return
@@ -630,6 +633,9 @@ func (c *Controller) onStatusAnswer(ag *agentConn, host string, key stepKey, pd 
 
 // queryPending asks the agent for the outcome of a step still pending.
 func (c *Controller) queryPending(key stepKey) {
+	if c.closed.Load() {
+		return
+	}
 	c.pmu.Lock()
 	pd := c.pend[key]
 	c.pmu.Unlock()
@@ -791,7 +797,7 @@ func (rt *planRT) node(id string) plan.Node {
 }
 
 func (rt *planRT) advanceLocked() {
-	if rt.state != PlanRunning {
+	if rt.state != PlanRunning || rt.c.closed.Load() {
 		return
 	}
 	if !rt.draining {
@@ -1097,6 +1103,9 @@ type nodeSnap struct {
 
 func (rt *planRT) persistLocked(ctx context.Context) error {
 	c := rt.c
+	if c.closed.Load() {
+		return errors.New("controller: closed")
+	}
 	body := planBody{Plan: rt.p, Hash: rt.hash, By: rt.by, DryRun: rt.dry, Approvals: map[string]plan.Approval{}}
 	for _, n := range rt.p.Nodes {
 		if a, ok := rt.run.Approval(n.ID); ok {

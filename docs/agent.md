@@ -44,7 +44,7 @@ Implementation notes for the agent runtime (`internal/agent`, `internal/svcinsta
 
 `Config.Handlers` plugs `Config`, `Step`, `Fetch`, `Control`. Defaults: config is logged and an
 `agent.config_rejected` event is emitted; steps get a `step_result` with status `rejected`; fetch is
-logged; control implements `safe_mode` and `deadman_confirm` (`args.id`).
+logged; controls are verified first (below), then `safe_mode`, `deadman_confirm` and `step_status` are implemented.
 
 ## Modules
 
@@ -72,10 +72,10 @@ Job Object hard caps, a protected service DACL.
 
 Enabled by `Config.Exec` (cmd: whenever the bootstrap has `plan_key`, 64 hex of
 the controller's Ed25519 key; with `Exec` set and no key `New` fails). The step
-handler runs on the receive path only to verify: `plan.Verifier` (key, host id,
-`FileSeqStore` at `<state>/planseq.json`) checks signature, host, window,
-epoch/seq (replay), then the envelope fields must match the signed body, and a
-non-check step needs a real approval record (`dry-run` never counts). Execution
+handler runs on the receive path only to verify: the typed `link.Step` is turned
+back into a `plan.Step` and `plan.Verifier` (key, host id,
+`FileSeqStore` at `<state>/planseq.json`) checks signature, host, window and
+epoch/seq (replay); a non-check step needs a real approval record (`dry-run` never counts). Execution
 is off the receive path (bounded, 8 at once; excess is answered `failed`).
 
 Phases: `check` = `Env.Execute` dry run; `apply` = `Env.Execute` with the dead-man
@@ -86,7 +86,15 @@ controller and rolls back at once if that fails); `verify` = the action's own
 `<plan>:<node>`), idempotent, allowed in safe mode. `safe_mode` control switches
 `Env.Safe` (persisted in `<state>/safe_mode`), so applies are refused while
 checks and rollbacks still work. `deadman_confirm` takes `{id}` or
-`{plan,node}`. In-process dead-man fires are reported as critical
+`{plan,node}`.
+
+**Controls** are mandatory-signed: `plan.ControlVerifier` (plan key from the
+bootstrap, host id, durable mark `<state>/controlseq.json`, separate from the
+step mark) checks signature, host, window and sequence before any handler runs;
+with no `plan_key` every control is refused. Refusals emit
+`agent.control_refused`. `step_status` re-sends the signed result kept in
+`<state>/results.json` (last 256) or answers unsigned `unknown`/`lost`/`running`.
+`hello` carries `minor` and the dead-man entries of plan nodes (`deadman`). In-process dead-man fires are reported as critical
 `agent.deadman_fired` events; refusals as `agent.step_refused`. Results that
 cannot be sent are kept (64) and re-sent after the next reconnect. The scoring
 guard comes from `<state>/guard.json` (`phylax guard <host>` prints it from the

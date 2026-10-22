@@ -115,7 +115,7 @@ func TestInvalidMessagesRejected(t *testing.T) {
 		{TypeChunk, `{"sha256":"` + hex.EncodeToString(make([]byte, 32)) + `","offset":5,"total":6,"data":"YWJj"}`}, // past end
 		{TypeRelayRequest, `{"target":"nohostport","class":"x","id":"1"}`},
 		{TypeTokenIssue, `{"host":"h","token":"t","ttl_s":0}`},
-		{TypeControl, `{"kind":"safe_mode","host":"h","on":true}`}, // unsigned control
+		{TypeControl, `{"kind":"safe_mode","host":"h","on":true}`},                    // unsigned control
 		{TypeStep, `{"plan":"p","node":"n","host":"h","action":"a","phase":"apply"}`}, // unsigned step
 		{TypeHello, `{"proto":1,"host":"h","minor":-1}`},
 		{Type(0x3f), `{}`},

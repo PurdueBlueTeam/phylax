@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
@@ -86,6 +87,7 @@ type Controller struct {
 	plans   map[string]*planRT
 	pend    map[stepKey]*pending
 	ctlMu   sync.Mutex // serialises control signing and queueing
+	closed  atomic.Bool
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -221,5 +223,28 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 	return err
 }
 
-// Close closes the store.
-func (c *Controller) Close() error { return c.st.Close() }
+// Close stops plan timers and closes the store. Plans stay as persisted; a new
+// controller on the same data dir resumes them.
+func (c *Controller) Close() error {
+	c.closed.Store(true)
+	c.pmu.Lock()
+	for k, pd := range c.pend {
+		if pd.timer != nil {
+			pd.timer.Stop()
+		}
+		delete(c.pend, k)
+	}
+	c.pmu.Unlock()
+	// Wait out any plan code still holding a plan lock.
+	c.pmu.Lock()
+	rts := make([]*planRT, 0, len(c.plans))
+	for _, rt := range c.plans {
+		rts = append(rts, rt)
+	}
+	c.pmu.Unlock()
+	for _, rt := range rts {
+		rt.mu.Lock()
+		rt.mu.Unlock()
+	}
+	return c.st.Close()
+}
