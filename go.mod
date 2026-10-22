@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/klauspost/compress v1.20.3
 	golang.org/x/sys v0.49.0
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0
 )
 

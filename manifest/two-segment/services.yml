@@ -1,0 +1,27 @@
+services:
+  web-http:
+    host: web
+    kind: http
+    scored: true
+    listen: [{ proto: tcp, port: 80 }]
+    transport: { plaintext: true, tls_verify: false }
+    health: [{ http_get: "/", expect_status: 200 }]
+  web-ssh:
+    host: web
+    kind: ssh
+    scored: true
+    listen: [{ proto: tcp, port: 22 }]
+    transport: { auth: password, pty: true, shell: true }
+  web-ping:
+    { host: web, kind: icmp, scored: true }
+  mail-smtp:
+    host: mail
+    kind: mail
+    scored: true
+    listen: [{ proto: tcp, port: 25 }, { proto: tcp, port: 143 }]
+    transport: { plaintext: true, starttls: never }
+    depends_on: [{ egress: ldap, to: dc, ports: [389] }]
+  dc-dns:
+    { host: dc, kind: dns, scored: true, listen: [{ proto: udp, port: 53 }, { proto: tcp, port: 53 }] }
+  dc-ldap:
+    { host: dc, kind: ldap, scored: false, listen: [{ proto: tcp, port: 389 }] }

@@ -1,0 +1,185 @@
+{
+  "device": "vyos1",
+  "tag": "phylax-managed",
+  "source_nat": [
+    {
+      "rule": 110,
+      "description": "phylax-managed: source NAT for kali_leg",
+      "from_segment": "kali_leg",
+      "source": "172.17.0.0/24",
+      "translation": "172.31.21.2",
+      "risk": "service"
+    }
+  ],
+  "firewall": [
+    {
+      "rule": 10,
+      "description": "phylax-managed: ICMP stays",
+      "action": "accept",
+      "services": [
+        {
+          "proto": "icmp"
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 20,
+      "description": "phylax-managed: agent link from kali to the controller's public address",
+      "action": "accept",
+      "source": [
+        {
+          "host": "kali",
+          "value": "172.17.0.2/32"
+        }
+      ],
+      "destination": [
+        {
+          "host": "ubuntu-wkst",
+          "value": "172.25.21.30"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            7443
+          ]
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 30,
+      "description": "phylax-managed: scored services of ad from any source",
+      "action": "accept",
+      "destination": [
+        {
+          "host": "ad",
+          "value": "172.25.21.100"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            53,
+            5985
+          ]
+        },
+        {
+          "proto": "udp",
+          "ports": [
+            53
+          ]
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 40,
+      "description": "phylax-managed: scored services of debian-splunk from any source",
+      "action": "accept",
+      "destination": [
+        {
+          "host": "debian-splunk",
+          "value": "172.25.21.20"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            8000,
+            8089
+          ]
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 50,
+      "description": "phylax-managed: scored services of mssql from any source",
+      "action": "accept",
+      "destination": [
+        {
+          "host": "mssql",
+          "value": "172.25.21.120"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            445,
+            1433,
+            3389
+          ]
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 60,
+      "description": "phylax-managed: scored services of rocky-ecom from any source",
+      "action": "accept",
+      "destination": [
+        {
+          "host": "rocky-ecom",
+          "value": "172.25.21.10"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            80,
+            443
+          ]
+        }
+      ],
+      "risk": "service"
+    },
+    {
+      "rule": 70,
+      "description": "phylax-managed: scored services of ubuntu-email from any source",
+      "action": "accept",
+      "destination": [
+        {
+          "host": "ubuntu-email",
+          "value": "172.25.21.15"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            25,
+            80,
+            110,
+            143
+          ]
+        }
+      ],
+      "risk": "service"
+    }
+  ],
+  "mgmt_access": {
+    "permitted_from": [
+      {
+        "host": "ubuntu-wkst",
+        "value": "172.20.240.0/24",
+        "approx": true,
+        "unresolved": true
+      }
+    ],
+    "ports": [
+      22,
+      443
+    ],
+    "risk": "lockout"
+  }
+}

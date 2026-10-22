@@ -1,0 +1,5 @@
+# Competition-day changes written by the UI. The reference carries one accepted finding:
+# the controller's DHCP reservation is requested from the organizers (design: Risks).
+overrides:
+  accepted_findings:
+    - { id: NET001, subject: "host ubuntu-wkst", reason: "DHCP reservation for the controller requested; static NAT target updated by hand if the lease changes" }

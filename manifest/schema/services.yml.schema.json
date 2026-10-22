@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "services": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "additionalProperties": false,
+            "properties": {
+              "normalize": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "roots": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "upload_dirs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "data": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "database": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "depends_on": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "egress": {
+                  "type": "string"
+                },
+                "ports": {
+                  "items": {
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "proto": {
+                  "enum": [
+                    "tcp",
+                    "udp"
+                  ],
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "egress",
+                "to",
+                "ports"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "health": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "expect_regex": {
+                  "type": "string"
+                },
+                "expect_status": {
+                  "type": "integer"
+                },
+                "http_get": {
+                  "type": "string"
+                },
+                "interval": {
+                  "type": "string"
+                },
+                "tcp_connect": {
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "track_content": {
+                  "type": "boolean"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "host": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "http",
+              "https",
+              "ssh",
+              "mail",
+              "smtp",
+              "imap",
+              "pop3",
+              "ftp",
+              "dns",
+              "icmp",
+              "smb",
+              "winrm",
+              "rdp",
+              "mssql",
+              "mysql",
+              "splunk",
+              "ldap",
+              "tcp"
+            ],
+            "type": "string"
+          },
+          "listen": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "port": {
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "proto": {
+                  "enum": [
+                    "tcp",
+                    "udp"
+                  ],
+                  "type": "string"
+                },
+                "sources": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "proto",
+                "port"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "outbound": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "process": {
+            "additionalProperties": false,
+            "properties": {
+              "binaries": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pin": {
+                "type": "boolean"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "units": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "scored": {
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "stopped",
+              "disabled"
+            ],
+            "type": "string"
+          },
+          "transport": {
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "enum": [
+                  "password",
+                  "ntlm",
+                  "key",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "encryption": {
+                "enum": [
+                  "none",
+                  "optional",
+                  "required"
+                ],
+                "type": "string"
+              },
+              "plaintext": {
+                "type": "boolean"
+              },
+              "pty": {
+                "type": "boolean"
+              },
+              "shell": {
+                "type": "boolean"
+              },
+              "starttls": {
+                "enum": [
+                  "never",
+                  "optional",
+                  "required"
+                ],
+                "type": "string"
+              },
+              "tls_verify": {
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "host",
+          "kind",
+          "scored"
+        ],
+        "type": "object"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "services"
+  ],
+  "title": "Phylax services.yml",
+  "type": "object"
+}

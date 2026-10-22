@@ -1,0 +1,21 @@
+# 2027 reference manifest: policy.
+policy:
+  firewall: { icmp: allow, dhcp: allow, ipv6: allow }
+  egress:
+    sinkhole: { enabled: true, port: 7480 }
+    canary_ports: [4444, 8888, 9001]     # Kali canary ports; probes are expected to be blocked
+    deny_log_group: 100                  # NFLOG group for denied egress
+    allow: []                            # extra allowances; agent link and depends_on are implicit
+  patch_windows:
+    default_minutes: 15
+    max_minutes: 30
+    allowlist: [deb.debian.org, archive.ubuntu.com, security.ubuntu.com, mirror.rockylinux.org, download.windowsupdate.com]
+  response:
+    alert_only: false
+    tiers:
+      t1: [fw.quarantine]
+      t2: [proc.kill_tree, file.quarantine]
+  protected_processes: [phylax, sshd, sqlservr.exe, dns.exe, lsass.exe]
+  retention: { events: 96h, pcap: 24h }
+  limits: { packet_ring_max_bytes: 2147483648, packet_ring_free_pct: 10 }
+  cache_tiers: [hashes, packages, rules, tools]

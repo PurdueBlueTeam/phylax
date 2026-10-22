@@ -1,0 +1,6 @@
+# 2027 reference manifest: optional sensors, off until pinned.
+integrations:
+  wazuh:      { enabled: false }
+  suricata:   { enabled: false }
+  zeek:       { enabled: false }
+  splunk_hec: { enabled: false, hosts: [debian-splunk] }

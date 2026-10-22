@@ -1,0 +1,171 @@
+{
+  "host": "dc",
+  "default_inbound": "Block",
+  "default_outbound": "Block",
+  "rules": [
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmp 1",
+      "description": "ICMP stays (ping is scored; rules require ICMP)",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv4",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound icmpv6 1",
+      "description": "ICMPv6: neighbour discovery, PMTU, echo",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "ICMPv6",
+      "icmp_types": "*",
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcp 1",
+      "description": "DHCP client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcp 1",
+      "description": "DHCP server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        68
+      ],
+      "remote_ports": [
+        67
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base outbound dhcpv6 1",
+      "description": "DHCPv6 client request",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Base",
+      "name": "Phylax Base inbound dhcpv6 1",
+      "description": "DHCPv6 server reply",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        546
+      ],
+      "remote_ports": [
+        547
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Mgmt",
+      "name": "Phylax Mgmt outbound agent_link 1",
+      "description": "agent link to the controller",
+      "direction": "Outbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "remote_ports": [
+        7443
+      ],
+      "remote_addresses": [
+        "10.10.1.50/32"
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service dc-dns 1",
+      "description": "dc-dns (dns)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        53
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service dc-dns 2",
+      "description": "dc-dns (dns)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "UDP",
+      "local_ports": [
+        53
+      ],
+      "profiles": "Any",
+      "enabled": true
+    },
+    {
+      "group": "Phylax Service",
+      "name": "Phylax Service inbound service dc-ldap 1",
+      "description": "dc-ldap (ldap)",
+      "direction": "Inbound",
+      "action": "Allow",
+      "protocol": "TCP",
+      "local_ports": [
+        389
+      ],
+      "profiles": "Any",
+      "enabled": true
+    }
+  ],
+  "denied_egress_audit": true
+}

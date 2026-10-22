@@ -1,0 +1,206 @@
+{
+  "device": "palo1",
+  "tag": "phylax-managed",
+  "inside_zone": "corp",
+  "outside_zone": "outside",
+  "addresses": [
+    {
+      "name": "phylax-mail-public",
+      "value": "172.25.27.20/32"
+    },
+    {
+      "name": "phylax-web-public",
+      "value": "172.25.27.10/32"
+    }
+  ],
+  "static_nat": [
+    {
+      "name": "phylax-nat-mail",
+      "original": {
+        "host": "mail",
+        "value": "172.25.27.20"
+      },
+      "translated": {
+        "host": "mail",
+        "value": "10.10.2.20"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    },
+    {
+      "name": "phylax-nat-web",
+      "original": {
+        "host": "web",
+        "value": "172.25.27.10"
+      },
+      "translated": {
+        "host": "web",
+        "value": "10.10.2.10"
+      },
+      "commit": "policy",
+      "comment": "static 1:1 NAT, same last octet"
+    }
+  ],
+  "rules": [
+    {
+      "name": "phylax-svc-mail",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "corp",
+      "destinations": [
+        {
+          "host": "mail",
+          "value": "172.25.27.20"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            25,
+            143
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-mail",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "corp",
+      "destinations": [
+        {
+          "host": "mail",
+          "value": "172.25.27.20"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            6379
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-svc-web",
+      "phase": "service",
+      "from_zone": "outside",
+      "to_zone": "corp",
+      "destinations": [
+        {
+          "host": "web",
+          "value": "172.25.27.10"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            22,
+            80
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "scored services: reachable from every source address (no source filtering)"
+    },
+    {
+      "name": "phylax-decoy-web",
+      "phase": "decoy",
+      "from_zone": "outside",
+      "to_zone": "corp",
+      "destinations": [
+        {
+          "host": "web",
+          "value": "172.25.27.10"
+        }
+      ],
+      "services": [
+        {
+          "proto": "tcp",
+          "ports": [
+            23,
+            8081
+          ]
+        }
+      ],
+      "action": "allow",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "decoy listeners (record only), never on scored ports"
+    },
+    {
+      "name": "phylax-icmp",
+      "phase": "icmp",
+      "from_zone": "any",
+      "to_zone": "any",
+      "services": [
+        {
+          "proto": "icmp"
+        }
+      ],
+      "action": "allow",
+      "log_end": false,
+      "commit": "policy",
+      "risk": "service",
+      "comment": "ICMP stays on every device (ping is scored); no zone protection that drops ping"
+    },
+    {
+      "name": "phylax-egress-deny-servers",
+      "phase": "egress",
+      "from_zone": "corp",
+      "to_zone": "outside",
+      "sources": [
+        {
+          "host": "dc",
+          "value": "10.10.1.10/32"
+        },
+        {
+          "host": "mail",
+          "value": "10.10.2.20/32"
+        },
+        {
+          "host": "web",
+          "value": "10.10.2.10/32"
+        }
+      ],
+      "services": [
+        {
+          "proto": "any"
+        }
+      ],
+      "action": "deny",
+      "log_end": true,
+      "commit": "policy",
+      "risk": "none",
+      "comment": "network-layer default-deny egress for servers; still holds if a host implant disables the host firewall"
+    }
+  ],
+  "mgmt_lockdown": {
+    "permitted_from": [
+      {
+        "host": "ctl-wkst",
+        "value": "10.10.1.50"
+      }
+    ],
+    "commit": "management",
+    "risk": "lockout",
+    "additive": true
+  }
+}

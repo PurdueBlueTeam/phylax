@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "decoys": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "exposure": {
+            "enum": [
+              "lan",
+              "public",
+              "both"
+            ],
+            "type": "string"
+          },
+          "honey_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "honeytokens": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "at": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "at"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "listeners": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "ssh",
+                    "mysql",
+                    "redis",
+                    "telnet",
+                    "winrm",
+                    "rdp",
+                    "http_admin"
+                  ],
+                  "type": "string"
+                },
+                "port": {
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "port"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "decoys"
+  ],
+  "title": "Phylax decoys.yml",
+  "type": "object"
+}

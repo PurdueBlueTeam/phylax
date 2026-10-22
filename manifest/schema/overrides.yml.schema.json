@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "overrides": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_findings": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "subject",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "adopted_drift": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subject"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "inject_changes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "at": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subject"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "overrides"
+  ],
+  "title": "Phylax overrides.yml",
+  "type": "object"
+}
