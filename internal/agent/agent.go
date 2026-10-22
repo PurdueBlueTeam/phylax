@@ -70,14 +70,18 @@ type Agent struct {
 	planKey ed25519.PublicKey
 
 	// config handling (see config.go)
-	cfgKick chan struct{}
-	desired *plan.AgentConfig // guarded by mu
-	cfgStat ConfigStatus      // guarded by mu
-	managed map[string]string // module -> settings fingerprint; configLoop only
-	kept    sync.Map
-	tapMu   sync.Mutex
-	taps    []*tap
-	execWG  sync.WaitGroup
+	cfgKick   chan struct{}
+	desired   *plan.AgentConfig // guarded by mu
+	cfgStat   ConfigStatus      // guarded by mu
+	managed   map[string]string // module -> settings fingerprint; configLoop only
+	kept      sync.Map
+	tapMu     sync.Mutex
+	taps      []*tap
+	held      []event.Event // published while a subscriber was starting; guarded by tapMu
+	subWait   int
+	holds     int
+	holdUntil time.Time
+	execWG    sync.WaitGroup
 	// runCtx is the agent's run context; steps execute under it, not under
 	// the (per-connection) handler context.
 	runCtx context.Context
@@ -229,6 +233,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return err
 	}
 	for _, m := range a.cfg.Modules {
+		a.expectSubscriber(m)
 		if err := a.sup.Add(m); err != nil {
 			return err
 		}

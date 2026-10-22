@@ -36,7 +36,7 @@ func init() {
 			if len(env.PlanKey) != ed25519.PublicKeySize {
 				return agent.ModuleSpec{}, unavailable("no plan key to verify the ledger signature")
 			}
-			return spec(&integrityModule{env: env, s: s}, s.RatePerSec, s.Burst), nil
+			return subSpec(&integrityModule{env: env, s: s}, s.RatePerSec, s.Burst), nil
 		},
 	})
 }

@@ -1,0 +1,575 @@
+# Midwest red team shapes (mw-red-team; ccdc-private strategy/phylax-proposed-rules.md P82-P90).
+# Every rule matches the SHAPE of the technique: literal values from the public
+# tooling (the Windows-Update UA, /data, msedge.exe, SysWOW64 wmiprvse, HIDDEN)
+# only add breadth to a branch or are listed as one alternative among shape
+# branches, so a red team that renames a literal still trips the shape.
+#
+# New producer fields used here:
+#   http_request (internal/capture HTTPEvents): method, host, uri, ua, status,
+#     src_ip, dst_ip, dst_port, dst_org / dst_cloud from the configured network
+#     list (empty list = no org classification; the list-free branches still work).
+#   process_start (Linux audit): env.{LD_PRELOAD,LD_AUDIT,LD_LIBRARY_PATH,
+#     LD_DEBUG,LD_BIND_NOW}= loader-injection variables with value, env.HIDDEN /
+#     env.BLOCKED = "(set)" presence markers. No other variable is ever stored.
+#   file_change / sec_event (winevt): sysvol_policy, gpo_guid, gpo_section,
+#     gpo_item (gpp_scheduledtasks|gpp_groups|gpp_other|scripts|registry_pol|
+#     security_template|other), gpo (directory change on a GPO object).
+#   <field>_net8|_net16|_net24: the network prefix of an address field
+#     (detect engine), for count keys.
+id: D13d.c2-profile-http
+title: HTTP request shaped like a Windows-Update-lookalike or Mythic redirector C2 profile
+description: >
+  Three shapes. (1) Something that says it is Windows Update (UA, /c/msdownload/ path or a
+  Microsoft Host) but the destination is not Microsoft: by the Host header alone, or by the
+  destination organisation when a network list is configured. (2) A request to a cloud-class
+  address that claims to be Windows Update. (3) An IE11 user agent (Trident/7.0; rv:11.0) going
+  to a public address from a modern host, the Mythic/Cobalt default profile cover.
+severity: high
+tier: 1
+attack: [T1071.001, T1001]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+entities: [src_ip, dst_ip, host, uri]
+message: "{src_ip} -> {dst_ip} {host}{uri} ua={ua}"
+when:
+  event: http_request
+  any:
+    - all:   # claims to be Windows Update; the Host is not a Microsoft domain
+        - any:
+            - ua: {startswith: "Windows-Update-Agent/"}
+            - uri: {re: '^/(c/)?msdownload/(update|\w+)/'}
+        - host: {present: true}
+        - not: {host: {re: '(?i)(^|\.)(windowsupdate\.com|microsoft\.com|windows\.com|windowsupdate\.microsoft\.com|delivery\.mp\.microsoft\.com|update\.microsoft\.com|msedge\.net|azureedge\.net)(:\d+)?$'}}
+    - all:   # claims to be Windows Update; the destination is classified as something else
+        - any:
+            - ua: {startswith: "Windows-Update-Agent/"}
+            - host: {re: '(?i)(windowsupdate|\.microsoft)\.'}
+        - any:
+            - dst_cloud: true
+            - all:
+                - dst_org: {present: true}
+                - not: {dst_org: {re: '(?i)microsoft'}}
+    - all:   # IE11 identity to a public address
+        - ua: {contains: "Trident/7.0"}
+        - ua: {contains: "rv:11.0"}
+        - not: {dst_ip: {cidr: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16, "::1/128", "fe80::/10", "fc00::/7"]}}
+        - dst_ip: {present: true}
+tests:
+  - name: literal CS profile, wrong host
+    should_match: true
+    event: {kind: http_request, fields: {method: GET, host: updates.example-cdn.net, uri: /c/msdownload/update/others/2016/12/29136388_x.cab, ua: "Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.40", dst_ip: 203.0.113.9}}
+  - name: renamed UA version, same shape
+    should_match: true
+    event: {kind: http_request, fields: {method: GET, host: cdn.attacker.example, uri: /x, ua: "Windows-Update-Agent/10.0.99999.1 Client-Protocol/2.0", dst_ip: 203.0.113.9}}
+  - name: Microsoft host, cloud-classified destination
+    should_match: true
+    event: {kind: http_request, fields: {method: GET, host: download.windowsupdate.com, uri: /x, ua: "Windows-Update-Agent/10.0.19041.1 Client-Protocol/1.40", dst_ip: 3.5.6.7, dst_cloud: true, dst_org: aws}}
+  - name: Mythic redirector with IE11 UA
+    should_match: true
+    event: {kind: http_request, fields: {method: POST, host: redirector.example, uri: /data, ua: "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko", dst_ip: 198.51.100.20}}
+  - name: IE11 UA with a different URI still matches by shape
+    should_match: true
+    event: {kind: http_request, fields: {method: GET, host: a.example, uri: /api/v2/poll, ua: "Mozilla/5.0 (Windows NT 6.1; Trident/7.0; rv:11.0) like Gecko", dst_ip: 198.51.100.20}}
+  - name: real Windows Update to Microsoft
+    should_match: false
+    event: {kind: http_request, fields: {method: GET, host: download.windowsupdate.com, uri: /c/msdownload/update/software/secu/2026/01/x.cab, ua: "Windows-Update-Agent/10.0.10011.16384 Client-Protocol/1.40", dst_ip: 13.70.1.2, dst_org: microsoft}}
+  - name: IE11 to an internal server
+    should_match: false
+    event: {kind: http_request, fields: {method: GET, host: intranet, uri: /, ua: "Mozilla/5.0 (Windows NT 10.0; Trident/7.0; rv:11.0) like Gecko", dst_ip: 10.1.2.3}}
+  - name: ordinary browser
+    should_match: false
+    event: {kind: http_request, fields: {method: GET, host: example.org, uri: /data, ua: "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0", dst_ip: 93.184.216.34}}
+---
+id: D5f.msedge-inject-shape
+title: Sacrificial-process shape - msedge.exe outside Edge's install or parentage, or a SysWOW64 WMI provider host not launched by DCOM
+description: >
+  Cobalt Strike spawnto targets. msedge.exe started by something that is not a browser/updater
+  parent, or running from outside the Edge install directories (masquerade); the 32-bit
+  wmiprvse.exe started by anything but svchost.
+severity: high
+tier: 1
+attack: [T1055, T1055.012]
+collect: [process_tree, memory_artifacts]
+exempt_tagged: true
+entities: [exe, pcomm]
+message: "{exe} started by {pcomm}"
+when:
+  event: process_start
+  any:
+    - all:
+        - comm: msedge.exe
+        - pcomm: {present: true}
+        - not: {pcomm: {re: '(?i)^(explorer|msedge|msedgeupdate|microsoftedgeupdate|msedgewebview2|svchost|runtimebroker|sihost|taskhostw|startmenuexperiencehost|searchhost|searchapp)\.exe$'}}
+    - all:
+        - comm: msedge.exe
+        - exe: {present: true}
+        - not: {exe: {re: '(?i)^[a-z]:\\Program Files( \(x86\))?\\Microsoft\\(Edge|EdgeWebView)\\|\\WindowsApps\\Microsoft\.MicrosoftEdge'}}
+    - all:
+        - exe: {re: '(?i)\\SysWOW64\\wbem\\wmiprvse\.exe$'}
+        - not: {pcomm: {re: '(?i)^(svchost|services)\.exe$'}}
+tests:
+  - name: msedge spawned by a loader
+    should_match: true
+    event: {kind: process_start, fields: {exe: 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe', comm: msedge.exe, pexe: 'C:\Users\Public\up.exe', pcomm: up.exe}}
+  - name: msedge masquerade in a temp folder
+    should_match: true
+    event: {kind: process_start, fields: {exe: 'C:\Windows\Temp\msedge.exe', comm: msedge.exe, pexe: 'C:\Windows\explorer.exe', pcomm: explorer.exe}}
+  - name: SysWOW64 wmiprvse started by a non-svchost parent
+    should_match: true
+    event: {kind: process_start, fields: {exe: 'C:\Windows\SysWOW64\wbem\wmiprvse.exe', comm: wmiprvse.exe, pexe: 'C:\Windows\System32\rundll32.exe', pcomm: rundll32.exe}}
+  - name: user opens Edge
+    should_match: false
+    event: {kind: process_start, fields: {exe: 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe', comm: msedge.exe, pexe: 'C:\Windows\explorer.exe', pcomm: explorer.exe}}
+  - name: wmiprvse launched by DCOM
+    should_match: false
+    event: {kind: process_start, fields: {exe: 'C:\Windows\SysWOW64\wbem\wmiprvse.exe', comm: wmiprvse.exe, pexe: 'C:\Windows\System32\svchost.exe', pcomm: svchost.exe}}
+  - name: 64-bit wmiprvse is not this rule
+    should_match: false
+    event: {kind: process_start, fields: {exe: 'C:\Windows\System32\wbem\wmiprvse.exe', comm: wmiprvse.exe, pexe: 'C:\Windows\System32\svchost.exe', pcomm: svchost.exe}}
+---
+id: D6g2.service-name-system-dir
+title: Service named like a Windows system folder
+description: No stock service is named after a directory (SysWOW64, System32, Drivers, WinSxS ...); loaders hide in plain sight under such a name.
+severity: high
+tier: 0
+attack: [T1543.003, T1036.004]
+collect: [process_tree, registry_snapshot]
+exempt_tagged: true
+entities: [service_name, image_path]
+message: "service {service_name} installed from {image_path}"
+when:
+  event: sec_event
+  all:
+    - event_id: [7045, 4697]
+    - service_name: [syswow64, system32, sysnative, windows, winsxs, drivers, wbem, temp, tmp, config, fonts, inf, tasks, servicing, assembly, globalization, debug, resources, logs, installer, prefetch, program files, programdata, users, recovery, boot, fonts, driverstore, spool, "microsoft.net", "windowsapps", "system", "systemapps", "setup", "web", "help", "media", "speech", "cursors", "branding", "cache", "downloaded program files", "pla", "registration", "security", "schemas", "tracing", "wininet", "winevt"]
+tests:
+  - {name: SysWOW64 service, should_match: true, event: {kind: sec_event, fields: {event_id: 7045, service_name: SysWOW64, image_path: 'C:\Windows\Temp\x.exe'}}}
+  - {name: security log variant in other case, should_match: true, event: {kind: sec_event, fields: {event_id: 4697, service_name: DRIVERS}}}
+  - {name: normal service, should_match: false, event: {kind: sec_event, fields: {event_id: 7045, service_name: Spooler, image_path: 'C:\Windows\System32\spoolsv.exe'}}}
+  - {name: not a service install, should_match: false, event: {kind: sec_event, fields: {event_id: 4624, service_name: SysWOW64}}}
+  - {name: our plan, should_match: false, event: {kind: sec_event, fields: {event_id: 7045, service_name: Tasks, tag: "plan:harden"}}}
+---
+id: D6v.sysvol-gpp-change
+title: Group Policy item changed in SYSVOL or in the directory (Preferences tasks/groups, scripts, registry.pol, GPO created/deleted) outside a plan
+description: >
+  Shape: any write under SYSVOL\<domain>\Policies\{GUID}\{Machine|User}\ to a Preferences item,
+  Scripts, registry.pol or a security template; or a GPO object created, deleted or its extension
+  / path attributes changed in the directory. GPO-delivered mass persistence and sabotage.
+severity: critical
+tier: 1
+attack: [T1484.001, T1053.005, T1136.001]
+collect: [content_changes, ad_snapshot]
+exempt_tagged: true
+entities: [path, gpo_guid, subject_account]
+message: "Group Policy change {gpo_item} {path} {gpo_guid} {object_dn}"
+when:
+  event: [file_change, sec_event]
+  any:
+    - all:
+        - sysvol_policy: true
+        - gpo_item: [gpp_scheduledtasks, gpp_groups, gpp_other, scripts, registry_pol, security_template]
+    - path: {re: '(?i)\\SYSVOL\\[^\\]+\\Policies\\\{[0-9A-F-]{36}\}\\(Machine|User)\\(Preferences\\[^\\]+\\[^\\]+\.xml|Scripts\\|registry\.pol$|Microsoft\\Windows NT\\SecEdit\\GptTmpl\.inf$)'}
+    - all:
+        - event_id: [5137, 5141]
+        - gpo: true
+    - all:
+        - event_id: 5136
+        - gpo: true
+        - attribute: [gPCMachineExtensionNames, gPCUserExtensionNames, gPCFileSysPath, gPCFunctionalityVersion, flags]
+tests:
+  - {name: GPP scheduled task dropped, should_match: true, event: {kind: file_change, fields: {op: create, path: 'C:\Windows\SYSVOL\domain\Policies\{31B2F340-016D-11D2-945F-00C04FB984F9}\Machine\Preferences\ScheduledTasks\ScheduledTasks.xml', sysvol_policy: true, gpo_item: gpp_scheduledtasks}}}
+  - {name: path regex alone without derived fields, should_match: true, event: {kind: file_change, fields: {op: create, path: 'C:\Windows\SYSVOL\domain\Policies\{31B2F340-016D-11D2-945F-00C04FB984F9}\User\Scripts\Logon\x.ps1'}}}
+  - {name: GPP groups, should_match: true, event: {kind: file_change, fields: {op: create, path: 'D:\SYSVOL\sysvol\ccdc.local\Policies\{AAAAAAAA-016D-11D2-945F-00C04FB984F9}\Machine\Preferences\Groups\Groups.xml', sysvol_policy: true, gpo_item: gpp_groups}}}
+  - {name: new GPO object, should_match: true, event: {kind: sec_event, fields: {event_id: 5137, category: ad_object_change, gpo: true, object_class: groupPolicyContainer}}}
+  - {name: GPO deleted, should_match: true, event: {kind: sec_event, fields: {event_id: 5141, category: ad_object_change, gpo: true}}}
+  - {name: GPO extension list edited, should_match: true, event: {kind: sec_event, fields: {event_id: 5136, gpo: true, attribute: gPCMachineExtensionNames}}}
+  - {name: ordinary netlogon script, should_match: false, event: {kind: file_change, fields: {op: create, path: 'C:\Windows\SYSVOL\domain\scripts\logon.bat'}}}
+  - {name: description edit on a GPO, should_match: false, event: {kind: sec_event, fields: {event_id: 5136, gpo: true, attribute: description}}}
+  - {name: our own GPO work, should_match: false, event: {kind: file_change, fields: {op: create, tag: "plan:gpo-harden", path: 'C:\Windows\SYSVOL\domain\Policies\{31B2F340-016D-11D2-945F-00C04FB984F9}\Machine\Registry.pol', sysvol_policy: true, gpo_item: registry_pol}}}
+---
+id: D7g.guest-admin-enable
+title: Guest or built-in Administrator enabled, Guest/DefaultAccount made privileged, or a service-named account created
+description: >
+  Shape by well-known RID, not by name: 4722 on RID 500/501, a RID 501/503 member added to any
+  group in the privileged-group events, and a new svc_/service-prefixed account that is not one
+  the scorer logs in with (svc_network style).
+severity: critical
+tier: 0
+attack: [T1136.001, T1098]
+collect: [process_tree, ad_snapshot]
+exempt_tagged: true
+entities: [account, target_sid, member_sid]
+message: "{account}{member_sid}{target_sid} ({event_id})"
+when:
+  event: sec_event
+  any:
+    - all:
+        - event_id: 4722
+        - target_sid: {re: '-(500|501)$'}
+    - all:
+        - event_id: [4728, 4732, 4756]
+        - member_sid: {re: '-(501|503)$'}
+    - all:
+        - event_id: 4720
+        - account: {re: '(?i)^(svc|service|srv|sys)[_.-]?[a-z0-9]{3,}'}
+        - not: {account: {in_profile: accounts.scored}}
+tests:
+  - {name: Guest enabled, should_match: true, event: {kind: sec_event, fields: {event_id: 4722, account: Guest, target_sid: S-1-5-21-1-2-3-501}}}
+  - {name: built-in Administrator enabled, should_match: true, event: {kind: sec_event, fields: {event_id: 4722, account: Administrator, target_sid: S-1-5-21-1-2-3-500}}}
+  - {name: Guest into Administrators, should_match: true, event: {kind: sec_event, fields: {event_id: 4732, group_name: Administrators, member_sid: S-1-5-21-1-2-3-501}}}
+  - {name: svc_network created, should_match: true, seed: {accounts.scored: [scoring]}, event: {kind: sec_event, fields: {event_id: 4720, account: svc_network}}}
+  - {name: other service-style name, should_match: true, seed: {accounts.scored: [scoring]}, event: {kind: sec_event, fields: {event_id: 4720, account: SVC-Update}}}
+  - {name: ordinary user enabled, should_match: false, event: {kind: sec_event, fields: {event_id: 4722, account: alice, target_sid: S-1-5-21-1-2-3-1104}}}
+  - {name: ordinary member added, should_match: false, event: {kind: sec_event, fields: {event_id: 4732, member_sid: S-1-5-21-1-2-3-1104}}}
+  - {name: scored service account, should_match: false, seed: {accounts.scored: [svc_scoring]}, event: {kind: sec_event, fields: {event_id: 4720, account: svc_scoring}}}
+  - {name: plain user created, should_match: false, seed: {accounts.scored: [scoring]}, event: {kind: sec_event, fields: {event_id: 4720, account: bob}}}
+---
+id: D6d3.loader-env-in-process
+title: Process started with a dynamic-loader injection variable, or the libc interposer's control variables
+description: >
+  Shape: LD_PRELOAD / LD_AUDIT set to a non-system path, LD_LIBRARY_PATH into a writable
+  directory, or both HIDDEN and BLOCKED present together (the interposer's switches, recorded as
+  presence markers only). Also the same assignment typed on a command line (env LD_PRELOAD=...).
+severity: high
+tier: 1
+attack: [T1574.006]
+collect: [process_tree, memory_artifacts]
+exempt_tagged: true
+entities: [exe, uid]
+message: "{exe} started with loader-injection environment: {cmdline}"
+when:
+  event: process_start
+  any:
+    - all:
+        - env.LD_PRELOAD: {present: true}
+        - not: {env.LD_PRELOAD: {startswith_any: [/usr/lib/, /lib/, /usr/lib64/, /lib64/, /usr/libexec/]}}
+    - all:
+        - env.LD_AUDIT: {present: true}
+        - not: {env.LD_AUDIT: {startswith_any: [/usr/lib/, /lib/, /usr/lib64/, /lib64/]}}
+    - env.LD_LIBRARY_PATH: {re: '(^|:)(/tmp|/dev/shm|/var/tmp|/home|/root|/run/user|/var/www|\.)(/|:|$)'}
+    - all:
+        - env.HIDDEN: {present: true}
+        - env.BLOCKED: {present: true}
+    - cmdline: {re: '(^|[\s;&|])(export\s+|env\s+)?LD_(PRELOAD|AUDIT)=\S*(/tmp|/dev/shm|/var/tmp|/home|/root|/opt|/\.)'}
+tests:
+  - {name: preload from tmp, should_match: true, event: {kind: process_start, fields: {image: /bin/ls, cmdline: ls, env: {LD_PRELOAD: /tmp/.x/libhide.so}}}}
+  - {name: preload from an unusual path, should_match: true, event: {kind: process_start, fields: {image: /bin/ls, cmdline: ls, env: {LD_PRELOAD: /srv/evil/lib.so}}}}
+  - {name: audit library, should_match: true, event: {kind: process_start, fields: {image: /bin/ls, env: {LD_AUDIT: /tmp/a.so}}}}
+  - {name: library path into dev/shm, should_match: true, event: {kind: process_start, fields: {image: /bin/ls, env: {LD_LIBRARY_PATH: /dev/shm/lib}}}}
+  - {name: renamed control variables still need both markers, should_match: true, event: {kind: process_start, fields: {image: /bin/ls, env: {HIDDEN: "(set)", BLOCKED: "(set)"}}}}
+  - {name: command line assignment, should_match: true, event: {kind: process_start, fields: {image: /usr/bin/env, cmdline: "env LD_PRELOAD=/tmp/hide.so ls /"}}}
+  - {name: faketime from a system library dir, should_match: false, event: {kind: process_start, fields: {image: /bin/date, cmdline: date, env: {LD_PRELOAD: /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1}}}}
+  - {name: HIDDEN alone is not enough, should_match: false, event: {kind: process_start, fields: {image: /bin/ls, cmdline: ls, env: {HIDDEN: "(set)"}}}}
+  - {name: no env captured, should_match: false, event: {kind: process_start, fields: {image: /bin/ls, cmdline: ls}}}
+  - {name: our own plan, should_match: false, event: {kind: process_start, fields: {image: /bin/ls, tag: "plan:x", env: {LD_PRELOAD: /tmp/x.so}}}}
+---
+id: D13e.scan-source-rotation
+title: Many sources in one network probing many host/port pairs (rotating-source scanner)
+description: >
+  Per-source port-scan rules are defeated by source rotation and decoys. This keys on the source
+  network (/16) and counts distinct (our host, our port) targets reached from it, so a scanner
+  cycling addresses inside one network still adds up. Scorer, vantage and team console sources
+  are excluded by profile (reference.scorer_sources), never by literal address. Needs events
+  from several agents, hence scope controller.
+scope: controller
+severity: medium
+tier: 1
+attack: [T1046]
+collect: [freeze_ring]
+entities: [raddr_net16]
+message: "{raddr_net16} reached {laddr}:{lport} (many distinct targets from one network)"
+when:
+  event: net.connection_opened
+  all:
+    - dir: inbound
+    - not: {raddr: {in_profile: reference.scorer_sources}}
+    - not: {raddr: {cidr: [127.0.0.0/8, "::1/128"]}}
+  count: {window: 5m, gte: 30, by: [raddr_net16], distinct: [laddr, lport], cooldown: 10m}
+tests:
+  - name: rotating sources in one /16 scanning 30 targets
+    should_match: true
+    seed: {reference.scorer_sources: [198.51.99.1]}
+    events:
+      - {kind: net.connection_opened, at: 0s, agent: h0, fields: {dir: inbound, raddr: 198.51.0.10, laddr: 10.0.0.1, lport: 20}}
+      - {kind: net.connection_opened, at: 3s, agent: h1, fields: {dir: inbound, raddr: 198.51.1.11, laddr: 10.0.0.2, lport: 21}}
+      - {kind: net.connection_opened, at: 6s, agent: h2, fields: {dir: inbound, raddr: 198.51.2.12, laddr: 10.0.0.3, lport: 22}}
+      - {kind: net.connection_opened, at: 9s, agent: h0, fields: {dir: inbound, raddr: 198.51.3.13, laddr: 10.0.0.1, lport: 23}}
+      - {kind: net.connection_opened, at: 12s, agent: h1, fields: {dir: inbound, raddr: 198.51.4.14, laddr: 10.0.0.2, lport: 24}}
+      - {kind: net.connection_opened, at: 15s, agent: h2, fields: {dir: inbound, raddr: 198.51.5.15, laddr: 10.0.0.3, lport: 25}}
+      - {kind: net.connection_opened, at: 18s, agent: h0, fields: {dir: inbound, raddr: 198.51.6.16, laddr: 10.0.0.1, lport: 26}}
+      - {kind: net.connection_opened, at: 21s, agent: h1, fields: {dir: inbound, raddr: 198.51.7.17, laddr: 10.0.0.2, lport: 27}}
+      - {kind: net.connection_opened, at: 24s, agent: h2, fields: {dir: inbound, raddr: 198.51.8.18, laddr: 10.0.0.3, lport: 28}}
+      - {kind: net.connection_opened, at: 27s, agent: h0, fields: {dir: inbound, raddr: 198.51.9.19, laddr: 10.0.0.1, lport: 29}}
+      - {kind: net.connection_opened, at: 30s, agent: h1, fields: {dir: inbound, raddr: 198.51.10.20, laddr: 10.0.0.2, lport: 30}}
+      - {kind: net.connection_opened, at: 33s, agent: h2, fields: {dir: inbound, raddr: 198.51.11.21, laddr: 10.0.0.3, lport: 31}}
+      - {kind: net.connection_opened, at: 36s, agent: h0, fields: {dir: inbound, raddr: 198.51.12.22, laddr: 10.0.0.1, lport: 32}}
+      - {kind: net.connection_opened, at: 39s, agent: h1, fields: {dir: inbound, raddr: 198.51.13.23, laddr: 10.0.0.2, lport: 33}}
+      - {kind: net.connection_opened, at: 42s, agent: h2, fields: {dir: inbound, raddr: 198.51.14.24, laddr: 10.0.0.3, lport: 34}}
+      - {kind: net.connection_opened, at: 45s, agent: h0, fields: {dir: inbound, raddr: 198.51.15.25, laddr: 10.0.0.1, lport: 35}}
+      - {kind: net.connection_opened, at: 48s, agent: h1, fields: {dir: inbound, raddr: 198.51.16.26, laddr: 10.0.0.2, lport: 36}}
+      - {kind: net.connection_opened, at: 51s, agent: h2, fields: {dir: inbound, raddr: 198.51.17.27, laddr: 10.0.0.3, lport: 37}}
+      - {kind: net.connection_opened, at: 54s, agent: h0, fields: {dir: inbound, raddr: 198.51.18.28, laddr: 10.0.0.1, lport: 38}}
+      - {kind: net.connection_opened, at: 57s, agent: h1, fields: {dir: inbound, raddr: 198.51.19.29, laddr: 10.0.0.2, lport: 39}}
+      - {kind: net.connection_opened, at: 60s, agent: h2, fields: {dir: inbound, raddr: 198.51.20.30, laddr: 10.0.0.3, lport: 40}}
+      - {kind: net.connection_opened, at: 63s, agent: h0, fields: {dir: inbound, raddr: 198.51.21.31, laddr: 10.0.0.1, lport: 41}}
+      - {kind: net.connection_opened, at: 66s, agent: h1, fields: {dir: inbound, raddr: 198.51.22.32, laddr: 10.0.0.2, lport: 42}}
+      - {kind: net.connection_opened, at: 69s, agent: h2, fields: {dir: inbound, raddr: 198.51.23.33, laddr: 10.0.0.3, lport: 43}}
+      - {kind: net.connection_opened, at: 72s, agent: h0, fields: {dir: inbound, raddr: 198.51.24.34, laddr: 10.0.0.1, lport: 44}}
+      - {kind: net.connection_opened, at: 75s, agent: h1, fields: {dir: inbound, raddr: 198.51.25.35, laddr: 10.0.0.2, lport: 45}}
+      - {kind: net.connection_opened, at: 78s, agent: h2, fields: {dir: inbound, raddr: 198.51.26.36, laddr: 10.0.0.3, lport: 46}}
+      - {kind: net.connection_opened, at: 81s, agent: h0, fields: {dir: inbound, raddr: 198.51.27.37, laddr: 10.0.0.1, lport: 47}}
+      - {kind: net.connection_opened, at: 84s, agent: h1, fields: {dir: inbound, raddr: 198.51.28.38, laddr: 10.0.0.2, lport: 48}}
+      - {kind: net.connection_opened, at: 87s, agent: h2, fields: {dir: inbound, raddr: 198.51.29.39, laddr: 10.0.0.3, lport: 49}}
+  - name: one /16 hitting the same service repeatedly
+    should_match: false
+    events:
+      - {kind: net.connection_opened, at: 0s, agent: h1, fields: {dir: inbound, raddr: 198.51.0.10, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 2s, agent: h1, fields: {dir: inbound, raddr: 198.51.1.11, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 4s, agent: h1, fields: {dir: inbound, raddr: 198.51.2.12, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 6s, agent: h1, fields: {dir: inbound, raddr: 198.51.3.13, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 8s, agent: h1, fields: {dir: inbound, raddr: 198.51.4.14, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 10s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.15, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 12s, agent: h1, fields: {dir: inbound, raddr: 198.51.6.16, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 14s, agent: h1, fields: {dir: inbound, raddr: 198.51.7.17, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 16s, agent: h1, fields: {dir: inbound, raddr: 198.51.8.18, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 18s, agent: h1, fields: {dir: inbound, raddr: 198.51.9.19, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 20s, agent: h1, fields: {dir: inbound, raddr: 198.51.10.20, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 22s, agent: h1, fields: {dir: inbound, raddr: 198.51.11.21, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 24s, agent: h1, fields: {dir: inbound, raddr: 198.51.12.22, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 26s, agent: h1, fields: {dir: inbound, raddr: 198.51.13.23, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 28s, agent: h1, fields: {dir: inbound, raddr: 198.51.14.24, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 30s, agent: h1, fields: {dir: inbound, raddr: 198.51.15.25, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 32s, agent: h1, fields: {dir: inbound, raddr: 198.51.16.26, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 34s, agent: h1, fields: {dir: inbound, raddr: 198.51.17.27, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 36s, agent: h1, fields: {dir: inbound, raddr: 198.51.18.28, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 38s, agent: h1, fields: {dir: inbound, raddr: 198.51.19.29, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 40s, agent: h1, fields: {dir: inbound, raddr: 198.51.20.30, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 42s, agent: h1, fields: {dir: inbound, raddr: 198.51.21.31, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 44s, agent: h1, fields: {dir: inbound, raddr: 198.51.22.32, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 46s, agent: h1, fields: {dir: inbound, raddr: 198.51.23.33, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 48s, agent: h1, fields: {dir: inbound, raddr: 198.51.24.34, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 50s, agent: h1, fields: {dir: inbound, raddr: 198.51.25.35, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 52s, agent: h1, fields: {dir: inbound, raddr: 198.51.26.36, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 54s, agent: h1, fields: {dir: inbound, raddr: 198.51.27.37, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 56s, agent: h1, fields: {dir: inbound, raddr: 198.51.28.38, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 58s, agent: h1, fields: {dir: inbound, raddr: 198.51.29.39, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 60s, agent: h1, fields: {dir: inbound, raddr: 198.51.30.40, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 62s, agent: h1, fields: {dir: inbound, raddr: 198.51.31.41, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 64s, agent: h1, fields: {dir: inbound, raddr: 198.51.32.42, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 66s, agent: h1, fields: {dir: inbound, raddr: 198.51.33.43, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 68s, agent: h1, fields: {dir: inbound, raddr: 198.51.34.44, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 70s, agent: h1, fields: {dir: inbound, raddr: 198.51.35.45, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 72s, agent: h1, fields: {dir: inbound, raddr: 198.51.36.46, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 74s, agent: h1, fields: {dir: inbound, raddr: 198.51.37.47, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 76s, agent: h1, fields: {dir: inbound, raddr: 198.51.38.48, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 78s, agent: h1, fields: {dir: inbound, raddr: 198.51.39.49, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 80s, agent: h1, fields: {dir: inbound, raddr: 198.51.40.50, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 82s, agent: h1, fields: {dir: inbound, raddr: 198.51.41.51, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 84s, agent: h1, fields: {dir: inbound, raddr: 198.51.42.52, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 86s, agent: h1, fields: {dir: inbound, raddr: 198.51.43.53, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 88s, agent: h1, fields: {dir: inbound, raddr: 198.51.44.54, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 90s, agent: h1, fields: {dir: inbound, raddr: 198.51.45.55, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 92s, agent: h1, fields: {dir: inbound, raddr: 198.51.46.56, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 94s, agent: h1, fields: {dir: inbound, raddr: 198.51.47.57, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 96s, agent: h1, fields: {dir: inbound, raddr: 198.51.48.58, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 98s, agent: h1, fields: {dir: inbound, raddr: 198.51.49.59, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 100s, agent: h1, fields: {dir: inbound, raddr: 198.51.50.60, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 102s, agent: h1, fields: {dir: inbound, raddr: 198.51.51.61, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 104s, agent: h1, fields: {dir: inbound, raddr: 198.51.52.62, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 106s, agent: h1, fields: {dir: inbound, raddr: 198.51.53.63, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 108s, agent: h1, fields: {dir: inbound, raddr: 198.51.54.64, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 110s, agent: h1, fields: {dir: inbound, raddr: 198.51.55.65, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 112s, agent: h1, fields: {dir: inbound, raddr: 198.51.56.66, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 114s, agent: h1, fields: {dir: inbound, raddr: 198.51.57.67, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 116s, agent: h1, fields: {dir: inbound, raddr: 198.51.58.68, laddr: 10.0.0.1, lport: 80}}
+      - {kind: net.connection_opened, at: 118s, agent: h1, fields: {dir: inbound, raddr: 198.51.59.69, laddr: 10.0.0.1, lport: 80}}
+  - name: scorer network is excluded by profile
+    should_match: false
+    seed: {reference.scorer_sources: [198.51.5.5]}
+    events:
+      - {kind: net.connection_opened, at: 0s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1000}}
+      - {kind: net.connection_opened, at: 1s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1001}}
+      - {kind: net.connection_opened, at: 2s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1002}}
+      - {kind: net.connection_opened, at: 3s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1003}}
+      - {kind: net.connection_opened, at: 4s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1004}}
+      - {kind: net.connection_opened, at: 5s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1005}}
+      - {kind: net.connection_opened, at: 6s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1006}}
+      - {kind: net.connection_opened, at: 7s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1007}}
+      - {kind: net.connection_opened, at: 8s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1008}}
+      - {kind: net.connection_opened, at: 9s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1009}}
+      - {kind: net.connection_opened, at: 10s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1010}}
+      - {kind: net.connection_opened, at: 11s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1011}}
+      - {kind: net.connection_opened, at: 12s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1012}}
+      - {kind: net.connection_opened, at: 13s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1013}}
+      - {kind: net.connection_opened, at: 14s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1014}}
+      - {kind: net.connection_opened, at: 15s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1015}}
+      - {kind: net.connection_opened, at: 16s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1016}}
+      - {kind: net.connection_opened, at: 17s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1017}}
+      - {kind: net.connection_opened, at: 18s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1018}}
+      - {kind: net.connection_opened, at: 19s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1019}}
+      - {kind: net.connection_opened, at: 20s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1020}}
+      - {kind: net.connection_opened, at: 21s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1021}}
+      - {kind: net.connection_opened, at: 22s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1022}}
+      - {kind: net.connection_opened, at: 23s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1023}}
+      - {kind: net.connection_opened, at: 24s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1024}}
+      - {kind: net.connection_opened, at: 25s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1025}}
+      - {kind: net.connection_opened, at: 26s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1026}}
+      - {kind: net.connection_opened, at: 27s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1027}}
+      - {kind: net.connection_opened, at: 28s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1028}}
+      - {kind: net.connection_opened, at: 29s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1029}}
+      - {kind: net.connection_opened, at: 30s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1030}}
+      - {kind: net.connection_opened, at: 31s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1031}}
+      - {kind: net.connection_opened, at: 32s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1032}}
+      - {kind: net.connection_opened, at: 33s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1033}}
+      - {kind: net.connection_opened, at: 34s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1034}}
+      - {kind: net.connection_opened, at: 35s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1035}}
+      - {kind: net.connection_opened, at: 36s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1036}}
+      - {kind: net.connection_opened, at: 37s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1037}}
+      - {kind: net.connection_opened, at: 38s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1038}}
+      - {kind: net.connection_opened, at: 39s, agent: h1, fields: {dir: inbound, raddr: 198.51.5.5, laddr: 10.0.0.1, lport: 1039}}
+  - name: sources in different networks do not add up
+    should_match: false
+    events:
+      - {kind: net.connection_opened, at: 0s, agent: h1, fields: {dir: inbound, raddr: 198.0.1.1, laddr: 10.0.0.1, lport: 1000}}
+      - {kind: net.connection_opened, at: 1s, agent: h1, fields: {dir: inbound, raddr: 198.1.1.1, laddr: 10.0.0.1, lport: 1001}}
+      - {kind: net.connection_opened, at: 2s, agent: h1, fields: {dir: inbound, raddr: 198.2.1.1, laddr: 10.0.0.1, lport: 1002}}
+      - {kind: net.connection_opened, at: 3s, agent: h1, fields: {dir: inbound, raddr: 198.3.1.1, laddr: 10.0.0.1, lport: 1003}}
+      - {kind: net.connection_opened, at: 4s, agent: h1, fields: {dir: inbound, raddr: 198.4.1.1, laddr: 10.0.0.1, lport: 1004}}
+      - {kind: net.connection_opened, at: 5s, agent: h1, fields: {dir: inbound, raddr: 198.5.1.1, laddr: 10.0.0.1, lport: 1005}}
+      - {kind: net.connection_opened, at: 6s, agent: h1, fields: {dir: inbound, raddr: 198.6.1.1, laddr: 10.0.0.1, lport: 1006}}
+      - {kind: net.connection_opened, at: 7s, agent: h1, fields: {dir: inbound, raddr: 198.7.1.1, laddr: 10.0.0.1, lport: 1007}}
+      - {kind: net.connection_opened, at: 8s, agent: h1, fields: {dir: inbound, raddr: 198.8.1.1, laddr: 10.0.0.1, lport: 1008}}
+      - {kind: net.connection_opened, at: 9s, agent: h1, fields: {dir: inbound, raddr: 198.9.1.1, laddr: 10.0.0.1, lport: 1009}}
+      - {kind: net.connection_opened, at: 10s, agent: h1, fields: {dir: inbound, raddr: 198.10.1.1, laddr: 10.0.0.1, lport: 1010}}
+      - {kind: net.connection_opened, at: 11s, agent: h1, fields: {dir: inbound, raddr: 198.11.1.1, laddr: 10.0.0.1, lport: 1011}}
+      - {kind: net.connection_opened, at: 12s, agent: h1, fields: {dir: inbound, raddr: 198.12.1.1, laddr: 10.0.0.1, lport: 1012}}
+      - {kind: net.connection_opened, at: 13s, agent: h1, fields: {dir: inbound, raddr: 198.13.1.1, laddr: 10.0.0.1, lport: 1013}}
+      - {kind: net.connection_opened, at: 14s, agent: h1, fields: {dir: inbound, raddr: 198.14.1.1, laddr: 10.0.0.1, lport: 1014}}
+      - {kind: net.connection_opened, at: 15s, agent: h1, fields: {dir: inbound, raddr: 198.15.1.1, laddr: 10.0.0.1, lport: 1015}}
+      - {kind: net.connection_opened, at: 16s, agent: h1, fields: {dir: inbound, raddr: 198.16.1.1, laddr: 10.0.0.1, lport: 1016}}
+      - {kind: net.connection_opened, at: 17s, agent: h1, fields: {dir: inbound, raddr: 198.17.1.1, laddr: 10.0.0.1, lport: 1017}}
+      - {kind: net.connection_opened, at: 18s, agent: h1, fields: {dir: inbound, raddr: 198.18.1.1, laddr: 10.0.0.1, lport: 1018}}
+      - {kind: net.connection_opened, at: 19s, agent: h1, fields: {dir: inbound, raddr: 198.19.1.1, laddr: 10.0.0.1, lport: 1019}}
+      - {kind: net.connection_opened, at: 20s, agent: h1, fields: {dir: inbound, raddr: 198.20.1.1, laddr: 10.0.0.1, lport: 1020}}
+      - {kind: net.connection_opened, at: 21s, agent: h1, fields: {dir: inbound, raddr: 198.21.1.1, laddr: 10.0.0.1, lport: 1021}}
+      - {kind: net.connection_opened, at: 22s, agent: h1, fields: {dir: inbound, raddr: 198.22.1.1, laddr: 10.0.0.1, lport: 1022}}
+      - {kind: net.connection_opened, at: 23s, agent: h1, fields: {dir: inbound, raddr: 198.23.1.1, laddr: 10.0.0.1, lport: 1023}}
+      - {kind: net.connection_opened, at: 24s, agent: h1, fields: {dir: inbound, raddr: 198.24.1.1, laddr: 10.0.0.1, lport: 1024}}
+      - {kind: net.connection_opened, at: 25s, agent: h1, fields: {dir: inbound, raddr: 198.25.1.1, laddr: 10.0.0.1, lport: 1025}}
+      - {kind: net.connection_opened, at: 26s, agent: h1, fields: {dir: inbound, raddr: 198.26.1.1, laddr: 10.0.0.1, lport: 1026}}
+      - {kind: net.connection_opened, at: 27s, agent: h1, fields: {dir: inbound, raddr: 198.27.1.1, laddr: 10.0.0.1, lport: 1027}}
+      - {kind: net.connection_opened, at: 28s, agent: h1, fields: {dir: inbound, raddr: 198.28.1.1, laddr: 10.0.0.1, lport: 1028}}
+      - {kind: net.connection_opened, at: 29s, agent: h1, fields: {dir: inbound, raddr: 198.29.1.1, laddr: 10.0.0.1, lport: 1029}}
+      - {kind: net.connection_opened, at: 30s, agent: h1, fields: {dir: inbound, raddr: 198.30.1.1, laddr: 10.0.0.1, lport: 1030}}
+      - {kind: net.connection_opened, at: 31s, agent: h1, fields: {dir: inbound, raddr: 198.31.1.1, laddr: 10.0.0.1, lport: 1031}}
+      - {kind: net.connection_opened, at: 32s, agent: h1, fields: {dir: inbound, raddr: 198.32.1.1, laddr: 10.0.0.1, lport: 1032}}
+      - {kind: net.connection_opened, at: 33s, agent: h1, fields: {dir: inbound, raddr: 198.33.1.1, laddr: 10.0.0.1, lport: 1033}}
+      - {kind: net.connection_opened, at: 34s, agent: h1, fields: {dir: inbound, raddr: 198.34.1.1, laddr: 10.0.0.1, lport: 1034}}
+      - {kind: net.connection_opened, at: 35s, agent: h1, fields: {dir: inbound, raddr: 198.35.1.1, laddr: 10.0.0.1, lport: 1035}}
+      - {kind: net.connection_opened, at: 36s, agent: h1, fields: {dir: inbound, raddr: 198.36.1.1, laddr: 10.0.0.1, lport: 1036}}
+      - {kind: net.connection_opened, at: 37s, agent: h1, fields: {dir: inbound, raddr: 198.37.1.1, laddr: 10.0.0.1, lport: 1037}}
+      - {kind: net.connection_opened, at: 38s, agent: h1, fields: {dir: inbound, raddr: 198.38.1.1, laddr: 10.0.0.1, lport: 1038}}
+      - {kind: net.connection_opened, at: 39s, agent: h1, fields: {dir: inbound, raddr: 198.39.1.1, laddr: 10.0.0.1, lport: 1039}}
+  - name: outbound connections are not scan fan-in
+    should_match: false
+    events:
+      - {kind: net.connection_opened, at: 0s, agent: h1, fields: {dir: outbound, raddr: 198.51.0.1, laddr: 10.0.0.1, lport: 1000}}
+      - {kind: net.connection_opened, at: 1s, agent: h1, fields: {dir: outbound, raddr: 198.51.1.1, laddr: 10.0.0.1, lport: 1001}}
+      - {kind: net.connection_opened, at: 2s, agent: h1, fields: {dir: outbound, raddr: 198.51.2.1, laddr: 10.0.0.1, lport: 1002}}
+      - {kind: net.connection_opened, at: 3s, agent: h1, fields: {dir: outbound, raddr: 198.51.3.1, laddr: 10.0.0.1, lport: 1003}}
+      - {kind: net.connection_opened, at: 4s, agent: h1, fields: {dir: outbound, raddr: 198.51.4.1, laddr: 10.0.0.1, lport: 1004}}
+      - {kind: net.connection_opened, at: 5s, agent: h1, fields: {dir: outbound, raddr: 198.51.5.1, laddr: 10.0.0.1, lport: 1005}}
+      - {kind: net.connection_opened, at: 6s, agent: h1, fields: {dir: outbound, raddr: 198.51.6.1, laddr: 10.0.0.1, lport: 1006}}
+      - {kind: net.connection_opened, at: 7s, agent: h1, fields: {dir: outbound, raddr: 198.51.7.1, laddr: 10.0.0.1, lport: 1007}}
+      - {kind: net.connection_opened, at: 8s, agent: h1, fields: {dir: outbound, raddr: 198.51.8.1, laddr: 10.0.0.1, lport: 1008}}
+      - {kind: net.connection_opened, at: 9s, agent: h1, fields: {dir: outbound, raddr: 198.51.9.1, laddr: 10.0.0.1, lport: 1009}}
+      - {kind: net.connection_opened, at: 10s, agent: h1, fields: {dir: outbound, raddr: 198.51.10.1, laddr: 10.0.0.1, lport: 1010}}
+      - {kind: net.connection_opened, at: 11s, agent: h1, fields: {dir: outbound, raddr: 198.51.11.1, laddr: 10.0.0.1, lport: 1011}}
+      - {kind: net.connection_opened, at: 12s, agent: h1, fields: {dir: outbound, raddr: 198.51.12.1, laddr: 10.0.0.1, lport: 1012}}
+      - {kind: net.connection_opened, at: 13s, agent: h1, fields: {dir: outbound, raddr: 198.51.13.1, laddr: 10.0.0.1, lport: 1013}}
+      - {kind: net.connection_opened, at: 14s, agent: h1, fields: {dir: outbound, raddr: 198.51.14.1, laddr: 10.0.0.1, lport: 1014}}
+      - {kind: net.connection_opened, at: 15s, agent: h1, fields: {dir: outbound, raddr: 198.51.15.1, laddr: 10.0.0.1, lport: 1015}}
+      - {kind: net.connection_opened, at: 16s, agent: h1, fields: {dir: outbound, raddr: 198.51.16.1, laddr: 10.0.0.1, lport: 1016}}
+      - {kind: net.connection_opened, at: 17s, agent: h1, fields: {dir: outbound, raddr: 198.51.17.1, laddr: 10.0.0.1, lport: 1017}}
+      - {kind: net.connection_opened, at: 18s, agent: h1, fields: {dir: outbound, raddr: 198.51.18.1, laddr: 10.0.0.1, lport: 1018}}
+      - {kind: net.connection_opened, at: 19s, agent: h1, fields: {dir: outbound, raddr: 198.51.19.1, laddr: 10.0.0.1, lport: 1019}}
+      - {kind: net.connection_opened, at: 20s, agent: h1, fields: {dir: outbound, raddr: 198.51.20.1, laddr: 10.0.0.1, lport: 1020}}
+      - {kind: net.connection_opened, at: 21s, agent: h1, fields: {dir: outbound, raddr: 198.51.21.1, laddr: 10.0.0.1, lport: 1021}}
+      - {kind: net.connection_opened, at: 22s, agent: h1, fields: {dir: outbound, raddr: 198.51.22.1, laddr: 10.0.0.1, lport: 1022}}
+      - {kind: net.connection_opened, at: 23s, agent: h1, fields: {dir: outbound, raddr: 198.51.23.1, laddr: 10.0.0.1, lport: 1023}}
+      - {kind: net.connection_opened, at: 24s, agent: h1, fields: {dir: outbound, raddr: 198.51.24.1, laddr: 10.0.0.1, lport: 1024}}
+      - {kind: net.connection_opened, at: 25s, agent: h1, fields: {dir: outbound, raddr: 198.51.25.1, laddr: 10.0.0.1, lport: 1025}}
+      - {kind: net.connection_opened, at: 26s, agent: h1, fields: {dir: outbound, raddr: 198.51.26.1, laddr: 10.0.0.1, lport: 1026}}
+      - {kind: net.connection_opened, at: 27s, agent: h1, fields: {dir: outbound, raddr: 198.51.27.1, laddr: 10.0.0.1, lport: 1027}}
+      - {kind: net.connection_opened, at: 28s, agent: h1, fields: {dir: outbound, raddr: 198.51.28.1, laddr: 10.0.0.1, lport: 1028}}
+      - {kind: net.connection_opened, at: 29s, agent: h1, fields: {dir: outbound, raddr: 198.51.29.1, laddr: 10.0.0.1, lport: 1029}}
+      - {kind: net.connection_opened, at: 30s, agent: h1, fields: {dir: outbound, raddr: 198.51.30.1, laddr: 10.0.0.1, lport: 1030}}
+      - {kind: net.connection_opened, at: 31s, agent: h1, fields: {dir: outbound, raddr: 198.51.31.1, laddr: 10.0.0.1, lport: 1031}}
+      - {kind: net.connection_opened, at: 32s, agent: h1, fields: {dir: outbound, raddr: 198.51.32.1, laddr: 10.0.0.1, lport: 1032}}
+      - {kind: net.connection_opened, at: 33s, agent: h1, fields: {dir: outbound, raddr: 198.51.33.1, laddr: 10.0.0.1, lport: 1033}}
+      - {kind: net.connection_opened, at: 34s, agent: h1, fields: {dir: outbound, raddr: 198.51.34.1, laddr: 10.0.0.1, lport: 1034}}
+      - {kind: net.connection_opened, at: 35s, agent: h1, fields: {dir: outbound, raddr: 198.51.35.1, laddr: 10.0.0.1, lport: 1035}}
+      - {kind: net.connection_opened, at: 36s, agent: h1, fields: {dir: outbound, raddr: 198.51.36.1, laddr: 10.0.0.1, lport: 1036}}
+      - {kind: net.connection_opened, at: 37s, agent: h1, fields: {dir: outbound, raddr: 198.51.37.1, laddr: 10.0.0.1, lport: 1037}}
+      - {kind: net.connection_opened, at: 38s, agent: h1, fields: {dir: outbound, raddr: 198.51.38.1, laddr: 10.0.0.1, lport: 1038}}
+      - {kind: net.connection_opened, at: 39s, agent: h1, fields: {dir: outbound, raddr: 198.51.39.1, laddr: 10.0.0.1, lport: 1039}}
+---
+id: D5g.trolling-payload-shape
+title: Prank payload command line (cursor pinning, pop-up spam, nyancat, screen/terminal inversion)
+description: Foothold evidence rather than damage; severity low. Shape-based on the APIs and escape codes the pranks need, not on tool names alone.
+severity: low
+tier: 1
+attack: [T1491.001, T1204]
+collect: [process_tree]
+exempt_tagged: true
+entities: [exe, user]
+message: "{cmdline}"
+when:
+  event: process_start
+  any:
+    - cmdline: {re: '(?i)(\[(System\.)?Windows\.Forms\.Cursor\]::(Position|Clip)|SetCursorPos|ClipCursor|mouse_event|WScript\.Shell.*\.Popup\(|\bmsg(\.exe)?\s+(\*|/server)|mousejail|oathkeeper|SwapMouseButton|BlockInput)'}
+    - cmdline: {re: '(?i)(nyancat|nyan\.cat|nyan-cat|towel\.blinkenlights\.nl|dvd[-_ ]?logo|bouncing[-_ ]?logo)'}
+    - cmdline: {re: '(\\e\[\?5h|\\033\[\?5h|\\x1b\[\?5h|setterm\s+--(reverse|inversescreen)|tput\s+(rev|smso)\b.*while|xrandr\s.*--rotate\s+(inverted|left|right)|xdotool\s+mousemove|\beject\b.*(-T|trap))'}
+tests:
+  - {name: powershell cursor pin, should_match: true, event: {kind: process_start, fields: {image: 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', cmdline: 'powershell -w hidden -c "while(1){[Windows.Forms.Cursor]::Position=New-Object Drawing.Point(5,5)}"'}}}
+  - {name: msg broadcast, should_match: true, event: {kind: process_start, fields: {cmdline: 'msg * you have been hacked'}}}
+  - {name: nyancat in a terminal, should_match: true, event: {kind: process_start, fields: {cmdline: 'nyancat -f 100'}}}
+  - {name: telnet nyancat, should_match: true, event: {kind: process_start, fields: {cmdline: 'telnet towel.blinkenlights.nl'}}}
+  - {name: terminal inversion loop, should_match: true, event: {kind: process_start, fields: {cmdline: "bash -c 'while true; do printf \"\\e[?5h\"; sleep 1; done'"}}}
+  - {name: display flipped, should_match: true, event: {kind: process_start, fields: {cmdline: 'xrandr --output HDMI-1 --rotate inverted'}}}
+  - {name: ordinary shell, should_match: false, event: {kind: process_start, fields: {cmdline: 'powershell -c Get-Service'}}}
+  - {name: git message, should_match: false, event: {kind: process_start, fields: {cmdline: 'git commit -m message-about-cats'}}}
+  - {name: our own plan, should_match: false, event: {kind: process_start, fields: {cmdline: 'msg * maintenance in 5 minutes', tag: 'plan:notify'}}}
+---
+id: D9f.reverse-tunnel-unit
+title: SSH reverse tunnel (-R / RemoteForward), especially persistent (-N, -f, autossh or a service)
+description: >
+  Shape: an ssh or autossh process with a remote-forward spec in any flag form (-R 8443:localhost:80,
+  -fNR..., -R8443:..., -o RemoteForward=...). The same command line is what a systemd unit's
+  ExecStart executes, so the unit variant is caught when it runs. -L and -D forwards are not matched.
+severity: high
+tier: 1
+attack: [T1572, T1090]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+entities: [exe, uid]
+message: "{cmdline}"
+when:
+  event: process_start
+  all:
+    - cmdline: {re: '(^|[/\s])(auto)?ssh(\s|$)'}
+    - any:
+        - cmdline: {re: '\s-[A-Za-z]*R\s*(\[?[A-Za-z0-9_.:*-]+\]?:)?\d+(:[A-Za-z0-9_.\[\]:-]+:\d+)?(\s|$)'}
+        - cmdline: {re: '(?i)\s-o\s*RemoteForward[= ]'}
+        - cmdline: {re: '(?i)\sRemoteForward[= ]\S'}
+tests:
+  - {name: gaia redirector unit, should_match: true, event: {kind: process_start, fields: {cmdline: '/usr/bin/ssh -o ServerAliveInterval=30 -o StrictHostKeyChecking=no -N -f -R 8443:localhost:80 -i /root/.ssh/k user@teamserver'}}}
+  - {name: combined flags, should_match: true, event: {kind: process_start, fields: {cmdline: 'ssh -fNR 9001:127.0.0.1:22 u@h'}}}
+  - {name: no space after -R, should_match: true, event: {kind: process_start, fields: {cmdline: 'ssh -R8443:localhost:80 u@h'}}}
+  - {name: bind address form, should_match: true, event: {kind: process_start, fields: {cmdline: 'autossh -M 0 -R 0.0.0.0:2222:localhost:22 u@h'}}}
+  - {name: option form, should_match: true, event: {kind: process_start, fields: {cmdline: 'ssh -o RemoteForward=8443:localhost:80 u@h'}}}
+  - {name: plain login, should_match: false, event: {kind: process_start, fields: {cmdline: 'ssh -i key admin@10.0.0.5'}}}
+  - {name: local forward, should_match: false, event: {kind: process_start, fields: {cmdline: 'ssh -N -L 8080:localhost:80 u@h'}}}
+  - {name: dynamic forward, should_match: false, event: {kind: process_start, fields: {cmdline: 'ssh -D 1080 u@h'}}}
+  - {name: rsync over ssh, should_match: false, event: {kind: process_start, fields: {cmdline: 'rsync -avR src/ u@h:/dst/'}}}
+  - {name: sshd, should_match: false, event: {kind: process_start, fields: {cmdline: '/usr/sbin/sshd -D -R'}}}

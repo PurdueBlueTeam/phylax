@@ -232,9 +232,7 @@ func (e *Engine) stepCount(out []Alert, rt *ruleRT, c *evalCtx) []Alert {
 	cut := now.Add(-cs.window)
 	var n int
 	if cs.distinct != nil {
-		dv, _ := cs.distinct.get(c)
-		ds, _ := toStr(dv)
-		b.distinct[ds] = now
+		b.distinct[keyOf(cs.distinct, c)] = now
 		for k, t := range b.distinct {
 			if t.Before(cut) {
 				delete(b.distinct, k)
