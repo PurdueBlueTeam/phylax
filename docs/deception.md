@@ -90,10 +90,12 @@ existence) and secret content. It is a separate action so the shared
 `file.write` stays untouched; the generator emits it.
 
 `ad.honey_account` creates the kerberoast SPN / AS-REP roastable / admin
-lookalike accounts (no rights, long random password). It runs against the
-`actions.HoneyADBackend` interface; **no backend is bound yet**: until the
-win/ad agent's AD layer lands, call `actions.SetHoneyADBackend` from the
-Windows agent start-up (TODO). Without one the action fails with
+lookalike accounts (plain user, no group memberships, long random password,
+created disabled and enabled after the password is set). It needs a directory
+layer that can create accounts, `actions.HoneyADBackend`: the Windows ADSI
+backend (`deception_ad_windows.go`, untested without a DC: needs a lab run)
+implements it, so a DC agent whose `Env.Win.AD` is ADSI works as is;
+`actions.SetHoneyADBackend` overrides it. Without one the action fails with
 `ErrNoADBackend`. It does not roll back automatically.
 
 ### Registry persistence
@@ -175,8 +177,9 @@ profiles `honeytoken.accounts`, `honeytoken.spns`, `honeytoken.paths`,
 
 ## Gaps
 
-- `ad.honey_account` has no directory backend until the win/ad AD layer is
-  bound (`actions.SetHoneyADBackend`); it is not rolled back automatically.
+- `ad.honey_account` is lab-untested against a real DC, does not set deny-logon
+  rights (it relies on the account having no memberships) and is not rolled back
+  automatically.
 - The controller does not learn that `file.plant` skipped an existing file: that
   token stays registered (and its path watched) although nothing was planted.
 - Windows decoys run in the agent process (no restricted token yet).

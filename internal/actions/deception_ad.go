@@ -22,12 +22,11 @@ type HoneyAccount struct {
 	Enabled            bool
 }
 
-// HoneyADBackend is the directory layer ad.honey_account needs. The Windows
-// agent's AD implementation (the win/ad action set) binds to it; until that
-// layer lands in this tree the only implementation is the test fake.
-//
-// TODO(win/ad): bind the real LDAP/ADSI layer with SetHoneyADBackend from the
-// Windows agent's startup.
+// HoneyADBackend is the directory layer ad.honey_account needs: creation of one
+// account, which the general ADBackend (queries and edits) does not offer. The
+// Windows ADSI backend implements it (deception_ad_windows.go), so an agent
+// whose Env.Win.AD is ADSI needs no further wiring; SetHoneyADBackend overrides
+// it (tests, other directories).
 type HoneyADBackend interface {
 	HoneyAccountExists(ctx context.Context, name string) (bool, error)
 	CreateHoneyAccount(ctx context.Context, a HoneyAccount) error
@@ -45,16 +44,22 @@ func SetHoneyADBackend(b HoneyADBackend) {
 	adMu.Unlock()
 }
 
-// ErrNoADBackend is returned when no directory layer is bound.
-var ErrNoADBackend = errors.New("ad.honey_account: no directory backend is bound on this agent (not a domain controller, or the AD layer is not wired yet)")
+// ErrNoADBackend is returned when no directory layer can create accounts.
+var ErrNoADBackend = errors.New("ad.honey_account: no directory backend that can create accounts on this agent (not a domain controller, or no AD layer)")
 
-func honeyBackend() (HoneyADBackend, error) {
+func honeyBackend(env *Env) (HoneyADBackend, error) {
 	adMu.RLock()
-	defer adMu.RUnlock()
-	if adBackend == nil {
-		return nil, ErrNoADBackend
+	b := adBackend
+	adMu.RUnlock()
+	if b != nil {
+		return b, nil
 	}
-	return adBackend, nil
+	if env != nil {
+		if hb, ok := env.Win.AD.(HoneyADBackend); ok && hb != nil {
+			return hb, nil
+		}
+	}
+	return nil, ErrNoADBackend
 }
 
 type adHoneyAccount struct{}
@@ -106,8 +111,8 @@ func (adHoneyAccount) password(ctx context.Context, p Params) (string, error) {
 	return v, nil
 }
 
-func (adHoneyAccount) Plan(ctx context.Context, _ *Env, p Params) (Plan, error) {
-	b, err := honeyBackend()
+func (adHoneyAccount) Plan(ctx context.Context, env *Env, p Params) (Plan, error) {
+	b, err := honeyBackend(env)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -135,8 +140,8 @@ func (adHoneyAccount) Capture(context.Context, *Env, Params) (Rollback, error) {
 	return Rollback{}, nil
 }
 
-func (a adHoneyAccount) Apply(ctx context.Context, _ *Env, p Params) (Output, error) {
-	b, err := honeyBackend()
+func (a adHoneyAccount) Apply(ctx context.Context, env *Env, p Params) (Output, error) {
+	b, err := honeyBackend(env)
 	if err != nil {
 		return nil, err
 	}
@@ -153,8 +158,8 @@ func (a adHoneyAccount) Apply(ctx context.Context, _ *Env, p Params) (Output, er
 	return Output{"account": p.Str("name")}, nil
 }
 
-func (adHoneyAccount) Verify(ctx context.Context, _ *Env, p Params) error {
-	b, err := honeyBackend()
+func (adHoneyAccount) Verify(ctx context.Context, env *Env, p Params) error {
+	b, err := honeyBackend(env)
 	if err != nil {
 		return err
 	}

@@ -141,20 +141,20 @@ func TestWithSecretsRejectsGarbageAndOversize(t *testing.T) {
 
 // ---- ad.honey_account ----
 
-type fakeAD struct {
+type fakeHoneyAD struct {
 	mu       sync.Mutex
 	accounts map[string]HoneyAccount
 	failWith error
 }
 
-func (a *fakeAD) HoneyAccountExists(_ context.Context, n string) (bool, error) {
+func (a *fakeHoneyAD) HoneyAccountExists(_ context.Context, n string) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	_, ok := a.accounts[n]
 	return ok, nil
 }
 
-func (a *fakeAD) CreateHoneyAccount(_ context.Context, h HoneyAccount) error {
+func (a *fakeHoneyAD) CreateHoneyAccount(_ context.Context, h HoneyAccount) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.failWith != nil {
@@ -179,7 +179,7 @@ func adParams(extra map[string]any) map[string]any {
 
 func TestADHoneyAccountThroughBackend(t *testing.T) {
 	f := newFixture(t)
-	be := &fakeAD{}
+	be := &fakeHoneyAD{}
 	SetHoneyADBackend(be)
 	defer SetHoneyADBackend(nil)
 	ctx := secretCtx(t, map[string]string{"password": honeySecret})
@@ -204,7 +204,7 @@ func TestADHoneyAccountThroughBackend(t *testing.T) {
 
 func TestADHoneyAccountSecretHygiene(t *testing.T) {
 	f := newFixture(t)
-	be := &fakeAD{failWith: errors.New("ldap: constraint violation for password " + honeySecret)}
+	be := &fakeHoneyAD{failWith: errors.New("ldap: constraint violation for password " + honeySecret)}
 	SetHoneyADBackend(be)
 	defer SetHoneyADBackend(nil)
 	ctx := secretCtx(t, map[string]string{"password": honeySecret})
@@ -223,6 +223,27 @@ func TestADHoneyAccountSecretHygiene(t *testing.T) {
 	// Unsafe account names are refused.
 	if _, err := f.runCtx(t, ctx, "ad.honey_account", adParams(map[string]any{"name": "bad name"})); err == nil {
 		t.Fatal("bad sAMAccountName accepted")
+	}
+}
+
+// An Env whose Win.AD is a backend that can also create honey accounts (the
+// ADSI one on a DC) needs no SetHoneyADBackend call.
+type adWithHoney struct {
+	ADBackend // the general directory layer (unused here)
+	*fakeHoneyAD
+}
+
+func TestADHoneyAccountBindsToEnvDirectory(t *testing.T) {
+	f := newFixture(t)
+	SetHoneyADBackend(nil)
+	be := &fakeHoneyAD{}
+	f.env.Win.AD = adWithHoney{fakeHoneyAD: be}
+	ctx := secretCtx(t, map[string]string{"password": honeySecret})
+	if _, err := f.runCtx(t, ctx, "ad.honey_account", adParams(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := be.accounts["svc_sql07"]; !ok {
+		t.Fatal("account not created through Env.Win.AD")
 	}
 }
 
