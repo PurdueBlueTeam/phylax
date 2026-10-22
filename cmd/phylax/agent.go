@@ -15,6 +15,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
+	_ "github.com/PurdueBlueTeam/phylax/internal/agent/mods" // registers the production modules
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"

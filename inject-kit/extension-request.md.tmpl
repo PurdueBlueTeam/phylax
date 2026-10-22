@@ -1,0 +1,37 @@
+# Inject {{.Num}} - {{cell .Code "inject code from the prompt"}} - Status and request for extension
+
+MEMORANDUM
+
+To: {{f "to" "role named in the inject"}}
+From: {{f "from" "business-style team name (no team number, no school name)"}}
+Date: {{.Date}}
+Subject: Inject {{.Num}} - {{cell .Code "inject code"}} - Status and request for extension
+
+## 1. SUMMARY
+{{f "summary" "we completed X of Y items for the inject; we request an extension of <time> to finish <remaining items> because <reason>"}}
+
+## 2. WHAT IS COMPLETE
+| Item | Evidence | Figure |
+|---|---|---|
+{{- range .Done}}
+| {{cell .Item "task done"}} | {{cell .Evidence "how verified"}} | {{cell .Figure "figure number"}} |
+{{- else}}
+| {{p "task done"}} | {{p "how verified"}} | {{p "figure"}} |
+{{- end}}
+
+## 3. WHAT REMAINS
+| Task | Why not done | Resources needed (other than time) | Have / need to acquire | Estimated time |
+|---|---|---|---|---|
+{{- range .Remaining}}
+| {{cell .Task "task"}} | {{cell .Why "blocker"}} | {{cell .Resources "people, access, software, approval"}} | {{cell .Have "have or acquire"}} | {{cell .Estimate "hh:mm"}} |
+{{- else}}
+| {{p "task"}} | {{p "blocker"}} | {{p "resources"}} | {{p "have or acquire"}} | {{p "hh:mm"}} |
+{{- end}}
+
+## 4. IMPACT AND RISK OF THE DELAY
+{{f "risk" "what stays exposed meanwhile; compensating controls in place"}}
+
+## 5. PLAN
+{{f "plan" "order of work, owner per task, completion time, what you need approved"}}
+{{figures .Figures}}
+{{attachments .Attachments}}

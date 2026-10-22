@@ -49,21 +49,35 @@ type Config struct {
 	DialTimeout time.Duration
 	// Exec enables execution of signed plan steps (nil = steps are rejected).
 	Exec *ExecConfig
+	// Factories are module factories used in addition to (and overriding by
+	// name) the process-wide registry (RegisterFactory).
+	Factories []Factory
 }
 
 // Agent is the running agent.
 type Agent struct {
-	cfg    Config
-	log    *slog.Logger
-	bundle *Bundle
-	pin    link.Pin
-	id     *link.Identity
-	sp     *spool.Spool
-	dm     *deadman.Manager
-	sup    *Supervisor
-	exec   *execState
-	ctlVer *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
-	execWG sync.WaitGroup
+	cfg     Config
+	log     *slog.Logger
+	bundle  *Bundle
+	pin     link.Pin
+	id      *link.Identity
+	sp      *spool.Spool
+	dm      *deadman.Manager
+	sup     *Supervisor
+	exec    *execState
+	ctlVer  *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
+	cfgVer  *plan.ConfigVerifier  // likewise: a config is never accepted unsigned
+	planKey ed25519.PublicKey
+
+	// config handling (see config.go)
+	cfgKick chan struct{}
+	desired *plan.AgentConfig // guarded by mu
+	cfgStat ConfigStatus      // guarded by mu
+	managed map[string]string // module -> settings fingerprint; configLoop only
+	kept    sync.Map
+	tapMu   sync.Mutex
+	taps    []*tap
+	execWG  sync.WaitGroup
 	// runCtx is the agent's run context; steps execute under it, not under
 	// the (per-connection) handler context.
 	runCtx context.Context
@@ -109,7 +123,8 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("agent: state: %w", err)
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
-		notify: make(chan struct{}, 1), runCtx: context.Background()}
+		notify: make(chan struct{}, 1), runCtx: context.Background(),
+		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}}
 	if err := a.initExec(); err != nil {
 		return nil, err
 	}
@@ -121,6 +136,8 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if len(key) > 0 {
 		a.ctlVer = &plan.ControlVerifier{Key: key, HostID: b.Host, Store: plan.FileSeqStore{Path: cfg.Layout.ControlSeq()}}
+		a.cfgVer = &plan.ConfigVerifier{Key: key, HostID: b.Host, Store: plan.FileSeqStore{Path: cfg.Layout.ConfigSeq()}}
+		a.planKey = key
 	}
 	return a, nil
 }
@@ -130,6 +147,7 @@ func (a *Agent) Pin() link.Pin { return a.id.Pin }
 
 // emit appends to the spool without touching the network.
 func (a *Agent) emit(e event.Event) error {
+	a.publish(e)
 	_, err := a.sp.Append(e)
 	if err == nil {
 		select {
@@ -141,8 +159,16 @@ func (a *Agent) emit(e event.Event) error {
 }
 
 // HealthSource implementation.
-func (a *Agent) SpoolStats() spool.Stats          { return a.sp.Stats() }
-func (a *Agent) Modules() map[string]ModuleStatus { return a.sup.Snapshot() }
+func (a *Agent) SpoolStats() spool.Stats { return a.sp.Stats() }
+func (a *Agent) Modules() map[string]ModuleStatus {
+	a.mu.Lock()
+	sup := a.sup
+	a.mu.Unlock()
+	if sup == nil {
+		return map[string]ModuleStatus{}
+	}
+	return sup.Snapshot()
+}
 func (a *Agent) Link() LinkStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -195,7 +221,10 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	so2 := a.cfg.Supervisor
 	so2.Emit, so2.Logger = a.emit, a.log
-	a.sup = NewSupervisor(so2)
+	sup := NewSupervisor(so2)
+	a.mu.Lock()
+	a.sup = sup
+	a.mu.Unlock()
 	if err := a.sup.Add(ModuleSpec{Module: NewHealthModule(a, a.cfg.HealthInterval)}); err != nil {
 		return err
 	}
@@ -208,8 +237,11 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer cancel()
 	a.runCtx = ctx
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() { defer wg.Done(); a.sup.Run(ctx) }()
+	go func() { defer wg.Done(); a.configLoop(ctx) }()
+	// Last good config first: with the controller away the modules still run.
+	a.loadPersistedConfig()
 	a.emit(event.Event{Kind: "agent.start", Priority: event.PriorityHigh, Fields: map[string]any{
 		"version": a.cfg.Version, "os": runtime.GOOS, "arch": runtime.GOARCH, "roles": a.bundle.Roles}})
 	sdNotify("READY=1")
@@ -299,7 +331,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 			}
 			once.Do(func() { close(welcome) })
 		case *link.Config:
-			return pick(h.Config, a.placeholderConfig)(hc, v)
+			return pick(h.Config, a.handleConfig)(hc, v)
 		case *link.Step:
 			return a.stepHandler()(hc, v, reply)
 		case *link.Fetch:
@@ -401,7 +433,7 @@ func (a *Agent) onWelcome(ctx context.Context, w *link.Welcome, wasEnrolled bool
 		a.log.Info("enrolled")
 	}
 	if w.Config != nil {
-		return pick(a.cfg.Handlers.Config, a.placeholderConfig)(ctx, w.Config)
+		return pick(a.cfg.Handlers.Config, a.handleConfig)(ctx, w.Config)
 	}
 	return nil
 }
@@ -431,7 +463,7 @@ func (a *Agent) heartbeat(s *link.Session) {
 		cong = spool.StateOK
 	}
 	hb := &link.Heartbeat{Seq: st.HeadSeq, HostClock: time.Now().UTC(), SpoolDepth: st.HeadSeq - st.AckSeq,
-		Congestion: cong, Modules: a.sup.States(), SafeMode: a.safeMode.Load(), Drops: st.Shed}
+		Congestion: cong, Modules: a.heartbeatModules(), SafeMode: a.safeMode.Load(), Drops: st.Shed}
 	// TrySend: never block on a congested link; a newer heartbeat replaces a queued one.
 	if err := s.TrySend(link.PrioCritical, hb); err != nil {
 		a.log.Debug("heartbeat not queued", "err", err)
@@ -465,4 +497,12 @@ func (a *Agent) deadmanReport() []link.DeadmanEntry {
 		out = append(out, link.DeadmanEntry{ID: e.ID, Node: e.NodeID, State: string(e.State), Deadline: e.Deadline.Unix()})
 	}
 	return out
+}
+
+// heartbeatModules is the supervisor's module states plus the config status
+// under the reserved name ConfigStatusModule.
+func (a *Agent) heartbeatModules() map[string]string {
+	m := a.sup.States()
+	m[ConfigStatusModule] = a.configHeartbeat()
+	return m
 }

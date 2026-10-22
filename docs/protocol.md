@@ -143,7 +143,10 @@ error and closes the connection.
 `0x14` is reserved (v2 controller-to-agent chunk; `chunk` is now one type used
 in both directions).
 
-`config` is carried opaquely by the link layer (`body` is arbitrary JSON).
+`config` is carried opaquely by the link layer (`body` is arbitrary JSON); the
+agent interprets it as the signed `AgentConfig` of `internal/plan/agentconfig.go`
+(section "Agent config" below). A `config` rides `welcome` on every connect and is
+sent as its own message when the manifest or rules change.
 `step`, `step_result` and `control` have typed fields; since minor 1 nothing is
 tunnelled through a generic field.
 
@@ -337,6 +340,33 @@ consumed in the read loop itself). A handler queue overflow ends the session
 Bootstrap config: controller (or relay) `address:port`, the controller pin,
 the host's manifest identity, the one-time token, initial roles. The agent
 then generates its own P-256 identity and enrolls (section 3, `hello.token`).
+
+## 8a. Agent config
+
+`config.body` is the RFC 8785 (integer subset) canonical JSON of
+`plan.AgentConfig`: `v` (1), `host`, `epoch`, `version`, `issued_at`, `roles[]`
+(vantage expanded), `modules` (optional sections `health`, `audit`, `net`,
+`winevt`, `integrity`, `detect`; a missing section means the module does not run
+on that host), `budgets`. `config.sig` is the hex Ed25519 signature, with the
+plan key, over `"phylax-config-v1\0" || body`. `config.epoch` and
+`config.version` repeat the signed values and must match them.
+
+Agent checks, in order, all mandatory: a plan key is configured; the signature
+verifies; `v`, `host` (must be this agent) and the envelope match; then replay
+protection against a durable `(epoch, version)` mark (`<state>/configseq.json`):
+an older epoch is `epoch older than accepted`, a version not above the mark is
+a replay. Exceptions: the exact config already in force is a silent no-op
+(controllers resend it on every connect), and the config whose acceptance was
+interrupted before it was applied may be presented again. A refusal never ends
+the session; it is reported as an `agent.config_rejected` event. An accepted
+config is persisted verbatim to `<state>/config.json` before modules change; at
+start-up the agent re-verifies that file (signature only) and runs it, so a
+restart without the controller still runs the modules.
+
+The agent reports the config in force in every heartbeat under the reserved
+module name `config`: `"<state>/<epoch>.<version>"` with state `none`, `pending`,
+`ok` or `degraded` (a module is unavailable on this host or failed to build).
+The controller re-sends the config if a heartbeat shows the agent behind.
 
 ## 9. Enrollment and epochs
 

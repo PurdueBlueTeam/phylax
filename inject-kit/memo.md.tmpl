@@ -1,0 +1,30 @@
+# Inject {{.Num}} - {{cell .Code "inject code from the prompt"}} - {{cell .Title "title exactly as the prompt writes it"}}
+
+MEMORANDUM
+
+To: {{f "to" "the role the inject names"}}
+From: {{f "from" "business-style team name (no team number, no school name)"}}
+Date: {{.Date}}
+Subject: Inject {{.Num}} - {{cell .Code "inject code"}} - {{cell .Title "inject title"}}
+
+## 1. EXECUTIVE SUMMARY
+{{f "summary" "conclusion first: what was asked, what we did or recommend, the result, anything not finished and when it will be"}}
+
+## 2. RESPONSE
+{{range $i, $d := .Deliverables}}
+### 2.{{inc $i}} {{cell $d.Heading "deliverable heading as worded in the prompt"}}
+{{cell $d.Body "plain-English answer: what was done, found, and will be done"}}
+{{else}}
+### 2.1 {{p "deliverable 1 heading as worded in the prompt"}}
+{{p "plain-English answer to deliverable 1 (one numbered heading per deliverable, in the prompt's order)"}}
+{{end}}
+## 3. VERIFICATION AND EVIDENCE
+{{f "verification" "how we know it is true: tests run, tools, hosts, times"}}
+{{figures .Figures}}
+## 4. RECOMMENDATIONS / NEXT STEPS
+{{f "next_steps" "residual risk, review cadence, follow-up work, owner and date for each"}}
+
+## 5. REFERENCES
+{{f "references" "standards, control numbers, vendor docs, anything quoted"}}
+{{attachments .Attachments}}
+Point of contact: {{f "poc" "role"}} is available to provide further configuration details or logs.
