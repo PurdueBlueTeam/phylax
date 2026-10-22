@@ -2,14 +2,17 @@ package controller
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
@@ -32,6 +35,24 @@ type Options struct {
 	// OnAlert is called (synchronously, keep it quick) for every alert.
 	OnAlert func(Alert)
 	Version string
+
+	// Registry is the action catalog plans are validated against (default
+	// actions.Core()).
+	Registry *actions.Registry
+	// Guard supplies the scoring guard for a host (the manifest-backed one in
+	// production); the dry run lints every node with it. Nil = no lint here
+	// (agents still enforce their own guard).
+	Guard func(host string) actions.ScoringGuard
+	// StepTimeout bounds the wait for a step result (default 2m).
+	StepTimeout time.Duration
+	// StepValidity is how long a signed step stays valid (default 5m).
+	StepValidity time.Duration
+	// OnStepResult observes every verified step result before it is acted on.
+	// Returning true drops the result and the agent's link (fault injection
+	// for tests; production leaves it nil).
+	OnStepResult func(StepEvent) bool
+	// OnStepSent observes every signed step handed to an agent session.
+	OnStepSent func(host string, s *link.Step)
 }
 
 const alertRing = 256
@@ -50,6 +71,12 @@ type Controller struct {
 	mu     sync.Mutex
 	agents map[string]*agentState
 	alerts []Alert
+
+	reg     *actions.Registry
+	planKey ed25519.PrivateKey
+	pmu     sync.Mutex // guards plans and pend
+	plans   map[string]*planRT
+	pend    map[stepKey]*pending
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -76,8 +103,31 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		st.Close()
 		return nil, err
 	}
+	pk, err := loadPlanKey(filepath.Join(cfg.DataDir, "plan.key"))
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	if opt.Registry == nil {
+		opt.Registry = actions.Core()
+	}
+	if opt.StepTimeout <= 0 {
+		opt.StepTimeout = 2 * time.Minute
+	}
+	if opt.StepValidity <= 0 {
+		opt.StepValidity = 5 * time.Minute
+	}
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
-		agents: map[string]*agentState{}}
+		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
+		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
+	// Plans cannot be resumed across a restart: mark them so the operator
+	// sees what happened. Agents' dead-man switches cover applied changes.
+	if n, err := st.InterruptPlans(ctx, PlanDraft, PlanDryRun, PlanApproved, PlanRunning); err != nil {
+		st.Close()
+		return nil, err
+	} else if n > 0 {
+		c.log.Warn("plans interrupted by controller restart", "count", n)
+	}
 	ags, err := st.Agents(ctx)
 	if err != nil {
 		st.Close()

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
@@ -43,6 +44,8 @@ type Config struct {
 	MemoryLimit int64
 	// DialTimeout bounds connect plus handshake (default 10 s).
 	DialTimeout time.Duration
+	// Exec enables execution of signed plan steps (nil = steps are rejected).
+	Exec *ExecConfig
 }
 
 // Agent is the running agent.
@@ -55,6 +58,11 @@ type Agent struct {
 	sp     *spool.Spool
 	dm     *deadman.Manager
 	sup    *Supervisor
+	exec   *execState
+	execWG sync.WaitGroup
+	// runCtx is the agent's run context; steps execute under it, not under
+	// the (per-connection) handler context.
+	runCtx context.Context
 
 	notify   chan struct{}
 	safeMode atomic.Bool
@@ -96,8 +104,12 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent: state: %w", err)
 	}
-	return &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
-		notify: make(chan struct{}, 1)}, nil
+	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
+		notify: make(chan struct{}, 1), runCtx: context.Background()}
+	if err := a.initExec(); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // Pin is this agent's own key pin (what the controller records at enrollment).
@@ -141,13 +153,22 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer a.sp.Close()
 
 	hs := RollbackHandlers()
+	if a.exec != nil {
+		for k, v := range actions.DeadmanHandlers(a.exec.env) {
+			hs[k] = v
+		}
+	}
 	for k, v := range a.cfg.DeadmanHandlers {
 		hs[k] = v
 	}
-	if a.dm, err = deadman.Open(a.cfg.Layout.DeadmanDir(), deadman.Options{Handlers: hs, Backstop: a.cfg.Backstop}); err != nil {
+	if a.dm, err = deadman.Open(a.cfg.Layout.DeadmanDir(), deadman.Options{Handlers: hs, Backstop: a.cfg.Backstop,
+		OnResult: a.onDeadmanResult}); err != nil {
 		return fmt.Errorf("agent: dead-man journal: %w", err)
 	}
 	defer a.dm.Close()
+	if a.exec != nil {
+		a.exec.env.Deadman = a.dm
+	}
 	acted, rerr := a.dm.Recover(ctx)
 	for _, e := range acted {
 		a.emit(event.Event{Kind: "agent.deadman_recovered", Priority: event.PriorityCritical,
@@ -172,6 +193,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	a.runCtx = ctx
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); a.sup.Run(ctx) }()
@@ -183,6 +205,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.connectLoop(ctx)
 	cancel()
 	wg.Wait()
+	a.execWG.Wait()
 	sdNotify("STOPPING=1")
 	return nil
 }
@@ -265,11 +288,11 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 		case *link.Config:
 			return pick(h.Config, a.placeholderConfig)(hc, v)
 		case *link.Step:
-			return pick3(h.Step, a.placeholderStep)(hc, v, reply)
+			return a.stepHandler()(hc, v, reply)
 		case *link.Fetch:
 			return pick3(h.Fetch, a.placeholderFetch)(hc, v, reply)
 		case *link.Control:
-			return pick(h.Control, a.defaultControl)(hc, v)
+			return a.controlHandler()(hc, v)
 		default:
 			a.log.Debug("ignoring message", "type", m.MsgType())
 		}
@@ -307,6 +330,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	a.linkStat.LastConnect = time.Now()
 	a.mu.Unlock()
 	a.sp.Rewind()
+	a.flushResults(ctx, sess)
 
 	go a.ackPump(ctx, sess)
 	up := &link.Uplink{Session: sess, Source: spoolSource{a.sp}, Notify: a.notify}
