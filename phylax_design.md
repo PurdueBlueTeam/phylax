@@ -1784,3 +1784,683 @@ Sizes are estimates to be measured in M0. A tier must be complete before the fea
 - **Offline drill.** A lab test runs the whole cold start with the internet blocked (T40).
 
 **Complexity flag:** the cache is a content-addressed store with a signed index, a CI build job and a sync client. It is bounded by tiers, by reusing the release signing path, and by the rule that no feature requires a live fetch.
+
+## Controller
+
+The controller is one Go process. It keeps everything in one SQLite database, a directory of encrypted evidence files and the cache. Secrets live in an encrypted vault and are held in memory only after the passphrase is entered. The web UI is server-rendered, on its own `127.0.0.1` listener, with one login. A platform-health view makes sure a degraded platform is never mistaken for a quiet network.
+
+### Processes and ports
+
+| Process | Listens on | Role |
+| --- | --- | --- |
+| `phylax serve` | `agent_port` on the controller's address (agents, relays, splices, patch streams, bootstrap downloads); `127.0.0.1:8443` for the UI | Everything, including the active checks and the cache |
+
+### Storage
+
+- **SQLite** in WAL mode, pure Go, one file, with indexes on the hot queries. Events, incidents, plans, flows, transactions, hops and ledger verdicts go here, plus full-text search over transcripts and command lines. Event inserts are batched in transactions.
+- **Evidence directory:** pcap slices, collected files, memory dumps, sinkhole captures. Each file is encrypted at rest with `age` and referenced from the database by hash.
+- **Cache directory:** the content-addressed depot (§ Offline-first).
+- **Retention:** indefinite for the event. The UI shows free disk and warns at 70% and 85%. The first lever is compressing raw transaction bodies older than a day.
+
+### Secrets
+
+- **The vault** is one `age`-encrypted file: device and host credentials, generated passwords, honeytoken values, the controller's private keys, the plan-signing key and portal cookies.
+- **Unlocking:** the passphrase is entered in the UI after every start. Decrypted values exist only in memory.
+- **Credentials seen in traffic** are encrypted field by field before storage and masked until revealed. Parsers mark credential fields. **Complexity flag:** kept because the alternative is a plaintext database full of passwords on the box everyone wants.
+
+### Data model
+
+| Record | Identity |
+| --- | --- |
+| Host | Manifest name + enrolled key |
+| Service | Manifest name (portal names are `<box>-<display>`) |
+| Process | Host + PID + start time (+ Sysmon GUID alias) |
+| Connection | Host + 5-tuple + start time, and Community ID |
+| File | Host + path, with a hash history |
+| Ledger entry | OS + version + path + sha256 + source |
+| Account | Scope + name; credlist; scored flag; PCR state |
+| Source | IP address, with labels (scorer, red, us, other) and fingerprints |
+| Scorer round | Burst time, services seen, credentials seen, estimated Delay and Jitter |
+| Change | The changed record + before and after |
+| Alert | Rule + host + key records |
+| Hop, Chain, Campaign | Hop = kind, endpoints, link method and confidence; chain = ordered hops; campaign = merged chains |
+| Remediation item | Hop + action + state |
+| Incident | A set of alerts, changes and a campaign with a timeline |
+
+Correlation joins on these identities, never on loose text matching.
+
+### Web UI
+
+- **Built with** Go `html/template` plus htmx, live updates over Server-Sent Events. All assets are vendored and embedded; no CDN, no Node at runtime. Plan DAGs and chain timelines are laid out in Go and rendered as server-side SVG.
+- **Access:** its own listener, `127.0.0.1` only. One login (argon2id), HttpOnly SameSite=Strict cookie, CSRF tokens, strict CSP.
+
+| Page | Shows |
+| --- | --- |
+| Overview | Hosts, services, open incidents, the round clock and SLA streaks, scorer status, safe-mode switch |
+| Plans | Templates, the plan DAG with live node status, diffs, lint results, approvals |
+| Alerts and incidents | Queue, evidence, trace-back, one-click actions, IR draft button |
+| Chains | Campaigns, chain timelines, remediation checklist per hop |
+| Checks | Active checks (add, edit, pause, retire), scorer checks observed, proposals, change feed, vantage-point comparison |
+| Credentials | Scored accounts, PCR transactions and their state, the CSV generator |
+| Services | Health from each vantage point, content history, changes |
+| Integrity | Ledger verdicts, the unknown/mismatch queue, pins, depot status |
+| Traffic | Flows and transactions with labels; packet slices; freeze and pull |
+| Egress and C2 | Denied attempts by binary and destination; sinkhole captures |
+| Vantage | Kali probes, external scan diffs, canary results |
+| Deception | Decoy hits, honeytoken registry and sightings |
+| Hunts | Baseline-diff findings queue |
+| Devices | Palo and VyOS snapshots, diffs, logs |
+| Integrations | Wazuh, Suricata, Splunk health and evidence packs |
+| Cache | Tier progress, pending blobs |
+| Platform | Self-health |
+| Settings | Manifest overrides, adoption queue, secrets unlock |
+
+### Platform self-health
+
+For each agent: link state and lag, spool depth and congestion state, capture drop counts, audit and sensor health, `telemetry_gap` counts, clock offset, which modules run or failed, safe mode. For each relay: connections spliced, bytes and errors. For the controller: CPU, memory, disk, database size, cache progress and the time of the last state snapshot. For each integration: connected agents and keepalive. Anything degraded shows on the overview page.
+
+### Backing up the controller
+
+Encrypted state snapshots go to the backup targets declared in the manifest every 15 minutes and after every key or vault change. Restore needs only the passphrase and starts a new epoch (§ Enrollment).
+
+## Service backups, IR drafter and inject kit
+
+Service data is backed up by agent actions and pulled to the controller, so restores never depend on a compromised host's own copy. Incidents become IR drafts with one click, and inject deliverables come from templates and manifest-generated facts. Both render to PDF. With no per-VM scrub, backups are the only undo for a big mistake.
+
+### Service backups
+
+| Kind | When | Use |
+| --- | --- | --- |
+| As-found | T+5–10 min, before any remediation | Forensic evidence. Never restored blindly; it may contain implants. |
+| Golden | Right after each service's hardening passes its health checks and the host's ledger sweep and hunt are clean | The restore point for that service |
+| Periodic | Every 30 min for changing data (database, mail, uploads, AD, Splunk apps) | Keeps restores from losing orders and mail |
+| Pre-change | Before any tier-2 action, and before the Palo and VyOS changes | Undo for big changes |
+
+- **What's included** comes from each service's `content`, `data` and config entries in the manifest, plus the AD database (via a native export), SQL databases, the SMB SOP share and the Splunk apps.
+- **Native where possible:** archives and file copies in Go, MySQL and SQL Server dumps through their drivers. **Complexity flag:** native dumps reimplement part of `mysqldump`; test them against a real restore before trusting them.
+- **Restores** are plan templates per service with measured times. The restore re-checks the scored content (SOP files, web pages, DNS answers) against the learned values, because the scorer compares them.
+
+### IR drafter
+
+**Input:** an incident, which already holds its trace-back timeline, chains and campaign, alerts, sources, accounts, files, hashes, evidence and the response audit trail.
+
+| Section | Filled from |
+| --- | --- |
+| Header: team number only, incident id, times in Central time | Manifest, incident |
+| Summary | Recipe template sentence, edited by hand |
+| Timeline | Chain hops with clock offsets applied, Central time with UTC alongside |
+| Source and destination | Addresses, ports and protocols from flows and transactions; hostnames from the manifest |
+| Accounts and credentials | Accounts used or created; credentials stolen or cracked (D8, honeytoken sightings); what was rotated after |
+| Affected systems and services | Hosts and services, and whether scoring was affected (health and scorer history) |
+| Technique | ATT&CK ids from the rules, in plain words |
+| Evidence | Hashes, ledger verdicts, log excerpts, packet excerpts, quarantined files |
+| Attack path and remediation | The chain's remediation items, with their verified state, and the proof the hole is closed |
+| Containment | The response audit trail |
+
+This maps onto the red-team lead's rubric: proof, time of compromise, how it was detected, what the attack was and its impact, how it was mitigated, and (half the marks) remediation of the attack path [TTP §0]. Rendering: Markdown with front matter through Typst (one static binary on the controller) to PDF and self-contained HTML. One to two pages, exploitation and unsolicited access only, every claim traced to evidence. The upload path (NISE at `injects.ccdc.events`) is tested at the first event, with the Nextcloud share and a browser print as fallbacks.
+
+### Inject kit
+
+- **Templates** (Typst, team number only): memo, status report, change record; policies (acceptable use, passwords and accounts, backup and recovery, logging and monitoring, patching, remote access, incident response); plans (disaster recovery, business continuity, incident response); risk register; framework mappings (NIST CSF 2.0, 800-53, 800-171, 800-82 for the water-facility theme, ISO 27001, CIS v8, CMMC).
+- **Pre-written drafts** with placeholders filled from the manifest at render time.
+- **Generated artifacts:** asset inventory, network and data-flow diagram, port and protocol matrix, user and group listing, firewall policy summary, backup schedule with restore times, logging coverage matrix.
+- **Integration evidence packs:** the Wazuh pack (agent list, test alert, group config, screenshots), ClamAV settings, Splunk dashboards and the external scan report (from the Kali), for the recurring endpoint-protection, central-logging and perimeter-scan injects.
+- **Inject tracker** in the UI: received and due times (Central), owner, deliverable, linked manifest change, status, submitted time. Submit several minutes early; last-minute rejections are common [SP §8].
+
+**Complexity flag:** Typst is a host binary on the controller. Acceptable because the controller is the trusted host; it isn't shipped to any agent.
+
+## Competition-day operations
+
+The first hour is choreographed: fixed roles, pre-built plans, and one UI showing what's running, blocked and red. The 2027 Invitational is a four-hour sitting, so cold-start speed matters. The localhost-only UI means the controller console is the team's shared screen. That's the biggest operational constraint in this design.
+
+### The one-screen constraint
+
+The web UI is only reachable on ubuntu-wkst itself. Whoever can see that VM's console can drive the platform; everyone else works on other consoles by hand. If NETLAB lets several people view the same VM console, the whole team watches one screen. If not, one person (the platform driver) owns the UI. **Complexity flag in reverse:** keeping it localhost is the simple choice, and the cost is human bandwidth. If dry runs show the driver becoming the bottleneck, the smallest change is an SSH tunnel from one other workstation to the UI port, with the login still required. Decide after the dry runs.
+
+### Roles
+
+| Role | Owns |
+| --- | --- |
+| Captain | Inject triage, White Team communication, tier-2 approvals |
+| Platform driver | The UI on ubuntu-wkst: plans, approvals, safe mode, re-enrollment |
+| Network | Palo and VyOS consoles in the first minutes, the Kali path rules, then device plans and drift |
+| Linux lead | Linux console work and break-glass; reviews Linux hunt findings |
+| Windows and AD lead | Windows console work and break-glass (including the Windows 11 and Kali one-liners); reviews Windows, AD and ledger findings |
+| Credentials and PCR | The Quotient portal: pastes each PCR block, reports `count` and `skipped`; works with the driver on transaction windows |
+| SOC | Alert queue, chains and incidents with the driver; IR drafts |
+| Inject writer | Inject drafts and generated artifacts, including the Wazuh evidence pack |
+| Floater | Health checks, backups and restores, decoy hits, whatever is red |
+
+### First 90 minutes (from drop flag)
+
+| Time | Who | What |
+| --- | --- | --- |
+| T+0–2 | Captain | Read the inject portal. Confirm the team number in the manifest. Ask Quotient for the PCR credlist usernames if approved. |
+| T+0–8 | Network | Rotate Palo and VyOS admin on the consoles. Palo: additive management lockdown to the controller; the Kali-to-controller rule and static NAT. VyOS: snapshot first. |
+| T+0–5 | Platform driver | `phylax init`: fetch and verify the release, set the passphrase, check the controller address, start the UI. The cache sync starts. |
+| T+2–12 | Platform driver | First-contact plans: SSH for Linux, WinRM for the AD and MSSQL hosts. The Windows lead runs the Windows 11 and Kali console one-liners. Agents enroll. |
+| T+5–10 | Automatic | As-found backups; capture, round-clock estimation and check discovery start; source-address check against the Palo; ledger sweep and prebake hunt start on each enrolled host |
+| T+5–15 | SOC + leads | Review the hunt and ledger queues. Zerologon check on the DC (build, registry, events) before any domain rotation. |
+| T+10–25 | Platform driver + Credentials | Rotate unscored accounts. Then scored accounts as PCR transactions inside the quiet windows, one service at a time. |
+| T+10–25 | Platform driver + Network | Firewall plans: shadow mode, review would-be drops, enforce, with scorer-mimic checks. Palo policy with the Kali verifying. |
+| T+15–40 | Platform driver | Service hardening plans from the first-hour library (Splunk Postgres sidecar off, local-root bundle, Cockpit off, Spooler off, MSSQL and OpenCart items), with probes. Golden backups as each passes. |
+| T+20–45 | SOC | Approve hunt remediations. Confirm Sysmon and all modules on every host. |
+| T+30–60 | Floater | Decoys and honeytokens deployed, including honey AD accounts. |
+| T+45–90 | Driver + inject writer | Wazuh deploy and evidence pack. Review discovered checks: accept, edit or reject. |
+| Ongoing | All | Incidents, chains, injects, patch windows, periodic backups, drift adoption, PCR transactions for any later credential change |
+
+### Day 2 start (regional)
+
+Check the Platform page for every agent's link, gaps and modules. Review overnight changes and chains. Device drift check. Re-run health checks. Confirm the controller snapshot is fresh.
+
+### Human factors
+
+- A printed one-page checklist per role, generated from the manifest, including the PCR rules.
+- A verbal callout before any tier-2 action, before turning safe mode on or off, and before each PCR submit.
+- The captain keeps the list of open incidents and injects due in the next 30 minutes.
+- Rotate the SOC seat every 90 minutes.
+
+## Testing and the lab
+
+With AI-assisted development, writing code is rarely the bottleneck. Proving it under realistic conditions is. Every capability is demonstrated in the replica lab, with injected link drops, against a real Quotient scorer and a scripted red team, before it goes on the competition checklist. Each milestone spends at least as long in the lab as in the editor.
+
+### The lab (ccdc27)
+
+The lab is the 2027-style replica built in `btap-infra` (branch `ccdc27-lab`, stack `ccdc27`), at team number 1 [LAB]. The 2026 replica stays stopped while it runs, because both share bridges.
+
+| VMID | Name | Role in the Phylax tests |
+| --- | --- | --- |
+| 6001 | vyos | VyOS 1.4.x: soft-revert tests, NAT, the Kali leg |
+| 6002 | palo | PA-VM 11.0.2: safe-change protocol, partial commit, logs, licence behaviour |
+| 6010 | rocky-ecom | Rocky 9 with SELinux enforcing, OpenCart |
+| 6015 | ubuntu-email | Postfix, Dovecot, webmail |
+| 6020 | debian-splunk | Splunk 10.0.2 |
+| 6030 | ubuntu-wkst | The Phylax controller |
+| 6040 | kali | The external vantage and the attack operator host |
+| 6050 | scorer | Ubuntu with **real Quotient** in Docker on the core segment (ground truth) |
+| 6100 | ad | Server 2022 AD/DNS/WinRM |
+| 6120 | mssql | Server 2019 with SQL Server, the SOP share, RDP |
+| 6130 | win11 | Windows 11 workstation |
+
+Every VM has a `clean-baseline` snapshot taken after provisioning and before every test. Clocks are synchronised from one NTP source before a run. Phase 3 (services per the packet) and phase 4 (realism: documented prebakes and a Quotient config with the packet's checks) of the lab plan are prerequisites of M2 and M4 [LAB].
+
+### Simulators
+
+| Simulator | Does | Notes |
+| --- | --- | --- |
+| **Scorer: real Quotient** | Runs the packet's checks with the MW reconstruction, the MSSQL and Splunk stand-in scripts, `BadAttempts`, PCR, hot-reloaded `event.conf`, SLA arithmetic; admin API gives ground truth (`/api/engine/tasks`, round times, true source addresses) | Delay 60/Jitter 10/Timeout 30 for realism, 20/5/10 for fast iteration [Q §8]. Divisor is not run (it needs host networking and privileges); source rotation is simulated with several runner addresses |
+| Fault injector | Kills a runner to produce a discarded round; pauses a service to force timeouts; changes a stored item | For SLA and dropped-round tests |
+| Orange team | Browses and buys on ecom, sends and reads mail, from many source addresses | Reuses Quotient-like clients; kept for regionals |
+| Red team: purple-team runbooks | The five campaigns (default creds, Zerologon check and DCSync, lateral movement, lunch disruption, re-infection after restore), run by a human operator from the Kali with Atomic Red Team, impacket, netexec, evil-winrm | Technique mapping: [EMU]. Techniques with no public emulation use the contaminator and fixtures |
+| Contaminator | Plants prebaked implants in golden images before drop flag | The set below |
+
+**Prebaked set.**
+
+- **Linux:** cron, timers and a firewall-disabling timer; `update-motd`; PAM backdoor module; `ld.so.preload`; PHP `auto_prepend_file`; Postfix pipe transport; alternate-path `authorized_keys`; SUID shell; LKM and eBPF rootkit samples (lab only). Added by the coverage spec [COV §5]: a replaced Postfix `smtpd` proxying to a second lab host; an apache or httpd unit with `Environment=LD_PRELOAD` and `AmbientCapabilities`; a PHP extension that overrides `disable_functions`; `chattr +i` on a unit and a sudoers.d file; a bind mount over a webroot directory; `apt-mark hold libpam-modules`; a `.screenrc` hook; a `PROMPT_COMMAND` callback; `nologin` replaced by a bash copy; a promiscuous NIC; NTP and DNS TXT covert-channel traffic; a self-propagating SSH key installer; a defanged cron wiper; a backdoor inside an existing core file (`framework.php` style); an extra `oc_user` row.
+- **Windows:** firewall-disabling scheduled task; service in a writable path; WMI subscription; IFEO debugger; LSA package; IIS native module; Run key; hidden admin; `dns.exe` replaced with a forwarding stub and command listener; FTP root pointing at an SMB share; `LSASS` to `ISASS.EXE`; a hijacked `\Microsoft\Windows\Windows Error Reporting` task; a Mythic-style unsigned SYSTEM service; WSL and Chocolatey launch; OpenSSH server and VNC listener.
+- **AD:** extra Domain Admin and a nested fake group inside Enterprise Admins; SPN on a user; RBCD; GPO immediate task; DCSync ACE; `ServerLevelPluginDll`; a Defender exclusion; audit policy off. Zerologon itself needs an isolated, unpatched lab DC (a lab-build decision); on the Server 2022 AD only the check-only tester runs [RT].
+- **Network:** VyOS task-scheduler script; an extra Palo admin; a Palo allow rule above a block rule; a custom admin role.
+
+### Test matrix
+
+T01–T27 are carried over and revised. T28 onward are new.
+
+| ID | Scenario | Pass when |
+| --- | --- | --- |
+| T01 | Prebaked set present at drop flag | 90% or more found by T+15 min; ledger sweep finds every replaced binary |
+| T02 | Timer disables the host firewall | Restored in 10 s or less; trigger identified via loop detection |
+| T03 | PHP webshell upload, command, file change | D1 and D17 fire in 10 s or less; trace-back reaches the source IP and request; IR draft in 5 min or less |
+| T04 | ASPX webshell on IIS (stand-in host) | Same as T03 |
+| T05 | Implant callbacks under default-deny egress (Linux) | D12 in 10 s or less; owning process and hash in 60 s or less; sinkhole captures the beacon |
+| T06 | Implant callbacks on Windows | D12 with process and path from 5157 in 60 s or less |
+| T07 | DCSync from a non-DC account (campaign 02) | D8 in 30 s or less |
+| T08 | Kerberoasting incl. the honey SPN | D8 and D15 (critical) in 30 s or less |
+| T09 | Honey SSH key used against the SSH decoy | D15 critical, naming the origin host |
+| T10 | LSASS dump, then the decoy credential used | D15 critical, naming the origin host |
+| T11 | Log clear and Sysmon stopped (campaign 03) | D10; Sysmon reinstalled; heartbeat intact |
+| T12 | LD_PRELOAD rootkit hiding a process | D11 in 120 s or less |
+| T13 | Palo rule added by an extra admin | D14 in 5 min or less |
+| T14 | Quotient `event.conf` hot-adds an HTTP path, a DNS record and a custom check mid-run | D16 and a check proposal within one round |
+| T15 | Check discovery accuracy over 2 hours with orange traffic | 100% of Quotient's checks proposed; 0 false proposals; dropped checks flagged stale within 5 rounds; item set coverage grows |
+| T16 | A hardening plan breaks a scored page, an SSH `PermitTTY`, or a mail plaintext setting | The lint rejects it; if forced, the scorer-mimic probe is red in 60 s or less and the node rolls back |
+| T17 | Link drops during an SSH-reconfigure and firewall-enforce plan; a Palo or controller-host change that cuts agents off | Agent-side dead-man rolls back with no reconnect; no lockout; no lost node |
+| T18 | Controller restart mid-plan | No lost or duplicated events; plan resumes after unlock |
+| T19 | New reservation: bulk re-enrollment (campaign 05) | All hosts back to hardened in 10 min or less per host; hunt and ledger automatic; golden tag withheld until clean |
+| T20 | Quotient plus orange traffic for 60 min, no red steps | 5 or fewer false-positive alerts per hour |
+| T21 | First contact; agent then killed and disabled (Linux and Windows) | Heartbeat in 30 s or less; silence detected in 15 s or less |
+| T22 | Relay host killed (multi-segment variant) | Segment marked dark; local detection continues; console restore works |
+| T23 | Controller lost mid-plan; restore on another machine from an older snapshot | Agents reconnect after `set-controller`; no re-enrollment; new epoch accepted; spools resent and chain-checked; gaps marked |
+| T24 | Defender on, current definitions | Agent, decoys and the LSASS decoy run without quarantine (or with the single exclusion) |
+| T25 | Crafted strings in process names, paths, HTTP paths and decoy-shell input | Nothing executes or renders as markup in the UI |
+| T26 | Windows raw-socket capture under load | Measured inbound and outbound coverage; drop counts reported |
+| T27 | Console bootstrap on Windows 10 or 11, Server 2019 and Linux (SChannel with an ECDSA cert) | Agent enrolls; a wrong controller key aborts before the token is sent; a tampered binary is never run |
+| T28 | Auth: every UI and agent-port endpoint without a session, token or pinned key | All refused; token minting only from the UI; the agent port serves only agent streams and bootstrap downloads |
+| T29 | Spool torture: kill -9 at random during writes, disk full, shedding, 10-minute and 6-hour partitions | Starts every time; tail repaired; gaps marked; chain verifies; RSS bounded |
+| T30 | Round clock: 20 bursts with jitter, a discarded round, a team-wide missing burst | Delay and Jitter within 1 s; the dropped round is not an incident |
+| T31 | Integrity: replaced Postfix (`smtpd` proxy), trojaned `nologin`, `LD_PRELOAD` library, replaced `dns.exe` stand-in, an unknown hash executed | Alert at first exec in 5 s or less; pinned service image mismatch in 60 s or less; D4b fires for the proxy; no automatic restore; one-click restore from the depot passes the probe |
+| T32 | Integrity false positives: package update inside a patch window, an untagged update, a patch-level difference | Tagged window yields no alert; untagged update yields `match_other_version` or an alert with clear provenance |
+| T33 | Attack chains (campaigns 01 and 03) | 100% of expected hops present, each with a link method and confidence; a two-hop SSH chain stitched by 5-tuple; one campaign per attacker; remediation checklist items verify |
+| T34 | Hardening against real Quotient: the first-hour plan library (SSH, mail, WinRM, SMB, RDP, Splunk, DNS) | 0 failed scorer rounds attributable to Phylax |
+| T35 | PCR transaction: normal, PCR mid-enqueue, wrong order, mismatched CSV, password with edge characters | At most one failed round per affected user; verification via Kali and the scorer's next login; rollback never uses "Reset to Defaults" |
+| T36 | Phylax hardening with no red steps | 0 untagged alerts |
+| T37 | `BadAttempts` and scorer fingerprints (SSH HASSH, HTTP headers, SMTP subject shape) | No brute-force or lockout alert; scorer-labeled by behaviour with the runner address changed each round |
+| T38 | Zerologon, hidden accounts, `chattr +i`, unit capabilities, PHP overrides, OpenCart admin rows, AD GPO and ACL changes | Each raises its D8b, D7e, D6f, D6d, D2c, D2d, D8d alert |
+| T39 | Kali vantage: faithful checks against Quotient's results; a Palo rule that blocks the public path but not the LAN; a newly opened port; an egress leak | Agreement at 98% or more; V1 localizes the fault; V2 and V3 fire |
+| T40 | Offline drill: cold start with the internet blocked, cache from a prior sync | All plans, ledger lookups, restores and Wazuh deploy work; missing tiers shown as waiting |
+| T41 | Wazuh deploy to all hosts, kill the manager, kill an agent | Deployed in 20 min or less; `wazuh.health` alerts; evidence pack produced; no scored service degraded |
+| T42 | Sigma import: allow-list through CI | Every imported rule has a fixture and a licence record; revoked ATT&CK ids rejected |
+| T43 | Exec-storm load test (50, 200, 1000 execs per second) | 99% or more at 200 per second, and every miss accompanied by a `telemetry_gap`; decides the eBPF sensor |
+| T44 | Safe-change protocols on the Palo and VyOS | Failed health rolls back; foreign pending changes block the node; the soft-revert timer fires when the connection is lost |
+| T45 | Race detector | `go test -race ./...` clean in CI |
+
+### CI
+
+- **Static builds** for both OSes with `CGO_ENABLED=0`, a size check, signed artifacts. `GOOS=windows go build` is a required job.
+- **`go test -race`** on every package; a privileged job runs `nft -c`, AF_PACKET, systemd D-Bus and SELinux-enforcing container tests.
+- **Unit tests** for every action (check, apply, verify, rollback) against Rocky, Ubuntu and Debian containers, and Windows runners.
+- **Parser and normalizer tests** from recorded captures, including the Quotient pcaps from the lab; fuzzing for every parser and the fake shell.
+- **Rule tests:** every rule has inline fixtures; ATT&CK ids validated against the pinned v19 dataset; Sigma imports regenerate deterministically.
+- **Manifest tests:** schema, cycles, the firewall lint, rendering of every output, and a lint that every plan template passes the scoring-safety rules.
+- **UI tests** for escaping (T25) and for the authentication surface (T28).
+- **Cache build** job and an offline-sync smoke test.
+
+### Cadence
+
+- Weekly purple-team session on one campaign; the runbook's metrics table (time to detect, attribute, respond; chain completeness; detection rate; false positives against the scorer and against our own hardening) is filled in after each run [RT].
+- A 24-hour soak test per release on the full lab.
+- A monthly full dry run with all simulators and fault injection.
+- Two full timed dry runs in the final three weeks before each major event, in competition roles.
+
+## Build plan
+
+One developer (David), building the whole design. There is no cut list: every capability here is in a milestone. What the plan controls is **order**, so that whatever date arrives, the highest-value gates have passed first. Each milestone ends when its gate tests pass in the lab, under fault injection. Week 1 starts the Monday after approval of this design.
+
+### Effort
+
+The code review put the remaining work for the old scope at about 115–150 developer-days even with 22.8k lines already written [CR §8]. This is a rewrite, plus Windows from day one (20–25 D), the Quotient model (15 D), the ledger (10–12 D), chains (6–8 D), the Kali vantage (5 D), integrations (8–10 D), the cache (5 D), and a larger rule and test corpus (25–30 D). The estimate is **about 230–290 developer-days**, or about 30 weeks at the integrated-and-lab-proven rate of about 4 to 5 days per week. It is an estimate, not a commitment: the largest uncertainties are Windows COM and capture, and PAN-OS behaviour on the licensed lab VM.
+
+### Calendar anchors
+
+| Date | Event | What it means for the plan |
+| --- | --- | --- |
+| Sat Nov 7, 2026 | Invitational (4 hours) | Weeks 2–3 at most. Phylax is not expected to run it; use the date to measure Quotient's real config and fingerprints (Delay, Jitter, SLA threshold, banners, user lists) and to rehearse the hand playbooks |
+| Jan–Feb 2027 | Qualifier | Gates M0–M5 (about week 12 to 14) |
+| Mar 2027 | Regional | Gates M0–M8 (about week 20 to 22) |
+| Spring 2027 | Nationals | All gates and two timed dry runs |
+
+If a gate is not ready for an event, the hand playbooks and the parts of Phylax that have passed their gates are used. That is a scheduling fact, not a reduction of scope.
+
+### Sequencing
+
+Order follows dependency and risk:
+
+1. **Everything rides on the link, security core and execution,** so they come first: M1 and M2.
+2. **Windows is built with them, not after.** Three of the five servers are Windows, including the DC. Every milestone has Windows work and Windows gate tests.
+3. **Unknowns are retired early.** Early lab experiments settle the largest risks: Windows capture coverage (T26), SChannel bootstrap with an ECDSA cert (T27), Defender's reaction (T24), the licensed PAN-OS VM's data plane (T44), and the exec-storm result that decides the optional eBPF sensor (T43).
+4. **The scorer model precedes credentials and hardening.** The round clock, fingerprints and the scorer-mimic probes (M5 part 1) are needed by PCR transactions and by the hardening gate. Therefore M3 uses real Quotient in the lab from the start and the probe library is built alongside.
+5. **Detection precedes the ledger's alerts and chains,** because they consume the same events: M4 then M6.
+6. **Features that need organizer answers** (portal polling, scripting PCR, the Kali's scope) are built behind switches, defaulting to the safe behaviour, so an answer later changes a setting.
+7. **The lab and the rule corpus grow in parallel,** one purple-team campaign per milestone.
+
+### Milestones and gates
+
+| Milestone | Weeks | Delivers | Gate |
+| --- | --- | --- | --- |
+| M0 Foundations and lab | 1–2 | Repo layout, written protocol spec, manifest schema and the 2027 reference manifest, CI skeleton (cross-builds, `-race`, privileged job), ccdc27 lab phases 1–3 usable, real Quotient with the MW reconstruction, Palo and VyOS lab devices, cache build skeleton, measurements: Quotient fingerprints from the lab pcaps | Lab reproduces the 2027 topology; manifest renders a valid firewall policy (`nft -c`) and the Palo and VyOS rules; Quotient runs the packet's checks |
+| M1 Link, security core and enrollment | 3–6 | Agent link with ECDSA pinning; UI listener with login and CSRF; segment-file spool; bounded queues and deadlines; enrollment (idempotent), SSH, WinRM and console first contact, including **Windows service install and SChannel bootstrap**; relay splicing; signed config; platform health; `phylax doctor` | T18, T21 (Linux and Windows), T27, T28, T29, T45, T26 measured |
+| M2 Execution | 5–9 | Action catalog (Linux and Windows core), plans, dry-run diff, DAG in the UI, scoring-safety lint, agent-side dead-man with OS timers, mandatory complete signatures with replay protection, locks, safe mode, `fw.apply` for nftables and Windows Firewall, atomic account actions, tag propagation | T16 (lint and rollback), T17, T18; cold-start hardening of the ccdc27 servers in 25 min or less |
+| M3 Devices, credentials, PCR | 8–11 | Palo adapter (own XML client, safe-change protocol), VyOS adapter (soft revert), credential vault and generation, rotation order, **PCR transaction** engine and CSV generator, Zerologon-first DC plan, first-hour mitigation plan library | T34, T35, T44; first-hour list runs on ccdc27 without a failed Quotient round |
+| M4 Telemetry and detection | 9–14 | Audit, proc connector, `sock_diag`, audit watches, hash sweep, `inventory`; Sysmon and `EvtSubscribe`, 4688 fallback; rule engine with all required operators; tier-0 and tier-1 responses; denied-egress logging; reference builds; the hunt plan (10-minute repeat); rule corpus waves 1–2 (classes A, A*, B) | T01, T02, T07, T11, T12, T13, T36, T43 |
+| M5 Capture, scorer model and checks | 11–16 | Packet ring (Linux, Windows), flows with Community ID, phase 1–2 parsers, the round-clock estimator, fingerprint table, active checks and scorer-mimic probes, discovery with union learning, SLA tracking, traffic labels, change detection, trace-back, portal verdict channel | T03, T04, T14, T15, T20, T30, T37 |
+| M6 Integrity ledger, chains, Kali vantage | 15–20 | Ledger builder and truth sources, exec-time hashing, library checks, pinning, depot, scheduled YARA; hop model, stitching, campaigns, timeline view, remediation items; Kali agent roles, faithful checks, PCR verification, scans, canaries; rule corpus wave 3 (classes C: Windows producers, AD, device, controller correlation) | T31, T32, T33, T38, T39 |
+| M7 Deception, C2, caches, integrations and reporting | 18–24 | Decoys with the fake shell, honeytokens, sinkhole, patch windows with cache-through, the full cache pipeline, service backups, IR drafter with chains, inject kit, Wazuh deploy and evidence pack, Splunk HEC, Suricata and Zeek offline, Sigma importer | T05, T06, T08, T09, T10, T24, T25, T40, T41, T42 |
+| M8 Recovery, hardening of Phylax itself, UI completeness | 22–26 | Controller snapshot and restore with epochs, resend verification, self-protection (watchdog, immutable bit, audit immutability), obscurity (randomised names), resource budgets with dual enforcement, all UI pages, remaining actions | T22, T23, T19; footprint targets measured |
+| M9 Dry runs and freeze | 26–30 | Two full timed dry runs in competition roles, soak test, the five purple-team campaigns with the metrics table filled in, fixes, release freeze, the controller-loss drill | All success metrics measured; all T-tests pass |
+
+Milestones overlap on purpose (M2 and M1, M3 and M2). One developer does one thing at a time, so overlap means the lab, the next milestone's design and the previous milestone's soak run while code is written. After M9, the work continues per event: measuring the real scorer config, updating the manifest and caches, and adding rules from new debriefs.
+
+### Beyond the first full pass
+
+eBPF exec sensor (only if T43 says audit is not enough), Palo-side capture automation, file carving, a Cisco FTD adapter when an infra includes one, and any ETW work are triggered by evidence rather than scheduled. They are not cut; they are conditional on the lab saying they are needed.
+
+## Complexity register
+
+Every place this design adds complexity is listed here, with why it earns its place and what keeps it bounded. The second table lists what we deliberately didn't build. Any new feature that adds a listener, a daemon, a host-binary dependency in a default path, runtime discovery, or a new kind of state has to be added here before it's built.
+
+### Accepted complexity
+
+| Item | Why it's worth it | How it's bounded | Section |
+| --- | --- | --- | --- |
+| Relay role | Segments the controller can't reach need a path | Dumb splice, no state, no keys; declared statically; unused on the 2027 LAN | Topology |
+| Device-proxy and bootstrap splicing | Devices and first contact in other segments | Same splice code as the relay; allowlist | Topology, Enrollment |
+| Five connection types on one port | One listener and one firewall rule | Small handler per type, selected by ALPN; the UI is on a separate localhost listener | Wire protocol |
+| Kali inbound path (one port, one source, static NAT) | The only way for an outside vantage point to report | One Palo rule, pinned keys, advisory verdicts | The Kali |
+| Scored credentials on the Kali | Quotient-faithful checks and PCR verification need them | Memory only, per-probe delivery, rotation if suspected | The Kali |
+| Patch-window caching proxy | Hosts patch without any outbound rule, on a slow internet | Loopback only; time-boxed; allowlist; cache-first | Egress |
+| Content-addressed cache with a signed index | Offline-first operation | Tiers; reuses the release signing path; no live-fetch dependency | Offline-first |
+| Go-native Windows actions through COM and WMI | Avoids trusting host binaries | Largest test effort; `host.exec` fallback per action, recorded here | The agent |
+| Windows agent from day one | Three of five servers and the DC are Windows | CI cross-build gate; Windows gate tests per milestone | The agent |
+| Reading the Linux audit subsystem directly, with the connector as a cross-check | Atomic exec records; no auditd binary to trust | Multicast reader beside auditd; health check; load test | The agent |
+| Optional eBPF exec sensor | Only if audit proves insufficient | Gated by T43; same schema; audit fallback | The agent |
+| Separate decoy process | Decoys face attackers | Same binary, unprivileged | The agent |
+| Full fake shell | Records what the red team actually does | No real filesystem or execution; fuzz-tested | Deception |
+| LSASS decoy session | One of the few ways to know LSASS was dumped | Recreated if killed | Deception |
+| Packet capture with TCP reassembly and parsers | Discovery, trace-back, chains, IR evidence | Bounded ring; drops before slowing hosts; parsers isolated and phased | Service monitoring |
+| Windows raw-socket capture | Capture without a driver | Lab-proven first; logs as fallback | Service monitoring |
+| Scorer recognition heuristics and round-clock estimator | The point of the feature | Every proposal needs a click; acceptance tests against real Quotient | Active checks |
+| Scorer-mimic probes using Quotient's client libraries | Scoring-safe verification | Same libraries as the scorer; strict in content | Active checks |
+| Binary integrity ledger | Replaced binaries are prebaked and invisible to FIM | Alert only; truth sources off-host; verdict classes; behavioural corroboration | Ledger |
+| YARA-X as a host binary in a default path | Full YARA semantics for the C2 corpus | Pinned hash, low priority, cgroup cap | Ledger |
+| Local depot | Restores without the internet | Signed assets and a cache tier | Ledger, Offline-first |
+| Attack chains and campaigns | IR remediation marks; cross-host visibility | Rows and linking rules, no graph engine; per-hop confidence | Attack chains |
+| Cross-host stitching | The only east-west visibility on the flat LAN | Exact tuple first; clock offsets; NAT-aware join | Attack chains |
+| Trace-back request linking | Turns a change into a source IP | Falls back to time-window correlation, lower confidence | Trace-back |
+| Sinkhole | Learns what implants would say | Linux only; record-only; capped | Egress |
+| Sigma importer | Borrows Windows detection logic cheaply | Build-time only; allow-list; fixtures; licence records | Detection |
+| Wazuh manager and agents | Recurring injects; extra detection | Pinned fixed version; optional; active response off; manager is a tier-0 asset; health-checked | OSS alongside |
+| Suricata and Zeek over pulled pcaps | Protocol logs and signatures | Offline only; optional | OSS alongside |
+| Obscurity measures | Raise the cost of scripted kill lists | Names and paths only; no mutated binaries; not a boundary | Trust model |
+| PCR transaction state machine | Two-system credential changes must not fail the scorer | One state record per account; human submit; rollback by PCR | Credentials |
+| Field-level encryption of captured credentials | No plaintext passwords on the controller's disk | Parsers mark credential fields | Controller |
+| Native database dumps | Avoids host tools on a possibly compromised host | Restore-tested before trusted | Backups |
+| Defender exclusion | The agent may be flagged | Exactly one path | The agent |
+| Typst on the controller | Good PDFs with little code | Controller only | IR and injects |
+| One binary for agent and controller | One artifact per OS; no version skew | Size measured and compressed in transit; agent-only build tag if needed | Architecture |
+
+### Refused or deferred
+
+| Not built | Why | What we do instead |
+| --- | --- | --- |
+| Dynamic relays, election, failover, backup relays | Moving parts | Static relays in the manifest; console restore |
+| Automatic controller address updates | The address is stable in practice | `phylax set-controller` and a Palo NAT edit |
+| Agent self-update system | Rarely needed | One `agent.replace_binary` action |
+| Multi-user UI, roles, remote UI access | Competition use only | One localhost login; an SSH tunnel if dry runs demand it |
+| Stream multiplexing | A protocol inside the protocol | One TLS connection per stream |
+| Protobuf | Code generation and opaque debugging | Length-prefixed JSON with zstd |
+| Certificate authority, PKI, cert expiry | Clock dependency | Pinned keys |
+| Velociraptor, Ansible, a second SIEM | Duplicate the controller | The agent, controller and adapters; Splunk as an output |
+| Automatic restore from the integrity ledger | D-1: alert only | One-click tier 1 |
+| A general graph or provenance engine | D-2: keep it lightweight | Hops, rules and a timeline |
+| Running Sigma on agents | Memory and CPU; mostly unfit rules | Build-time import |
+| Kernel drivers; custom eBPF as a foundation | Large risk surface | Audit, Sysmon; eBPF only if T43 requires |
+| In-house ETW consumer | cgo or GPL libraries; Sysmon covers it | Sysmon plus event logs |
+| Containerization of services | Rules forbid moving; effort | Harden in place |
+| Link-direction flipping for no-outbound segments | No known infra needs it | Documented limitation |
+| A JavaScript graph library | Weakens the CSP | DAG and timelines as server-side SVG |
+| Scorer reverse-engineering beyond discovery | More heuristics and state | Discover and mirror current checks |
+| Scripting the Quotient portal without approval | Rules and risk | A human pastes the CSV |
+| Wazuh active response | Script execution with server-chosen arguments | Typed Phylax responses |
+
+### Watch list: things that would quietly break simplicity
+
+- Any second listener on the controller (the UI listener is the only one beyond `agent_port`), or any listener on a host that isn't a declared decoy, relay or Kali-path port.
+- `host.exec` creeping into default plans. Every default-plan use belongs in this register.
+- Rules or parsers that need state shared across hosts at the agent. Cross-host logic belongs on the controller.
+- Configuration that can be changed on hosts without going through the manifest.
+- A new feature that needs a live internet fetch at the event.
+- New features justified by "might be useful" rather than by a test in the matrix.
+- Anything that makes the integrity ledger act without a human.
+
+## Risks and open questions
+
+The largest risks are the single developer's schedule against a full scope, the unknown Quotient configuration, the controller as the single root of trust, rulings we haven't confirmed (workstation use, the Kali, decoys on public addresses), and the volume of Windows work.
+
+### Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+| --- | --- | --- | --- |
+| Full scope against one developer's calendar | High | High | Dependency-first sequencing; every gate usable on its own; hand playbooks as the fallback for any event before a gate; no scope change without the owner |
+| Controller compromised | Low | Critical | Separate authenticated UI listener, one inbound agent port, SSH off, secrets in memory, separate signing key |
+| Controller lost | Medium | High | Encrypted snapshots every 15 min; drill T23 |
+| Quotient's real config differs from the reconstruction (Delay, SLA, custom scripts, Divisor, debug) | High | Medium | All model parameters are estimated at the event; defaults at low confidence; switches for portal polling |
+| Our scorer-mimic probes diverge from the real checks | Medium | High | Same client libraries; lab ground truth; calibrate against the portal; union plus faithful modes |
+| A hardening plan breaks a scored check | Medium | High | The lint, the probe before and after, rollback, the golden restore |
+| PCR race fails a user for several rounds | Medium | Medium | Quiet-window rule; Kali verification; rollback by PCR; protect `sysadmin` until known |
+| The Kali is out of bounds, in the red team's reach, or may not run our agent | Medium | Medium | Ask early; the in-LAN runners and passive logic work without it; memory-only credentials |
+| Controller DHCP address changes, breaking the Palo NAT target for the Kali | Medium | Medium | Request a reservation; `set-controller`; manual NAT edit; Kali features degrade only |
+| Go-native Windows work (COM, WMI, raw sockets, EvtSubscribe) takes longer than planned | High | Medium | `host.exec` fallback per action; capture falls back to logs; Windows gates in every milestone |
+| SChannel cannot complete the PowerShell bootstrap | Medium | High | ECDSA P-256 everywhere; T27 early in M1 |
+| Defender flags the agent | Medium | High | Lab test per release; one scoped exclusion; randomised path |
+| Palo rewrites source addresses on inbound NAT | Medium | High | Detected at drop flag; sources recovered from the Palo's traffic logs |
+| The PAN-OS lab VM is unlicensed and behaves differently from the event's | Medium | High | Test on the lab VM early; adapter reads the licence and disables actions needing subscriptions |
+| Integrity ledger false positives from patch drift | Medium | Medium | Truth sources off-host; `match_other_version`; window tags; accept-hash queue |
+| Chain mislinks present guesses as facts | Medium | Medium | Per-hop confidence and link method; exact-tuple first |
+| Cache incomplete or stale at the event | Medium | Medium | Tiered sync, offline drill T40, features show "waiting" |
+| Wazuh manager exposure or resource starvation | Medium | Medium | Pinned fixed version, host choice by measurement, active response off, kill-and-skip option |
+| Obscurity breaks our own detections or hunts | Low | Low | Controller knows the per-event names; detections key on path and hash |
+| Red team reads the repo and tunes around detections | High | Medium | Behavioural and allowlist detections; per-event values generated at the event |
+| Telemetry loss hides an attack | Medium | High | `telemetry_gap` events, health block, cross-source tripwires, load test T43 |
+| Four-hour window: the platform driver becomes the bottleneck | Medium | Medium | Dry runs; pre-built plans; SSH tunnel as the documented next step |
+| No PAN-OS or Windows licences in the lab for some variants | Medium | Medium | Evaluation licences requested in M0 |
+
+### Questions for competition officials (ask before the season)
+
+1. May the controller run on a user workstation (the Ubuntu one), with one inbound agent port?
+2. May the Kali run our agent, our checks and our scans of our own public addresses? Is it in the red team's scope?
+3. Is a DHCP reservation, or keeping the current lease, acceptable for the controller's address?
+4. Is a static NAT and a Palo rule from the Kali to the controller acceptable?
+5. May a Quotient-authenticated, read-only poll of the team's own pages run once per round? Is scripting the PCR endpoint allowed?
+6. What are Quotient's Delay, Jitter, Timeout, SLA threshold and Divisor settings, and is `ShowDebugToBlueTeam` on? (Measure at the Invitational if not told.)
+7. Which accounts are scored (the PCR list), and is `sysadmin` among them?
+8. Are decoy services on our public addresses acceptable (fake SSH and others on non-scored ports)?
+9. Can several team members view the same VM console at once?
+10. Is the inject portal (or Nextcloud) reachable from inside the competition VMs, for PDF upload?
+11. What does "access to the Internet, monitored" allow and how fast is it? Is there still a proxy and a repo rule at quals?
+12. Are Wazuh, Suricata, ClamAV and YARA acceptable as free and open-source tools in the environment?
+13. Which host serves the FTP and HTTPS checks, if scored?
+
+### Internal questions to settle in the lab
+
+- Windows raw-socket capture coverage, inbound and outbound, under load (T26).
+- Whether the Palo preserves source addresses on inbound NAT, and what the VyOS leg does to the Kali's address.
+- Socket-to-process linking speed for quick webshell requests.
+- Whether AD-backed IMAP and POP3 survive a krbtgt double reset.
+- Defender's reaction to the agent, decoys and the LSASS decoy session.
+- RAM and disk headroom on ubuntu-wkst for the controller, the cache and a Wazuh manager.
+- Whether `commit-confirm action reload` exists on VyOS 1.4.0.
+- What an unlicensed PA-VM does on the data plane.
+- Whether the YARA-X scanner can take process memory streams.
+- Whether the SQL Server and Splunk custom scripts resemble our stand-ins once seen.
+- How SMB NTLM with no domain behaves against a Windows member server (the Quotient research only observed Samba).
+
+## Appendices
+
+### A. Windows event reference
+
+Verify every ID on the target builds in M4. Firewall operational-log IDs in particular differ between Server 2019 and Windows 11.
+
+| Log | ID | Meaning | Used by |
+| --- | --- | --- | --- |
+| Sysmon | 1, 5 | Process created, terminated | `proc`, D1, D8, D9 |
+| Sysmon | 2 | File creation time changed (timestomping) | Hunt enrichment |
+| Sysmon | 3 | Network connection | `net`, D4, trace-back |
+| Sysmon | 4, 16 | Sysmon state change, config change | D10 |
+| Sysmon | 6 | Driver loaded | D11 |
+| Sysmon | 7 | Image loaded | Integrity ledger, change detection |
+| Sysmon | 8 | CreateRemoteThread | D5 |
+| Sysmon | 10 | Process access (LSASS) | D8 |
+| Sysmon | 11 | File created | `fim`, D2, D6, trace-back |
+| Sysmon | 12, 13, 14 | Registry create or delete, value set, rename | D6 |
+| Sysmon | 17, 18 | Named pipe created, connected | D9, D13b |
+| Sysmon | 19, 20, 21 | WMI filter, consumer, binding | D6 |
+| Sysmon | 22 | DNS query | D12 |
+| Sysmon | 25 | Process tampering | D5 |
+| Security | 1102 | Security log cleared | D10 |
+| Security | 4624, 4625, 4648 | Logon, failed logon, explicit credentials | D9, D15, D18, chains |
+| Security | 4662 | Directory object operation (replication rights mean DCSync) | D8 |
+| Security | 4663 | Object access (honey files) | D15 |
+| Security | 4670, 4741, 4742, 4929 | Permissions changed; computer account created and changed; AD replica source naming context removed | D8b (4742 by ANONYMOUS LOGON), D8d |
+| Security | 4688 | Process created, with command line (fallback) | `proc` |
+| Security | 4697 | Service installed | D6 |
+| Security | 4698, 4699, 4702 | Scheduled task created, deleted, updated | D6 |
+| Security | 4719 | Audit policy changed | D10 |
+| Security | 4720, 4722, 4724, 4738, 4781 | User created, enabled, password reset, changed, renamed | D7 |
+| Security | 4728, 4732, 4756 | Member added to global, local, universal group | D7 |
+| Security | 4768, 4769, 4771, 4776 | TGT, service ticket, pre-auth failure, NTLM validation | D8, D15, chains |
+| Security | 5136, 5137 | Directory object modified or created (GPOs, ACLs) | D6, D7, D8d |
+| Security | 5140, 5145 | Network share accessed | D9 |
+| Security | 5156, 5157 | Connection allowed or blocked by the Windows Filtering Platform | `egress`, D12 |
+| System | 104 | Event log cleared | D10 |
+| System | 7045 | Service installed | D6 |
+| System / Netlogon | 5827–5831 | Netlogon secure channel denials and allowances (5829 is the vulnerable-connection event used for Zerologon) | D8b |
+| Task Scheduler Operational | 106, 140, 141 | Task registered, updated, deleted | D6 |
+| WMI-Activity Operational | 5861 | Permanent event subscription | D6 |
+| Defender Operational | 1116, 1117 | Detection, action taken | Context |
+| Defender Operational | 5001, 5004, 5007, 5010, 5012 | Protection disabled, configuration changed | D10 |
+| PowerShell Operational | 4103, 4104 | Module logging, script block logging | D1, D8 |
+| DNS Server | 515–519, 541 | Zone and record changes | S-2 hunts, D17 |
+| Firewall With Advanced Security | Varies by build | Rule added, modified, deleted; profile changed | D10 |
+
+### B. Linux persistence locations
+
+Watched by `fim` and checked by the hunt:
+
+- **Scheduling:** `/etc/crontab`, `/etc/cron.*/`, `/var/spool/cron/`, `/var/spool/at/`, systemd timers
+- **systemd:** units in `/etc/systemd/system/`, `/usr/lib/systemd/system/`, user units, drop-ins, generators; unit `Environment=`, `AmbientCapabilities`, `CapabilityBoundingSet`
+- **Boot:** `/etc/rc.local`, `/etc/init.d/`, `/etc/modules-load.d/`, `/etc/modprobe.d/`
+- **Login and shell:** `/etc/profile`, `/etc/profile.d/`, `/etc/bash.bashrc`, `/etc/environment`, `/etc/inputrc`, per-user dotfiles including `.screenrc`, `.tmux.conf`, `.vimrc`, `.inputrc`; `/etc/update-motd.d/`, `~/.ssh/rc`, `/etc/ssh/sshrc`
+- **Authentication:** `/etc/pam.d/`, PAM module directories, `pam_exec`, `/etc/nsswitch.conf` and NSS libraries, all `authorized_keys`, plus `AuthorizedKeysFile` and `AuthorizedKeysCommand`
+- **Accounts:** `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers`, `/etc/sudoers.d/`
+- **Loader:** `/etc/ld.so.preload`, `/etc/ld.so.conf.d/`, `LD_PRELOAD` in service environments, `/proc/<pid>/maps` of services
+- **Package hooks and holds:** apt `Pre-Invoke` and `Post-Invoke`, dnf plugins, `apt-mark hold`, `versionlock.list`
+- **Device events:** `/etc/udev/rules.d/`
+- **Log rotation:** `/etc/logrotate.d/` postrotate scripts
+- **Web:** `php.ini` and `conf.d` (`auto_prepend_file`, `auto_append_file`, `disable_functions`, `extension=`), PHP `extension_dir`, `.htaccess`, Apache modules and `Include` lines
+- **Mail:** Postfix `master.cf` and content filters, `/etc/aliases` command pipes, Dovecot post-login and global sieve
+- **Database:** MySQL UDFs (`mysql.func`), plugin directory, `mysql.user`, application admin tables
+- **Kernel:** loaded modules, BPF programs, module-loading state
+- **Privilege:** SUID and SGID files, file capabilities, immutable and append-only attributes
+- **Mounts:** bind, overlay and tmpfs mounts over content and persistence directories
+- **Splunk:** `$SPLUNK_HOME/etc/apps`, scripted inputs, `outputs.conf`, deployment-server settings
+- **Desktop:** XDG autostart on workstations
+
+### C. Windows persistence locations
+
+- Scheduled tasks (including GPO-deployed), with content review and the `\Microsoft\` folder
+- Services (binary path, `ServiceDll`, failure actions), including unsigned SYSTEM services and masquerade names
+- Run, RunOnce and RunServices keys (HKLM, HKCU, WOW6432Node); startup folders
+- Winlogon `Userinit`, `Shell`, `Notify`; AppInit_DLLs; AppCertDlls
+- Image File Execution Options (`Debugger`, `GlobalFlag`); SilentProcessExit
+- LSA Security, Authentication and Notification packages
+- WMI event filters, consumers and bindings
+- Netsh helpers, print monitors, time providers, Winsock providers
+- COM hijacks under `HKCU\Software\Classes\CLSID`
+- BITS jobs
+- IIS native and managed modules, handlers, ISAPI filters, FTP roots on UNC paths
+- DNS `ServerLevelPluginDll`, forwarders and zones on the DC
+- Accessibility binaries (`sethc.exe`, `utilman.exe`, `osk.exe`) replaced or redirected
+- PowerShell profiles (all scopes)
+- Accounts: hidden accounts ending in `$`, RID hijacking, Guest enabled, nested privileged groups
+- AD: GPOs and SYSVOL, AdminSDHolder, delegation, SID history, `gPLink`
+- Optional features: WSL, OpenSSH server, VNC, Chocolatey, remote-access tools
+- SQL Server: `xp_cmdshell`, Agent jobs, linked servers, startup procedures
+
+### D. Repository layout
+
+The declared competition repo is visible to every team (this year's rule is unclear), so the lab and red-team material live in a separate private repo.
+
+```text
+phylax/                        # declared competition repo
+  cmd/phylax/                  # the one binary: serve, agent, init, doctor, cache, rules, ledger
+  internal/agent/              # agent mode: module host, supervisor, roles
+  internal/link/               # TLS pinning, framing, connection types, bounded queues
+  internal/spool/  internal/store/  internal/plan/  internal/actions/
+  internal/collect/            # proc, net, fim, logs, capture, egress, crossview, inventory
+  internal/integrity/          # ledger client, hashing, pinning, depot
+  internal/parsers/            # one package per protocol (incl. smb2, winrm, tds, ssh)
+  internal/scorer/             # round-clock estimator, fingerprints, SLA, PCR transaction
+  internal/checks/             # active checks, scorer-mimic probes, discovery
+  internal/traceback/  internal/chains/  internal/detect/  internal/decoys/
+  internal/vantage/            # Kali roles: probes, scans, canaries
+  internal/cache/              # content-addressed store, sync client
+  internal/integrations/       # wazuh, splunk hec, suricata/zeek, clamav
+  internal/devices/palo/  internal/devices/vyos/  internal/devices/ftd/
+  internal/ui/                 # templates, SVG DAG and timeline layout, vendored htmx
+  manifest/                    # schema + example manifests (2027 reference, two-segment variant)
+  plans/                       # plan templates (incl. the first-hour library)
+  rules/                       # detection rules (YAML), each with inline tests
+  rules/imported/              # Sigma-derived rules + THIRD_PARTY_RULES.md
+  yara/                        # C2 corpus
+  pools/                       # decoy banners, honey filenames, fake-shell content
+  inject-kit/                  # Typst templates and pre-written drafts
+  dist/                        # signed binaries, fallback delivery
+  docs/
+
+ccdc-lab/                      # private, never declared
+  terraform/  packer/  netem/  proxy/
+  reference/                   # baseline and ledger builders
+  quotient/                    # lab scorer config, stand-in check scripts
+  sim/orange/  sim/contaminator/  sim/faults/
+  redteam/                     # campaigns, results
+```
+
+### E. Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Action | A typed, Go-native operation with check, apply, verify and rollback |
+| Plan | A DAG of actions on specific targets, with dependencies and approval gates |
+| Dead-man switch | Rollback that fires on the agent unless it re-establishes its link after a risky change |
+| Relay | An agent role that splices its segment's connections to the controller |
+| Device proxy | An agent role that splices the controller to a network device's management interface |
+| Spool | The agent's crash-safe, sequenced, hash-chained local store of events awaiting acknowledgment |
+| Active check | Our own end-to-end test of a service, managed in the UI |
+| Scorer-mimic probe | An active check that reproduces Quotient's exact transport for one service |
+| Faithful sample, union sweep | The two modes of an active check: one random item and credential as the scorer does, and every learned item |
+| Burst, round | One scorer pass over every service; rounds start `Delay ± Jitter` apart |
+| PCR | Quotient's password change request: CSV `username,password`, effective at the next enqueue |
+| Credlist | A named list of scored accounts in Quotient; PCR uses its path |
+| Discovered check | A check the scorer was observed running, proposed as an active check |
+| Trace-back | The chain from a change back to the request and source that caused it |
+| Hop, chain, campaign | One step of an intrusion; an ordered list of hops; chains merged by shared source, account, hash or C2 |
+| Integrity ledger | Reference hashes with provenance used to judge binaries and libraries; alert only |
+| Depot | Local known-good copies of binaries and packages used for restores |
+| Vantage point | A place from which checks run: controller, in-LAN runner, or the Kali |
+| Community ID | A hash of a flow's endpoints that joins records across tools |
+| Honeytoken | A fake credential, key or path, unique per host, whose use reveals where it was stolen |
+| Tier 0, 1, 2 | Response levels: automatic, one-click, manual with checklist |
+| Safe mode | Global switch that suspends automatic responses and plan execution |
+
+### F. PCR CSV rules
+
+One block per credlist path. Each line `username,password`. No leading or trailing spaces (the portal doesn't trim). A comma on every line. Case-exact usernames. No password that starts and ends with the same quote character (the portal strips them). Passwords 16–24 characters from `[A-Za-z0-9._+=-]`. A duplicated username: the last line wins. Check the reply: `count` equals the line count and `skipped` is empty. Roll back by a PCR with the old value, never "Reset to Defaults". [Q §5]
+
+### G. Scorer fingerprint table (Quotient at commit `9000379`)
+
+Library versions follow the Go and module versions of whatever build runs at the event; re-learn the hashes each event [Q §6].
+
+| Layer | Observed behaviour |
+| --- | --- |
+| Timing | A burst of about 15 SYNs per team per box within 25–55 ms every `Delay ± Jitter`; all teams in the same sub-second window |
+| SSH | Banner is one of 27 strings; KEXINIT is constant (HASSH `a7230c16…` for the real login, `0a07365c…` for `BadAttempts` logins); `none` then `password`; `pty-req xterm 40x80`; `shell`; one typed line; about 1.3 s dwell; `Failed password` immediately followed by `Accepted password` from the same runner |
+| HTTP | `GET`, `Host: ip:port` with the port, a random old User-Agent (a non-signal), `Accept-Encoding: gzip`, `Connection: close`, nothing else |
+| TLS | Go ClientHello, no SNI, no ALPN, about 1.5 KB; JA4 `t13i131000_f57a46bbacb6_ab7e3b40a677` for Go 1.25 |
+| DNS | A (or MX) question, RD set, no EDNS, random id and port; a duplicate query on deadline |
+| ICMP | go-ping, 24-byte payload, seq 0, random id |
+| SMTP | `EHLO localhost`, `AUTH PLAIN`, `MAIL FROM:<u> BODY=8BITMIME`, `RCPT TO:<other user>`, 16-hex subject, 64-hex body |
+| IMAP, POP3, FTP | IMAP: 6-character tag, `LOGIN`, `LIST "" "*"`, `LOGOUT`. POP3: `USER`, `PASS`, `NOOP`, `STAT`. FTP: `USER`, `PASS`, `FEAT`, `TYPE I`, `OPTS UTF8 ON`, `EPSV`, `RETR`, `QUIT` |
+| SMB | Negotiate, NTLM (flags `0xe2888215`, no Seal), tree `\\ip:445\share`, the domain in AUTH is the server's own name |
+| WinRM | `POST /wsman`, `Go-http-client/1.1`, SOAP shell-create first without Authorization |
+| RDP, tcp | Handshake, zero payload, held open 6 ms to 100 s with keepalives |
+| Custom (MSSQL, Splunk, RDP-with-auth) | Script-defined; label by burst, port and account only |
+
+### H. First-hour mitigations as plans
+
+Each is a plan template with a scoring-safe verdict and a probe [SV R2.4, SH].
+
+| Plan | Does | Scoring note |
+| --- | --- | --- |
+| `dc.zerologon_first` | Build and registry check, enforce or patch the secure channel, Spooler off, SMBv1 off | No NTLM disabling; patch needs a reboot (DNS and WinRM briefly down) |
+| `palo.mgmt_lockdown` | Additive permitted-IP restriction to the controller | Management is not scored; verified with a new connection |
+| `splunk.sidecar_off` | `[postgres] disabled = true`, change the default admin, list apps and inputs | Keeps 8000 and 8089 open and the scored Splunk user |
+| `linux.local_root_bundle` | `chmod 0755 /usr/bin/pkexec`, block `algif_aead`, check `sudo -V`, unprivileged user namespaces if unused | Breaks polkit GUI auth only |
+| `rhel.cockpit_off` | Disable Cockpit on Rocky | Not scored |
+| `web.opencart` | Remove `install/`, rename the admin directory, rotate the admin password, trim modules | Leaves the storefront content untouched |
+| `mail.checks` | Open-relay check, hash Postfix and Dovecot binaries, remove unscored webmail if outdated | Keeps plaintext listeners and AD-backed auth |
+| `mssql.baseline` | `@@VERSION`, `xp_cmdshell` off, trim sysadmins, review linked servers and Agent jobs | Leaves the login the 1433 check uses |
+| `net.vyos_review` | Snapshot, `show configuration commands`, rotate `vyos` | Soft-revert protocol |
+| `ssh.safe` | `LoginGraceTime 20`, `MaxStartups`, `X11Forwarding no` | No password-auth, TTY or `AllowUsers` changes for scored users |
+
+### I. Rule backlog
+
+The 81 proposed rules [PR] group as: credentials and accounts (P01–P05, P14–P16), Zerologon and AD (P06, P62–P64, P68–P69), local-root and exposure (P07–P09), web and database (P10–P11, P39–P42, P44, P48–P49), Linux persistence and evasion (P12–P13, P17–P25, P27–P32, P38), integrity and masquerade (P26, P60–P61), network and covert channels (P33–P35, P45, P73–P74, P79), services and sabotage (P50–P53, P75–P78), Windows persistence (P43, P46–P47, P54–P59), defense evasion (P65–P67), devices (P70–P72), and re-infection and hardware (P80–P81). Each ships when its producer exists and its fixture passes.
