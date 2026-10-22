@@ -18,7 +18,9 @@ var (
 	body    = strings.Repeat("a1b2c3d4", 8) // 64 hex digits
 )
 
-func plain(u, p string) string { return base64.StdEncoding.EncodeToString([]byte("\x00" + u + "\x00" + p)) }
+func plain(u, p string) string {
+	return base64.StdEncoding.EncodeToString([]byte("\x00" + u + "\x00" + p))
+}
 
 func quotientSession() []parsertest.Step {
 	return []parsertest.Step{
