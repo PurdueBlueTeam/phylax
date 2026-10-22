@@ -102,10 +102,10 @@ func TestDeadmanTimerRestoresWhenNotConfirmed(t *testing.T) {
 		t.Fatal("change not applied")
 	}
 	waitFor(t, "rollback", func() bool { return f.read(t, "etc/shadow") == shadowFix })
-	e, _ := f.dm.Get(o.DeadmanID)
-	if e.State != deadman.StateRolledBack {
-		t.Fatalf("state %s", e.State)
-	}
+	waitFor(t, "journal outcome", func() bool {
+		e, _ := f.dm.Get(o.DeadmanID)
+		return e.State == deadman.StateRolledBack
+	})
 	// owner/mode intact
 	if st, _ := os.Stat(f.path("etc/shadow")); st.Mode().Perm() != 0o640 {
 		t.Fatalf("mode after rollback %v", st.Mode())
