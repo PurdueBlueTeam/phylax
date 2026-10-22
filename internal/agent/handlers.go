@@ -27,13 +27,6 @@ type Handlers struct {
 	Control func(ctx context.Context, c *link.Control, reply Reply) error
 }
 
-func (a *Agent) placeholderConfig(_ context.Context, c *link.Config) error {
-	a.log.Warn("config received but config handling is not implemented; rejected", "version", c.Version, "epoch", c.Epoch)
-	a.emit(event.Event{Kind: "agent.config_rejected", Priority: event.PriorityHigh,
-		Fields: map[string]any{"version": c.Version, "epoch": c.Epoch, "reason": "not implemented"}})
-	return nil
-}
-
 func (a *Agent) placeholderStep(ctx context.Context, s *link.Step, reply Reply) error {
 	a.log.Warn("step received but execution is not implemented; rejected", "plan", s.Plan, "node", s.Node, "action", s.Action)
 	phase := s.Phase
