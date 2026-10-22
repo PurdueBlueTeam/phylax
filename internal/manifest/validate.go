@@ -402,9 +402,27 @@ func (m *Manifest) Validate() error {
 			oneOf(subj, "exposure", d.Exposure, "lan", "public", "both")
 		}
 		for _, l := range d.Listeners {
-			oneOf(subj, "listener.kind", l.Kind, "ssh", "mysql", "redis", "telnet", "winrm", "rdp", "http_admin")
+			oneOf(subj, "listener.kind", l.Kind, "ssh", "mysql", "redis", "telnet", "winrm", "rdp", "http_admin", "smb")
+			if l.Kind == "smb" && l.Port == 445 {
+				e.Addf("%s: smb decoy on 445 is never allowed (Windows holds 445; the smb decoy is banner-only on another port)", subj)
+			}
 			if l.Port == 0 {
 				e.Addf("%s: listener %s needs a port", subj, l.Kind)
+			}
+		}
+	}
+	for _, h := range SortedKeys(m.Decoys) {
+		d := m.Decoys[h]
+		subj := "decoys " + h
+		for _, t := range d.Honeytokens {
+			oneOf(subj, "honeytoken.kind", t.Kind, "ssh_key", "db_cred", "shell_history", "passwords_file", "browser_cred", "aws_key", "honey_file", "ad_spn", "ad_asrep", "ad_admin")
+			if strings.HasPrefix(t.Kind, "ad_") {
+				if d.Domain == "" {
+					e.Addf("%s: honeytoken %s needs domain: (the DNS domain) on this host's decoys entry", subj, t.Kind)
+				}
+				if hh, ok := m.Hosts[h]; ok && !hh.IsDomainController() {
+					e.Addf("%s: honeytoken %s is created on a domain controller; %s lacks the domain_controller role", subj, t.Kind, h)
+				}
 			}
 		}
 	}

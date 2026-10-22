@@ -124,7 +124,9 @@ func (c *Controller) AgentConfigFor(ctx context.Context, host string) (*link.Con
 	if ca, ok := c.cfgs.cache[host]; ok && ca.gen == c.cfgs.gen && ca.epoch == epoch {
 		return ca.msg, nil
 	}
-	cfg, warns, err := BuildAgentConfig(*c.cfgs.in, host)
+	in := *c.cfgs.in
+	in.Tokens = c.honeyTokens()
+	cfg, warns, err := BuildAgentConfig(in, host)
 	if err != nil {
 		return nil, err
 	}

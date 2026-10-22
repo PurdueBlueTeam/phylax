@@ -44,13 +44,17 @@ type devExec struct {
 	acks map[string]bool
 }
 
-// isLocalAction reports whether an action runs on the controller.
-func isLocalAction(name string) bool {
-	return strings.HasPrefix(name, "palo.") || strings.HasPrefix(name, "vyos.") || strings.HasPrefix(name, "splunk.")
+// isLocalAction reports whether an action runs on the controller, by its
+// Spec (not its name): API-only actions do; filesystem actions on a Splunk
+// host (splunk.sidecar_off) run on that host's agent.
+func (c *Controller) isLocalAction(name string) bool {
+	a, err := c.reg.Get(name)
+	return err == nil && a.Spec().OnController()
 }
 
-func needsConsoleAck(name string) bool {
-	return strings.HasPrefix(name, "palo.") || strings.HasPrefix(name, "vyos.")
+func needsConsoleAck(reg *actions.Registry, name string) bool {
+	a, err := reg.Get(name)
+	return err == nil && a.Spec().NeedsConsoleAck
 }
 
 // EnableDeviceExec switches on controller-side execution of device and Splunk
@@ -72,7 +76,7 @@ func (c *Controller) EnableDeviceExec(opt DeviceExecOptions) (*Directory, error)
 }
 
 func (c *Controller) isLocalNode(n plan.Node) bool {
-	return !n.Gate && c.dx.Load() != nil && isLocalAction(n.Action)
+	return !n.Gate && c.dx.Load() != nil && c.isLocalAction(n.Action)
 }
 
 func ackKey(planID, node string) string { return planID + "/" + node }
@@ -108,12 +112,12 @@ func (x *devExec) acked(ctx context.Context, planID, node string) bool {
 	return false
 }
 
-func ackTarget(p *plan.Plan, node string) (string, error) {
+func ackTarget(reg *actions.Registry, p *plan.Plan, node string) (string, error) {
 	for _, n := range p.Nodes {
 		if n.ID != node {
 			continue
 		}
-		if n.Gate || !needsConsoleAck(n.Action) {
+		if n.Gate || !needsConsoleAck(reg, n.Action) {
 			return "", fmt.Errorf("node %q (%s) does not need a console acknowledgement", node, n.Action)
 		}
 		return n.Target, nil
@@ -144,7 +148,7 @@ func (c *Controller) AckConsole(ctx context.Context, planID, nodeID, operator st
 	if state == PlanSucceeded || state == PlanFailed || state == PlanRolledBack {
 		return ErrPlanState
 	}
-	dev, err := ackTarget(p, nodeID)
+	dev, err := ackTarget(c.reg, p, nodeID)
 	if err != nil {
 		return err
 	}
@@ -179,7 +183,7 @@ func AckConsoleStored(ctx context.Context, st *store.Store, planID, nodeID, oper
 	if err := json.Unmarshal([]byte(row.Body), &body); err != nil || body.Plan == nil {
 		return fmt.Errorf("plan %q: unreadable body", planID)
 	}
-	dev, err := ackTarget(body.Plan, nodeID)
+	dev, err := ackTarget(actions.Core(), body.Plan, nodeID)
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,9 @@
       "additionalProperties": {
         "additionalProperties": false,
         "properties": {
+          "domain": {
+            "type": "string"
+          },
           "exposure": {
             "enum": [
               "lan",
@@ -28,6 +31,18 @@
                   "type": "string"
                 },
                 "kind": {
+                  "enum": [
+                    "ssh_key",
+                    "db_cred",
+                    "shell_history",
+                    "passwords_file",
+                    "browser_cred",
+                    "aws_key",
+                    "honey_file",
+                    "ad_spn",
+                    "ad_asrep",
+                    "ad_admin"
+                  ],
                   "type": "string"
                 }
               },
@@ -51,7 +66,8 @@
                     "telnet",
                     "winrm",
                     "rdp",
-                    "http_admin"
+                    "http_admin",
+                    "smb"
                   ],
                   "type": "string"
                 },

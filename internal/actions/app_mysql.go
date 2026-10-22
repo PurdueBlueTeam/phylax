@@ -334,13 +334,13 @@ var (
 
 func (sqlQuery) Spec() Spec {
 	return Spec{Name: "sql.query", Risk: RiskService,
-		Doc: "Admin query against the local MySQL/MariaDB over the unix socket. statement is a named statement (version, audit_accounts, rotate_opencart_admin) or a single SQL statement with ? placeholders bound from args; write statements need write=true. mssql is not handled here.",
+		Doc: "Admin query against the local MySQL/MariaDB over the unix socket. statement is a named statement (version, audit_accounts, rotate_opencart_admin) or a single SQL statement with ? placeholders bound from args; write statements need write=true. engine mssql (local SQL Server) takes the named statements of mssql_audit.go (version, sysadmins, weak_logins, config, linked_servers, agent_jobs, startup_procs, trustworthy_dbs, server_triggers, audit, ...) or one T-SQL statement with ? placeholders.",
 		Params: []ParamSpec{
 			{Name: "engine", Type: Enum, Required: true, Enum: []string{"mysql", "mariadb", "mssql"}},
 			{Name: "statement", Type: String, Required: true, Max: 16384},
 			{Name: "args", Type: StringList, Max: 64},
 			{Name: "write", Type: Bool},
-			socketParam}}
+			socketParam, mssqlServerParam, mssqlPortParam}}
 }
 func (sqlQuery) Locks(Params) []string  { return nil }
 func (sqlQuery) Touches(Params) []Touch { return nil }
@@ -411,7 +411,7 @@ func stripSQLQuoted(s string) string {
 
 func (s sqlQuery) Plan(ctx context.Context, env *Env, p Params) (Plan, error) {
 	if p.Str("engine") == "mssql" {
-		return Plan{}, fmt.Errorf("sql.query engine mssql: %w", ErrUnsupported)
+		return mssqlQueryPlan(ctx, env, p)
 	}
 	st := p.Str("statement")
 	if namedStmtRe.MatchString(st) {
@@ -477,6 +477,9 @@ func randomPassword(n int) (string, error) {
 }
 
 func (s sqlQuery) Apply(ctx context.Context, env *Env, p Params) (Output, error) {
+	if p.Str("engine") == "mssql" {
+		return mssqlQueryApply(ctx, env, p)
+	}
 	c, err := env.mysqlDial(ctx, p)
 	if err != nil {
 		return nil, err
