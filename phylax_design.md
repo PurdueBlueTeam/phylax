@@ -729,3 +729,330 @@ If the address changes, run `phylax set-controller <address:port>` on each affec
 **Restore starts a new epoch.** Install `phylax` on the replacement machine, fetch the latest snapshot, unlock it, and start. The restored controller raises the epoch, so agents accept steps in the higher epoch despite sequence numbers the lost controller used after the snapshot. After a restore the controller asks each agent to resend everything its spool still holds, verifies that the chain passes through the snapshot's recorded sequence and hash, and marks anything missing as a gap with the reason "controller restored".
 
 **Restart safety.** After any restart, the controller accepts and stores agent traffic immediately. Plan signing and secret access stay locked until the passphrase is entered. Packet captures, evidence files and the cache are not in the snapshot; golden service backups are copied once to the backup targets.
+
+## Execution: actions, plans and the DAG
+
+All change goes through plans. A plan is a DAG whose nodes are typed actions on specific hosts or devices, with dependency edges and optional approval gates. Every plan shows a dry-run diff and a scoring-safety lint result before anything runs. Lockout-risk actions roll themselves back on the agent if it can't confirm.
+
+### Actions
+
+An action is Go code in the agent (or a device adapter in `phylax`) with four parts: **check** (is it already done?), **apply**, **verify** and **rollback**. Each action declares a parameter schema, a risk class (`none`, `service`, `lockout`, `destructive`), the resources it locks and the **scorer-visible properties it touches** (for the lint below).
+
+**Action catalog v3**
+
+| Area | Actions | Linux implementation | Windows implementation |
+| --- | --- | --- | --- |
+| Files | `file.write`, `file.template`, `file.perms`, `file.quarantine`, `file.restore`, `file.hash`, `file.attr` (clear or set immutable), `dir.snapshot` | Native; atomic temp-and-rename that copies mode, owner, xattrs and SELinux label | Native |
+| Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys` | Edit `/etc/shadow` and friends under the shadow-utils lock (`lckpwdf`), atomically, preserving aging fields and labels; SHA-512 crypt hashes | `NetUserSetInfo`, `NetLocalGroup*` |
+| Domain | `ad.set_password`, `ad.user`, `ad.group_members`, `ad.spn`, `ad.delegation_clear`, `ldap.modify`, `ad.krbtgt_reset`, `ad.netlogon_enforce` | — | Run by the DC's agent through the domain-aware APIs, LDAP and the registry |
+| Services | `service.state`, `service.config` | systemd over D-Bus | Service control manager APIs |
+| Firewall | `fw.apply` (declared groups, shadow or enforce), `fw.snapshot`, `fw.restore`, `fw.quarantine` (isolate with auto-revert) | `google/nftables` over netlink; one atomic table replace; separate management table; validated in CI with `nft -c` | Windows Firewall through COM in our own rule group |
+| Kernel and system | `sysctl.set`, `module.block`, `modules.disable_loading`, `hosts.file`, `selinux.restore` | `/proc/sys`, modprobe config | — |
+| Registry | `reg.set`, `reg.delete`, `reg.snapshot` | — | Native registry API |
+| Persistence cleanup | `cron.disable`, `unit.disable`, `unit.mask`, `task.disable`, `wmi.subscription_remove`, `runkey.remove`, `ld_preload.clear`, `caps.clear`, `pkg.unhold` | Native file edits, D-Bus | Task Scheduler and WMI through COM; registry |
+| Processes | `proc.kill_tree` (pidfd plus start-time check; `cgroup.kill` for units), `proc.suspend`, `proc.dump` | Signals, cgroup freeze, `/proc/<pid>/mem` | `TerminateProcess`; `MiniDumpWriteDump` |
+| Logging | `audit.rules`, `audit.immutable`, `auditpol.set`, `eventlog.size`, `sysmon.install`, `sysmon.config` | Kernel audit over netlink | Native audit-policy API; `sysmon.install` uses `host.exec` |
+| Databases | `mysql.exec`, `mysql.set_password`, `mysql.dump`, `mssql.exec` (read-mostly), `mssql.set_password` | Go MySQL driver | Go MSSQL driver (`go-mssqldb`) over TCP or shared memory |
+| Services' config | Templates for Apache or httpd, PHP, Postfix, Dovecot, Splunk, IIS, DNS | `file.template` + `service.state` | Native XML edit of `applicationHost.config` |
+| Packages | `pkg.install`, `pkg.upgrade`, `pkg.reinstall`, `pkg.fetch_to_depot` | `host.exec` of apt or dnf inside a patch window | Windows Update Agent COM inside a patch window |
+| Integrity | `ledger.sweep`, `ledger.verify_pin`, `binary.restore_from_depot` | Native | Native |
+| Collection | `collect.files`, `collect.inventory`, `hunt.baseline_diff`, `hunt.persistence`, `hunt.pii`, `hunt.ad`, `yara.scan` | Native, except `yara.scan` | Same |
+| Credentials | `pcr.generate` (controller), `pcr.verify` (Kali probe), `pcr.submit` (off unless the organizers approve scripting) | — | — |
+| Integrations | `wazuh.deploy`, `wazuh.health`, `splunk.hec_setup`, `suricata.analyze_pcap`, `av.clamav` | `host.exec` of pinned installers from the cache | Same |
+| Agent | `agent.replace_binary`, `agent.config`, `agent.set_controller`, `agent.safe_mode`, `agent.rename` | Native | Native |
+| Devices (in `phylax`) | `palo.apply`, `palo.commit`, `palo.snapshot`, `palo.revert`, `vyos.apply`, `device.rotate_admin` | XML API, SSH | — |
+| Escape hatch | `host.exec` | Approval required (or pinned pre-approval); labeled everywhere | Same |
+
+**SELinux.** Rocky 9 runs SELinux enforcing. File actions write a temporary file and rename it into place, so the new file would get its directory's default label. That's wrong for files such as `/etc/shadow` (`shadow_t`). File actions copy the original file's label (or use the policy default for new files) before the rename and check it in verify. The agent's install path gets a `bin_t` label so systemd runs it unconfined. Unit tests run against SELinux-enforcing images.
+
+**Complexity flag:** `yara.scan` has no pure-Go engine. It runs the pinned YARA-X static binary as an approved tool, at low priority, on a schedule (§ Binary integrity ledger).
+
+### The scoring-safety lint
+
+Every plan node declares which scorer-visible properties it touches. The lint rejects a plan, at template time and at run time, if a node matches the never-do list [SH never-list]:
+
+| Rule | Examples that the lint rejects |
+| --- | --- |
+| No lockout machinery on any scored account | `pam_faillock`, fail2ban, sshguard, Windows lockout GPO, SQL `CHECK_POLICY` lockout, tighter Splunk lockout |
+| No SSH change that breaks the scorer's login | `PasswordAuthentication no`, `PermitTTY no`, `ForceCommand`, `nologin` or `rbash` shells for scored users, `AllowUsers` that omits a credlist user, slow profile scripts |
+| No mail change that refuses plaintext | STARTTLS required, `disable_plaintext_auth=yes`, `smtpd_tls_auth_only`, reject-on-unknown-sender checks, postscreen on 25 |
+| No source filtering of a scored service | Any host or Palo rule restricting a scored port by source |
+| ICMP echo stays | No ICMP drop, `icmp_echo_ignore_all=1`, zone protection that drops ping |
+| NTLM and its transport stay | No NTLM deny, no `LmCompatibilityLevel` below 3 for the scored paths, no Protected Users for scored accounts, no required encryption the scorer can't do (SMB encrypt, WinRM `AllowUnencrypted=false` on 5985, FTPS-only, MSSQL ForceEncryption) without a scorer-mimic pass |
+| Scored content is untouched | Web pages with regexes, SMB SOP files, FTP files, DNS A records, the Splunk data and the SQL table the checks read |
+| No kill of a scored service as a response | Downtime scores zero and 5 failures trigger an SLA penalty |
+| Scored passwords change only by PCR transaction | See § Credentials |
+
+Each node that touches a learned service runs the **scorer-mimic probe** for that service before and after (§ Active checks), with two different credlist users. A failed "after" probe rolls the node back. The verdict table for each service in `ccdc-private/research/topics/scoring-safe-hardening.md` is the source of the rule data; where an organizer-set "insecure" value is the reason the scorer works, the pre-change baseline snapshot says so [SH intro].
+
+### Plans
+
+A plan is YAML: a list of nodes with an action, a target, parameters, dependencies and options. Plans are templates that select targets from the manifest, so one "harden every Linux web server" template expands to concrete per-host nodes.
+
+```yaml
+plan: harden-rocky-ecom
+nodes:
+  baseline:  { action: collect.inventory, target: rocky-ecom }
+  creds:     { action: user.set_password, target: rocky-ecom, params: { user: root, secret: ecom.root } }
+  fw_shadow: { action: fw.apply, target: rocky-ecom, params: { mode: shadow }, needs: [baseline] }
+  review_fw: { gate: approval, needs: [fw_shadow], note: "Check would-be drops before enforcing" }
+  fw_enf:    { action: fw.apply, target: rocky-ecom, params: { mode: enforce }, needs: [review_fw], deadman: 90s }
+  php:       { action: file.template, target: rocky-ecom, params: { path: /etc/php.d/99-phylax.ini } }
+  oc_admin:  { action: mysql.exec, target: rocky-ecom, params: { op: rotate_admin_row } }
+  reload:    { action: service.state, target: rocky-ecom, params: { unit: httpd.service, state: reloaded }, needs: [php] }
+  verify:    { action: health.check, target: ecom-http, needs: [reload, fw_enf], probe: scorer_mimic }
+on_failure: stop_dependents     # or: continue | rollback_plan
+```
+
+The UI draws plans as a DAG, coloring each node live. Branches run in parallel. A gate pauses its dependents. The health check runs only when everything it depends on is done.
+
+**Shadow mode.** `fw.apply` with `mode: shadow` shows what a policy would drop without dropping it. On Linux it installs the policy with a log rule in place of each drop. On Windows, where rules can only allow or block, the agent evaluates the proposed policy against its connection table and capture flows and reports what would have been dropped. Windows shadow windows should run a few minutes.
+
+**The Linux host firewall policy** [CR §3.8]: one `phylax` table replaced atomically in a single netlink batch. It always accepts established and related, loopback, DHCP where the host uses it, ICMP echo-request in and echo-reply out plus the types PMTU needs, ICMPv6 (neighbour discovery, router advertisements, echo), and the management group (a separate table) for the controller link. It allows scored ports from any source. Everything else inbound is dropped, and outbound is default-deny with the declared dependencies. Rocky 9's firewalld stays running with its own table; Phylax's table is a second base chain at an earlier priority, and a drop in either wins. CI runs `nft -c -f` on every rendered file in a privileged job, and every apply starts with a dry-run check on the host. The sinkhole redirect is in a `type nat` output chain.
+
+### Plan, approve, apply
+
+1. **Plan.** `phylax` expands the template and sends every node's **check** to its agent. Each check reports what it would change.
+2. **Diff and lint.** The UI shows the DAG with each node marked: unchanged, will change (with a readable diff), blocked by a lock, or rejected by the scoring-safety lint.
+3. **Approve.** One click approves the whole plan. Approval gates pause execution at that node. `host.exec`, `destructive` and `lockout` nodes always need their own approval record, which the plan engine enforces and the signature covers.
+4. **Apply.** Nodes run as soon as their dependencies finish, in parallel across hosts and within a host where locks allow.
+5. **On failure,** the plan's policy decides: stop the failed node's dependents (default), continue, or roll back the whole plan in reverse order.
+
+### Dead-man switch
+
+For any node marked `deadman` (default for `lockout`-class actions) the **agent** runs the whole protocol [CR §2 dead-man]:
+
+1. Before applying, the agent snapshots the affected state, writes an **armed record** to disk (node id, snapshot reference, deadline) and arms a timer, default 90 s. Alongside the in-process timer, it arms an **OS-level one-shot timer** (a transient systemd timer on Linux, a scheduled task on Windows) that runs `phylax agent rollback <id>`. That timer fires even if the agent crashes or is killed mid-window.
+2. After applying, it opens a **fresh connection** to its controller or relay and completes a handshake.
+3. If that works, the controller sends a `control: confirm` and the agent disarms both timers and deletes the armed record. If not, the agent rolls back on its own when the timer fires and reports the rollback once reconnected. On start-up, an expired armed record triggers a rollback before anything else.
+4. **Hosts that carry other links.** On a relay host, or on the controller host, a change can cut off every agent behind it while the host's own link stays up. For a `deadman` node there, the controller also asks dependent agents (one behind each relay, or one on the LAN and the Kali for the controller) to open fresh connections, and confirms only if those succeed.
+
+There's no SSH involved, so the dead-man covers the agent's own link, which is the link that matters. Safe mode never prevents a rollback.
+
+### Locks
+
+Each host has named resource locks: `firewall`, `accounts`, `sshd`, `packages`, `audit`, and one per service. Plan nodes and tier-0 responses take the same locks, by the same names. While a plan node holds `firewall`, automatic firewall restores on that host wait. A node holds its locks only while it runs, not while the plan waits at a gate. Each successful node updates the host's declared state, so a tier-0 restore during a gate restores what the plan has applied so far.
+
+### Safe mode
+
+One switch in the UI sends `control: safe_mode` to every agent. It suspends tier-0 responses and any running plan nodes. Detection and collection keep running. Steps run off the receive loop, so the control message is never stuck behind a long apply. Agents stay in safe mode across restarts until told otherwise.
+
+### Tagging and adoption
+
+- Everything an action creates (firewall rules, units, tasks, accounts, files) is tagged with the plan id, so detection can tell our changes from anyone else's.
+- **The tag reaches every event type.** `process_start` events from a plan step, `sec_event` account changes, `chattr`, `auditctl`, `useradd`, package-manager runs and patch-window runs all carry the plan or window tag. Rules exempt tagged events instead of guessing from process names. This is how our own hardening, which runs `chattr +i`, `auditctl -D`, firewall commits and Defender exclusions, produces no untagged alerts [DR §3, PR E6].
+- Changes made by hand during an inject are flagged as drift. An operator either adopts them into the manifest overrides with one click, or reverts them.
+
+## Manifest
+
+The manifest is a set of YAML files, validated against a JSON Schema in CI and again when `phylax` loads it. It's the only place infra facts live. Plans, agent configs, firewall rules, health checks, decoys and inject artifacts are all generated from it. Changes made during the competition are written by the UI into an overrides file, never into the base files.
+
+### Files
+
+| File | Declares |
+| --- | --- |
+| `topology.yml` | Controller host and ports, segments, relays, NAT mappings, the Kali path, backup targets |
+| `hosts.yml` | Hosts: segment, internal and public address, OS, default credentials reference, roles |
+| `services.yml` | Services: kind, scored flag, listeners, process identity and binary pins, content roots, data, dependencies, health checks, transport |
+| `accounts.yml` | Managed accounts: scope, scored flag and credlist, rotation policy, files that embed them |
+| `scorer.yml` | The scorer: engine (`quotient`), team Identifier scheme, portal URL, known or estimated Delay, Jitter, Timeout, SLA threshold, credlist paths, portal poll setting |
+| `devices.yml` | Network devices: vendor, management address, segment, adapter, which relay proxies them |
+| `decoys.yml` | Decoys per host: listeners, honey files, honeytokens, exposure |
+| `integrations.yml` | Optional sensors: Wazuh, Suricata, Zeek, Splunk HEC, with pinned versions and hosts |
+| `policy.yml` | Response tiers, protected processes, retention, limits, patch-window allowlist, cache tiers |
+| `overrides.yml` | Competition-day changes from the UI: adopted drift, inject changes, accepted findings |
+
+Secrets never appear in the manifest. It refers to them by name (`secret: ecom.db`), and values live in the controller's vault.
+
+### Examples
+
+```yaml
+# services.yml (2027 reference, excerpt)
+services:
+  ecom-http:
+    host: rocky-ecom
+    kind: http
+    scored: true
+    listen: [{ proto: tcp, port: 80 }, { proto: tcp, port: 443 }]
+    process: { unit: httpd.service, binaries: [/usr/sbin/httpd], pin: true }
+    transport: { plaintext: true, tls_verify: false }
+    content:
+      roots: [/var/www/html]
+      upload_dirs: [/var/www/html/image/catalog]
+      normalize: [opencart_token, csrf, session_cookie, timestamps]
+    data: [{ kind: mysql, database: opencart }]
+    outbound: none                       # feeds D4b relay-proxy
+    health: [{ http_get: "/", expect_status: 200, track_content: true }]
+  ecom-ssh:
+    host: rocky-ecom
+    kind: ssh
+    scored: true                         # SSH is scored on the Linux hosts: never disabled
+    listen: [{ proto: tcp, port: 22 }]
+    process: { unit: sshd.service, binaries: [/usr/sbin/sshd], pin: true }
+    transport: { auth: password, pty: true, shell: true }   # what the scorer does [Q §2]
+  email-mail:
+    host: ubuntu-email
+    kind: mail
+    scored: true
+    listen: [{ proto: tcp, port: 25 }, { proto: tcp, port: 110 }, { proto: tcp, port: 143 }]
+    process: { units: [postfix.service, dovecot.service], binaries: [/usr/lib/postfix/sbin/master, /usr/sbin/dovecot], pin: true }
+    transport: { plaintext: true, starttls: never }
+    depends_on: [{ egress: ldap, to: ad, ports: [389] }, { egress: kerberos, to: ad, ports: [88] }]
+    outbound: [ad]
+  ad-winrm:
+    host: ad
+    kind: winrm
+    scored: true
+    listen: [{ proto: tcp, port: 5985 }]
+    transport: { auth: ntlm, encryption: none }
+  mssql-sql:
+    host: mssql
+    kind: mssql
+    scored: true
+    listen: [{ proto: tcp, port: 1433 }]
+  mssql-rdp:
+    { host: mssql, kind: rdp, scored: true, listen: [{ proto: tcp, port: 3389 }] }
+  mssql-smb:
+    { host: mssql, kind: smb, scored: true, listen: [{ proto: tcp, port: 445 }], content: { roots: ['D:\SOPs'] } }
+  splunk:
+    { host: debian-splunk, kind: splunk, scored: true, listen: [{ proto: tcp, port: 8000 }, { proto: tcp, port: 8089 }] }
+```
+
+```yaml
+# accounts.yml and scorer.yml (excerpt)
+accounts:
+  sysadmin@linux:  { scope: local, hosts: [rocky-ecom, ubuntu-email, debian-splunk], scored: unknown, credlist: linux, rotation: pcr_transaction }
+  mail-users:      { scope: domain, scored: true, credlist: mail, rotation: pcr_transaction, learn_from: scorer }
+scorer:
+  engine: quotient
+  portal: https://quotient.ccdc.events/
+  identifier: "{{ 20 + team }}"
+  credlists:                              # PCR calls use the path, never the display name
+    linux: { path: linux.credlist }
+    mail:  { path: mail.credlist }
+  poll_portal: ask_organizers            # off | operator_paste | cookie_poll
+```
+
+### What it generates
+
+| Output | From | Used by |
+| --- | --- | --- |
+| Host firewall policy (management, service, dependency and decoy groups) | topology, services, decoys | `fw.apply` actions |
+| Palo and VyOS rules, objects, NAT, including the Kali path | topology, services, decoys, devices | Device adapters |
+| Egress allowlists | `depends_on`, topology | Host and network firewalls |
+| Agent configs (roles, modules, rules, profiles, paths, service pins, ledger shards) | hosts, services, decoys, policy | `config` messages |
+| Plan targets and the scoring-safety constraints per service | hosts, services, accounts | Plan templates, the lint |
+| Health checks and scorer-mimic probes | `health` and `transport` blocks plus accepted suggestions | Active checker, Kali, in-LAN runners |
+| Honeytokens and decoy configs | decoys (values generated at competition time) | Decoy actions, token registry |
+| Cache plan | hosts' OS versions, integrations | `phylax cache` |
+| Inject artifacts: asset inventory, service list, port matrix, network diagram | Everything | Drafters |
+| Printed per-role checklists | Everything | Humans |
+
+### Rules
+
+- **No hand-edited generated files.** Change the manifest or an override.
+- **CI checks:** schema validity, dependency cycles, a firewall lint that fails if any scored port, declared dependency, DHCP, ICMP or IPv6 need would be blocked, and rendering of every output for the reference manifest.
+- **Drift detection** compares declared state with what agents observe: undeclared listeners, services, scheduled tasks, accounts and outbound peers.
+
+## Egress policy and C2 hunting
+
+Servers get almost no outbound access: their agent link plus the service dependencies the manifest declares. Patches come through the controller's cache in short windows. Every denied outbound attempt is logged at the host and at the Palo, attributed to a process, and analyzed for beaconing. On Linux, denied connections are caught by a sinkhole that records what the implant would have said.
+
+### What's allowed out
+
+| Allowance | Who gets it | Notes |
+| --- | --- | --- |
+| Agent link | Every host | To the controller (the Kali: through the declared path) |
+| Declared dependencies | Per service, from `depends_on` | For example mail host to the DC on LDAP and Kerberos; DNS to the DC |
+| Patch window | One host, time-boxed | Through the loopback proxy only (below) |
+| Canary probes | Agents, rate-limited | To the Kali's canary ports, tagged and expected to fail (§ The Kali) |
+
+Everything else is dropped at the host firewall and at the Palo. Network-layer default-deny still holds when a host implant disables the host firewall. The workstations are different: they have PAT internet access, and are not covered by server egress rules.
+
+### Learn-then-enforce by binary identity
+
+Default-deny by destination is blind to which process is allowed. Each server gets a profile of (executable hash, destination class) seeded from a learning window, then enforced. The key is the hash, not the path, because a path allowlist is trivially bypassed [WT §9.4]. An unknown binary reaching an allowed destination raises D4. The agent's own link is allowlisted by its randomised path and hash.
+
+### Patch windows and the cache
+
+Internet access is slow, so most patches never go to the internet. The controller's cache holds the package set for each announced OS (§ Offline-first). A patch window works like this:
+
+1. An operator opens a window for a host in the UI, for example 15 minutes. The window has a tag.
+2. The agent starts an HTTP proxy on `127.0.0.1`. It's loopback only.
+3. Each proxied connection becomes its own `phylax/patch` TLS connection to the controller.
+4. The controller serves from its cache first. On a miss it fetches through the internet path, but only from the `policy.yml` allowlist (distro mirrors, Microsoft update endpoints), logs the request and stores the result in the cache.
+5. Package actions run with the host's package manager pointed at the loopback proxy. The host needs no outbound rule and no DNS.
+6. When the window closes, the proxy stops. Everything that ran during the window carries the window's tag, and the ledger expects the changed hashes (it pre-resolves the new package versions before the window opens).
+
+**Complexity flag:** the controller becomes a forwarding, caching proxy. It's bounded by the allowlist, the time box, and one connection per proxied stream.
+
+### Logging denied egress
+
+| Vantage point | Mechanism | What it gives |
+| --- | --- | --- |
+| Linux host | The nftables drop rule also sends the packet to an NFLOG group. Rules drop rather than reject, so the blocked socket keeps retrying and the agent finds the owning process through the `sock_diag` join. Audit `connect` records are the only evidence if the process died within a second. | The first packet of every denied attempt, with process and binary hash |
+| Windows host | Blocked-connection auditing, Security 5157, outbound only; the agent's own link is excluded | Process id, application path, destination, port |
+| Palo | The adapter pulls deny entries for outbound sessions every 30 s | Coverage when an implant has killed our agent or disabled the host firewall |
+| DNS | The DC's DNS analytical log, and Sysmon 22 | Which servers tried to resolve names outside the zone |
+
+### Analysis on the controller
+
+The denied-egress view groups attempts by binary hash and destination: attempt counts, first and last seen, timing (interval mean, jitter, regularity), spread across hosts, and process lineage and persistence from the trace-back data. Periodic callbacks (jitter below 20% over at least 10 intervals) escalate (D13c). The result is a ranked list of likely C2 destinations and the binaries reaching for them.
+
+### Sinkhole (Linux)
+
+- Denied outbound TCP from servers is redirected by an nftables `nat` output rule to a catcher the agent runs on a loopback port. The catcher completes the handshake and records the first bytes the implant sends, up to 16 KB or 10 s.
+- HTTP beacons: method, path, headers, user agent, then a plain 404 and close. TLS: the ClientHello (SNI, ALPN, JA4), closed without completing the handshake. Anything else: raw first bytes, then close.
+- It never sends meaningful responses, never connects anywhere, and never runs anything it receives.
+- Windows can't redirect connections without a driver, so it gets denied-egress logging only.
+
+**Complexity flag:** the sinkhole adds a loopback listener and redirect rules. It's bounded by being Linux-only, record-only and size-capped.
+
+### Gaps
+
+Egress filtering does nothing against inbound command channels: a webshell on a scored port, or a bind shell. Those are covered by process-lineage detection (D1), change trace-back, the integrity ledger and the packet ring.
+
+## Service monitoring: capture and health checks
+
+Two independent systems watch the services. **Capture** is passive: every host records its own traffic into a packet ring, and ships flow records and parsed protocol transactions continuously. On the flat LAN this is the only east-west visibility, because LAN traffic never crosses the Palo. It feeds check discovery, traffic labeling, trace-back, attack chains and IR. The **active checker** runs the active checks described in the next section. Neither sits in the path of scored traffic.
+
+### Capture tiers
+
+| Tier | Contents | Lives on | Shipped |
+| --- | --- | --- | --- |
+| Full packets | Every packet. Full length on scored ports, decoy ports and sinkhole traffic; first 128 bytes elsewhere. A per-flow byte cutoff keeps bulk transfers from evicting evidence. | Host packet ring: the smaller of 2 GB or 10% of free disk | On request as a filtered time slice; automatically around alerts |
+| Flow records | One record per connection: endpoints, ports, Community ID, start and end, bytes and packets each way, handshake result, resets, timeouts, hashes of the first bytes each way, owning process when known | Agent spool | Continuously |
+| Transactions | Parsed exchanges on declared service ports | Agent spool | Continuously |
+
+### Capture mechanics
+
+- **Linux:** AF_PACKET TPACKET_v3 with a memory-mapped ring, one pipeline per capture thread, kernel filters built in Go (`x/net/bpf`), no libpcap. The ring is on disk and exports real pcap, so Wireshark and Suricata can read slices [OA §5.10].
+- **Windows:** one raw socket per interface with `SIO_RCVALL`. It needs no driver, but only sees the IP layer.
+- **Complexity flag:** two things about Windows capture need proving in the lab before we rely on it: whether outbound packets are fully captured, and how it behaves alongside Windows Firewall. If coverage is partial, Windows services fall back to logs (IIS, DNS analytical, Sysmon 3, Security 5156/5157) for transactions, and capture is used for flows only.
+- **Bounded and passive.** Under load the agent drops packets rather than slowing the host, and reports drop counts.
+- **Scans are aggregated.** One "source X touched N ports" record.
+- **No feedback loop.** The agent's own traffic to the controller is excluded.
+- **Freeze on alert.** Any alert freezes the ring from 5 minutes before to 10 minutes after for the hosts involved. New packets keep being recorded in a continuation segment; freezing never drops the post-alert packets. The controller pulls that slice automatically, filtered to the IPs involved.
+- **Source-address check at drop flag.** Host capture can fingerprint the scorer by behaviour whatever the source, but the labeling of external sources needs real addresses. The controller compares captured sources with the Palo's traffic logs in the first minutes and warns loudly if every inbound connection appears to come from the firewall. In that case it recovers sources from the Palo's traffic logs.
+
+### Protocol parsers
+
+All are Go-native, built on passive TCP reassembly (including out-of-order segments, IPv6 and VLAN), each isolated so a parser bug only affects its own protocol. The set follows what Quotient actually sends [Q §6, Q §9.13, SP §A4].
+
+| Phase | Parsers |
+| --- | --- |
+| 1 | HTTP/1.x; DNS over UDP and TCP; ICMP echo; SSH (banner, KEXINIT and HASSH, auth method, PTY request, shell, typed stdin line); SMTP; IMAP; POP3; FTP control with data-channel linkage; SMB2 with NTLM (negotiate, session setup flags, tree connect path, create, read); WinRM over HTTP (`/wsman`, NTLM exchange); bare TCP connect-and-hold (RDP, tcp) |
+| 2 | TDS (MSSQL pre-login, login7, SQL batch); Splunk REST over HTTP on 8000 and 8089; TLS handshake metadata (SNI, ALPN, JA3, JA4, certificate); LDAP binds and searches; generic first-bytes fingerprint for unknown protocols, so a service added by an inject is fingerprinted before anyone writes a parser |
+| 3 | Kerberos metadata; file carving from HTTP, FTP and SMB transfers |
+
+TFTP and NTP are no longer scored; their parsers drop from phase 1 but the generic fingerprint covers them if a future packet restores them.
+
+**HTTPS.** Passive capture can't see inside modern TLS. For HTTPS services we get handshake metadata from packets, request details from the server's own access logs (custom formats set by hardening), and response content from active checks. The scorer's Go TLS ClientHello is distinctive (§ Active checks).
+
+### Palo-side capture
+
+The Palo can capture packets on a filter and serve them through its API. The adapter turns that on for a chosen service and window and pulls the result. This settles "is the scorer even getting through?" without guessing. **Complexity flag:** PAN-OS packet capture has its own limits and can load the firewall. It's used on demand only, never left running [DA §1.9].
+
+### Pulled pcaps and optional analysis
+
+Frozen slices are real pcap files. The controller can run Suricata and Zeek over a slice offline, join their output to Phylax flows by Community ID, and attach the result to the incident (§ OSS alongside Phylax).
