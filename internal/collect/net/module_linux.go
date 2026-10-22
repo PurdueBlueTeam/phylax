@@ -45,3 +45,13 @@ func (l *lockedProcs) Resolve(in []uint64) map[uint64]Proc {
 	defer l.mu.Unlock()
 	return l.inner.Resolve(in)
 }
+
+// Parent implements Parenter when the inner resolver does.
+func (l *lockedProcs) Parent(pid int) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if p, ok := l.inner.(Parenter); ok {
+		return p.Parent(pid)
+	}
+	return 0
+}
