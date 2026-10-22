@@ -88,7 +88,8 @@ type Controller struct {
 	pend    map[stepKey]*pending
 	ctlMu   sync.Mutex // serialises control signing and queueing
 	closed  atomic.Bool
-	cfgs    cfgState // agent config generation (agentconfig.go)
+	cfgs    cfgState                // agent config generation (agentconfig.go)
+	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
 }
 
 // New creates the data dir, identity (first run), store and token file.

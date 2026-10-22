@@ -13,6 +13,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
+	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
 
 func init() {
@@ -26,6 +27,7 @@ func runServe(ctx context.Context, args []string) error {
 	listen := fs.String("listen", "", "agent listen address override")
 	uiListen := fs.String("ui-listen", "", "operator UI address (loopback only; \"off\" disables)")
 	plansDir := fs.String("plans", "", "plan template directory")
+	vaultPath := fs.String("vault", "", "secrets vault file (enables controller-side device and Splunk plan nodes; needs a manifest)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,8 +55,10 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	opt := controller.Options{Logger: log, Version: version}
+	var m *manifest.Manifest
 	if cfg.ManifestPath != "" {
-		m, err := manifest.LoadDir(cfg.ManifestPath, manifest.Options{})
+		var err error
+		m, err = manifest.LoadDir(cfg.ManifestPath, manifest.Options{})
 		if err != nil {
 			return fmt.Errorf("manifest: %w", err)
 		}
@@ -66,6 +70,19 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer c.Close()
+	if *vaultPath != "" {
+		if m == nil {
+			return fmt.Errorf("-vault needs a manifest (manifest_path)")
+		}
+		v, err := openVault(*vaultPath)
+		if err != nil {
+			return err
+		}
+		if _, err := c.EnableDeviceExec(controller.DeviceExecOptions{
+			DirectoryOptions: controller.DirectoryOptions{Manifest: func() *manifest.Manifest { return m }, Vault: v}}); err != nil {
+			return err
+		}
+	}
 	if cfg.ManifestPath != "" {
 		// Agent configs are generated from the manifest (and rules) and pushed
 		// on connect and whenever those files change.
@@ -121,4 +138,22 @@ func startUI(ctx context.Context, c *controller.Controller, cfg controller.Confi
 		}
 	}()
 	return nil
+}
+
+// openVault opens and unlocks the vault; the passphrase comes from the
+// PHYLAX_VAULT_PASSPHRASE environment variable and is cleared from it.
+func openVault(path string) (*vault.Vault, error) {
+	pass := os.Getenv("PHYLAX_VAULT_PASSPHRASE")
+	if pass == "" {
+		return nil, fmt.Errorf("-vault: set PHYLAX_VAULT_PASSPHRASE")
+	}
+	os.Unsetenv("PHYLAX_VAULT_PASSPHRASE")
+	v, err := vault.Open(path, vault.Options{})
+	if err != nil {
+		return nil, err
+	}
+	if err := v.Unlock([]byte(pass)); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
