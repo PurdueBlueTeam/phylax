@@ -362,7 +362,6 @@ func (a *agentConn) drain(ctx context.Context) error {
 			st.acked = ack.Seq
 			progressed = true
 		}
-		c.recordAgentAlerts(ctx, run, ack.Seq) // stored events only (alerts.go)
 		c.captureObserve(ctx, run, ack.Seq)    // controller-scope rules over network events (capture_ingest.go)
 		if err != nil {
 			st.buf = map[uint64]event.Event{}

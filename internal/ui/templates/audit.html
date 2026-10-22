@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Audit log</h1>
+<form method="get" action="/audit" class="filters">
+<label class="inl">Operator <select name="actor"><option value="">all</option>{{range .Data.Actors}}<option{{if eq . $.Data.Query.Actor}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<label class="inl">Action <select name="action"><option value="">all</option>{{range .Data.Actions}}<option{{if eq . $.Data.Query.Action}} selected{{end}}>{{.}}</option>{{end}}</select></label>
+<button type="submit">Filter</button>
+</form>
+<table><thead><tr><th>#</th><th>Time (UTC)</th><th>Operator</th><th>Action</th><th>From</th><th>Detail</th></tr></thead><tbody>
+{{range .Data.Rows}}<tr><td>{{.ID}}</td><td>{{ts .Time}}</td><td>{{.Actor}}</td><td>{{.Action}}</td><td>{{.Remote}}</td><td class="mono">{{.Detail}}</td></tr>
+{{else}}<tr><td colspan="6">No entries.</td></tr>{{end}}</tbody></table>
+{{if .Data.Next}}<p><a href="/audit?actor={{.Data.Query.Actor | qesc}}&amp;action={{.Data.Query.Action | qesc}}&amp;before={{.Data.Next}}">Older entries</a></p>{{end}}
+{{end}}

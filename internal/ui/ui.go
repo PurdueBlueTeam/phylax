@@ -294,6 +294,16 @@ func setSecurityHeaders(h http.Header) {
 
 const maxBody = 64 << 10
 
+// maxUploadBody caps the one route that takes a file (screenshot upload).
+const maxUploadBody = MaxUpload + 256<<10
+
+func bodyLimit(r *http.Request) int64 {
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/reports/") && strings.HasSuffix(r.URL.Path, "/upload") {
+		return maxUploadBody
+	}
+	return maxBody
+}
+
 // outer applies headers, the Host check (DNS-rebinding defence) and body cap.
 func (s *Server) outer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +317,7 @@ func (s *Server) outer(next http.Handler) http.Handler {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		r.Body = http.MaxBytesReader(w, r.Body, bodyLimit(r))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -348,10 +358,24 @@ func (s *Server) checkCSRF(r *http.Request, want string) bool {
 	}
 	got := r.Header.Get("X-CSRF-Token")
 	if got == "" {
-		if err := r.ParseForm(); err != nil {
-			return false
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			// The token must be the first field; files beyond 256 KiB spill
+			// to temporary files that the handler removes.
+			if err := r.ParseMultipartForm(256 << 10); err != nil {
+				return false
+			}
+			if v := r.MultipartForm.Value["csrf_token"]; len(v) > 0 {
+				got = v[0]
+			}
+			if r.PostForm == nil {
+				r.PostForm = url.Values{}
+			}
+		} else {
+			if err := r.ParseForm(); err != nil {
+				return false
+			}
+			got = r.PostForm.Get("csrf_token")
 		}
-		got = r.PostForm.Get("csrf_token")
 	}
 	return want != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
@@ -415,6 +439,8 @@ func (s *Server) loadTemplates() error {
 		"dur":  func(d time.Duration) string { return d.Round(time.Millisecond).String() },
 		"join": strings.Join,
 		"urlq": url.PathEscape,
+		"qesc": url.QueryEscape,
+		"strs": func(v ...string) []string { return v },
 	}
 	for _, e := range entries {
 		name := strings.TrimSuffix(strings.TrimPrefix(e, "templates/"), ".html")

@@ -29,3 +29,16 @@ pre.diff{margin:0;white-space:pre-wrap;font:12px/1.3 ui-monospace,monospace}
 .sev-critical,.sev-high{color:var(--err);font-weight:bold}
 td.mono,.mono{font-family:ui-monospace,monospace;font-size:12px}
 .dash .pane table{font-size:12px}
+.val-pass,.chk-met{color:#1a7f37;font-weight:bold}
+.val-warn,.chk-partial{color:#b36b00;font-weight:bold}
+.val-fail,.chk-unmet{color:var(--err);font-weight:bold}
+.chk-operator-only{color:var(--mut)}
+.wide{max-width:60rem}
+.wide textarea,textarea{width:100%;box-sizing:border-box;font:inherit}
+label.inl{display:inline-block;margin-right:1rem}
+label.inl input{display:inline;width:auto}
+a.button{display:inline-block;padding:.2rem .6rem;border:1px solid var(--line);border-radius:3px;text-decoration:none}
+pre.preview{white-space:pre-wrap;border:1px solid var(--line);padding:.5rem;max-height:30rem;overflow:auto;font:12px/1.3 ui-monospace,monospace}
+input.filled{opacity:.75}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.filters{margin-bottom:.5rem}

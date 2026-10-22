@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver
@@ -39,6 +41,15 @@ type Store struct {
 	path string
 	w    *sql.DB // single writer connection
 	r    *sql.DB // read pool
+	hook atomic.Pointer[IngestHook]
+}
+
+func fileSize(p string) int64 {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

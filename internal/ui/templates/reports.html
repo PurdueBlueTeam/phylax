@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Reports and injects</h1>
+<table><thead><tr><th>Draft</th><th>Kind</th><th>File</th><th>Title</th><th>Updated</th><th>By</th></tr></thead><tbody>
+{{range .Data.Drafts}}<tr><td><a href="/reports/{{.ID}}">{{.ID}}</a></td><td>{{.Kind}}</td><td class="mono">{{.Filename}}</td><td>{{.Title}}</td><td>{{ts .Updated}}</td><td>{{.By}}</td></tr>
+{{else}}<tr><td colspan="6">No drafts yet. Draft an IR from a <a href="/chains">chain or campaign</a>, or start an inject below.</td></tr>{{end}}</tbody></table>
+<h2>New inject response</h2>
+<form method="post" action="/reports/inject" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Template <select name="kind">{{range .Data.Kinds}}<option value="{{.Kind}}">{{.Title}}</option>{{end}}</select></label>
+<label>Inject number <input name="number" inputmode="numeric" required></label>
+<label>Inject code (as the prompt writes it) <input name="code" maxlength="64"></label>
+<label>Title (as the prompt writes it) <input name="title" maxlength="200"></label>
+<button type="submit">Create inject draft</button>
+</form>
+{{end}}

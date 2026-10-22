@@ -29,6 +29,78 @@ func (c *Controller) recordAgentAlerts(ctx context.Context, run []event.Event, s
 func fstr(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 
 func (c *Controller) recordAgentAlert(ctx context.Context, e event.Event) error {
+	row, err := c.agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
+		found, err := c.st.Events(ctx, store.Query{Agent: e.Agent, Kind: kind, From: t, To: t.Add(time.Nanosecond), Limit: 1})
+		if err != nil || len(found) != 1 {
+			return 0, false
+		}
+		return found[0].Seq, true
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.st.InsertAlertOnce(ctx, row)
+	return err
+}
+
+// ingestHook runs inside the store's ingest transaction (store.SetIngestHook):
+// the alert-queue rows and check results derived from newly stored events
+// commit atomically with the events. Events it cannot use are skipped and
+// logged, never failed, so one malformed event cannot block an agent; a
+// database error rolls the batch back and the agent resends it.
+func (c *Controller) ingestHook(ctx context.Context, tx *store.IngestTx, evs []event.Event) error {
+	for _, e := range evs {
+		switch e.Kind {
+		case kindDetectAlert:
+			row, err := c.agentAlertRow(e, func(kind string, t time.Time) (uint64, bool) {
+				seq, ok, err := tx.FindEventAt(e.Agent, kind, t)
+				return seq, ok && err == nil
+			})
+			if err != nil {
+				c.log.Error("cannot queue detect alert", "agent", e.Agent, "seq", e.Seq, "err", err)
+				continue
+			}
+			if _, err := tx.InsertAlertOnce(row); err != nil {
+				return err
+			}
+		case kindVantageCheck:
+			if cr, ok := c.checks.resultFromEvent(e); ok {
+				if err := tx.RecordCheck(cr); err != nil {
+					return err
+				}
+				// The in-memory SLA streak moves only once the row is committed.
+				tx.OnCommit(func() { c.checks.observeEvent(e) })
+			}
+		}
+	}
+	return nil
+}
+
+// replayAgentAlerts queues every stored detect.alert event that has no queue
+// row (a crash window from before the ingest hook existed, or a row removed
+// by hand). It is idempotent and runs on start.
+func (c *Controller) replayAgentAlerts(ctx context.Context) {
+	evs, err := c.st.UnqueuedEvents(ctx, kindDetectAlert, 5000)
+	if err != nil {
+		c.log.Error("alert replay failed", "err", err)
+		return
+	}
+	n := 0
+	for _, e := range evs {
+		if err := c.recordAgentAlert(ctx, e); err != nil {
+			c.log.Error("cannot queue detect alert", "agent", e.Agent, "seq", e.Seq, "err", err)
+			continue
+		}
+		n++
+	}
+	if n > 0 {
+		c.log.Info("queued stored detect alerts missing from the queue", "count", n)
+	}
+}
+
+// agentAlertRow builds the queue row for a stored detect.alert event. find
+// resolves a matched event (kind and exact time) to its stored seq.
+func (c *Controller) agentAlertRow(e event.Event, find func(kind string, t time.Time) (uint64, bool)) (store.AlertRow, error) {
 	k := alertKeys{Title: fstr(e.Fields, "title"), Message: fstr(e.Fields, "message"), Entities: map[string]string{}}
 	if t, ok := e.Fields["tier"].(json.Number); ok {
 		n, _ := t.Int64()
@@ -62,22 +134,20 @@ func (c *Controller) recordAgentAlert(ctx context.Context, e event.Event) error 
 			if err != nil || kind == "" {
 				continue
 			}
-			found, err := c.st.Events(ctx, store.Query{Agent: e.Agent, Kind: kind, From: t, To: t.Add(time.Nanosecond), Limit: 1})
-			if err == nil && len(found) == 1 {
-				k.Evidence = append(k.Evidence, evRef{found[0].Agent, found[0].Seq})
+			if seq, ok := find(kind, t); ok {
+				k.Evidence = append(k.Evidence, evRef{e.Agent, seq})
 			}
 		}
 	}
 	c.attributeHoneytoken(e, &k)
 	raw, err := json.Marshal(k)
 	if err != nil {
-		return err
+		return store.AlertRow{}, err
 	}
 	rule := fstr(e.Fields, "rule")
 	if rule == "" {
-		return fmt.Errorf("detect alert without a rule")
+		return store.AlertRow{}, fmt.Errorf("detect alert without a rule")
 	}
-	_, err = c.st.InsertAlert(ctx, store.AlertRow{Rule: rule, Host: e.Agent, Severity: SeverityLevel(fstr(e.Fields, "severity")),
-		Time: e.Time, Keys: string(raw), Agent: e.Agent, Seq: e.Seq})
-	return err
+	return store.AlertRow{Rule: rule, Host: e.Agent, Severity: SeverityLevel(fstr(e.Fields, "severity")),
+		Time: e.Time, Keys: string(raw), Agent: e.Agent, Seq: e.Seq}, nil
 }

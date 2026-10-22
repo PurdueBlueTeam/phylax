@@ -191,4 +191,22 @@ CREATE TABLE ui_audit (
 );
 CREATE INDEX ui_audit_time ON ui_audit(time_ns);
 `,
+	// 4: report/inject drafts, audit filters, alert source index
+	`
+CREATE TABLE report_drafts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind       TEXT NOT NULL,              -- incident | inject
+  number     INTEGER NOT NULL,
+  team       INTEGER NOT NULL,
+  title      TEXT NOT NULL DEFAULT '',
+  spec       TEXT NOT NULL,              -- JSON, owned by the controller
+  created_by TEXT NOT NULL DEFAULT '',
+  created_ns INTEGER NOT NULL,
+  updated_ns INTEGER NOT NULL
+);
+CREATE INDEX report_drafts_kind ON report_drafts(kind, number);
+CREATE INDEX ui_audit_actor ON ui_audit(actor, id);
+CREATE INDEX ui_audit_action ON ui_audit(action, id);
+CREATE INDEX alerts_source ON alerts(agent, seq);
+`,
 }

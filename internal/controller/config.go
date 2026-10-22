@@ -53,6 +53,16 @@ type Config struct {
 	UIListen string `json:"ui_listen"`
 	// PlansPath is the plan template directory (YAML files).
 	PlansPath string `json:"plans_path"`
+	// Team is the team number used in report and inject file names and in the
+	// IR From line (1..99). Required before an IR or inject can be drafted.
+	Team int `json:"team"`
+	// NextIncident and NextInject are the first numbers offered for new
+	// drafts (default 1); later drafts continue after the highest used.
+	NextIncident int `json:"next_incident"`
+	NextInject   int `json:"next_inject"`
+	// ForbiddenWords must not appear in a submission (the school name, in
+	// every spelling); the pre-submit validator fails when one does.
+	ForbiddenWords []string `json:"forbidden_words"`
 	// SilenceThreshold: an enrolled agent not heard from for this long raises
 	// an agent.silent alert (default 30s).
 	SilenceThreshold  Duration `json:"silence_threshold"`
@@ -92,6 +102,12 @@ func (c *Config) applyDefaults() {
 	if c.MaxLiveTokens <= 0 {
 		c.MaxLiveTokens = 1024
 	}
+	if c.NextIncident <= 0 {
+		c.NextIncident = 1
+	}
+	if c.NextInject <= 0 {
+		c.NextInject = 1
+	}
 }
 
 // Validate applies defaults and checks the config.
@@ -99,6 +115,9 @@ func (c *Config) Validate() error {
 	c.applyDefaults()
 	if c.DataDir == "" {
 		return fmt.Errorf("controller config: data_dir is required")
+	}
+	if c.Team < 0 || c.Team > 99 {
+		return fmt.Errorf("controller config: team must be 1..99 (or 0 when unset)")
 	}
 	return nil
 }
