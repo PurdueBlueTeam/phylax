@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/deps"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
@@ -47,7 +48,14 @@ type TrackerConfig struct {
 	// MaxConns bounds tracked connections (default 65536). Connections beyond
 	// it are counted in Dropped and neither opened nor closed.
 	MaxConns int
+	// Deps, when set, receives every listener and connection change and emits
+	// deps.edge / deps.peer events (service dependency discovery).
+	Deps *deps.Collector
 }
+
+// Parenter is an optional ProcResolver capability: the parent pid of a
+// process (0 when unknown), used to attribute workers to their service.
+type Parenter interface{ Parent(pid int) int }
 
 // Tracker diffs successive socket snapshots into events.
 type Tracker struct {
@@ -165,8 +173,10 @@ func (t *Tracker) Poll(now time.Time) ([]event.Event, error) {
 			curC[ckey{s.Proto, s.Local, s.Remote, s.Inode}] = s
 		}
 	}
+	var dcs []deps.ConnEvent
 	for k, r := range t.conns {
 		if _, ok := curC[k]; !ok {
+			dcs = append(dcs, t.depsConn(deps.Closed, r, false))
 			evs = append(evs, t.connEvent(KindConnectionClosed, now, r, false))
 			delete(t.conns, k)
 		}
@@ -181,6 +191,7 @@ func (t *Tracker) Poll(now time.Time) ([]event.Event, error) {
 			r = &crec{s: s, since: now, dir: inferDirection(s, listenAt)}
 			r.p = lookup(s.Inode)
 			t.conns[k] = r
+			dcs = append(dcs, t.depsConn(deps.Opened, r, baseline))
 			evs = append(evs, t.connEvent(KindConnectionOpened, now, r, baseline))
 			continue
 		}
@@ -189,7 +200,43 @@ func (t *Tracker) Poll(now time.Time) ([]event.Event, error) {
 		}
 		r.s = s // refresh counters/state
 	}
+	if t.cfg.Deps != nil {
+		var par func(int) int
+		if p, ok := t.proc.(Parenter); ok {
+			par = p.Parent
+		}
+		ls := make([]deps.Listener, 0, len(t.listeners))
+		for _, r := range t.listeners {
+			l := deps.Listener{Proto: r.s.Proto, Addr: r.s.Local.Addr(), Port: r.s.Local.Port(),
+				Service: t.cfg.Service(r.s.Proto, r.s.Local.Port())}
+			if r.p != nil {
+				l.PID, l.Comm, l.Exe, l.SHA256 = r.p.PID, r.p.Comm, r.p.Exe, r.p.ExeSHA256
+			}
+			ls = append(ls, l)
+		}
+		evs = append(evs, t.cfg.Deps.Observe(now, ls, dcs, par)...)
+	}
 	return evs, nil
+}
+
+func (t *Tracker) depsConn(op deps.Op, r *crec, baseline bool) deps.ConnEvent {
+	c := deps.ConnEvent{Op: op, Dir: r.dir, Proto: r.s.Proto, Local: r.s.Local, Remote: r.s.Remote, Baseline: baseline}
+	if r.p != nil {
+		c.PID, c.Exe = r.p.PID, r.p.Exe
+	}
+	var proto uint8 = ProtoTCP
+	if r.s.Proto == "udp" {
+		proto = ProtoUDP
+	}
+	src, dst := r.s.Local, r.s.Remote
+	if r.dir == "inbound" {
+		src, dst = dst, src
+	}
+	c.CommunityID = CommunityID(0, proto, src, dst)
+	if r.dir == "outbound" {
+		c.DstService = t.cfg.Service(r.s.Proto, r.s.Remote.Port())
+	}
+	return c
 }
 
 // Listeners and Conns report tracked counts (health and tests).

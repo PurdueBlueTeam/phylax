@@ -254,3 +254,22 @@ func (p *ProcFS) hashExe(path string) string {
 	p.hashes[id] = sum
 	return sum
 }
+
+// Parent returns the parent pid of pid from <Root>/<pid>/stat (0 if unknown).
+func (p *ProcFS) Parent(pid int) int {
+	b, err := os.ReadFile(filepath.Join(p.root(), strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')') // comm may contain spaces and parens
+	if i < 0 {
+		return 0
+	}
+	f := strings.Fields(s[i+1:]) // state ppid ...
+	if len(f) < 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(f[1])
+	return n
+}

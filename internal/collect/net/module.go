@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/deps"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
@@ -34,6 +35,11 @@ type Config struct {
 	CanaryTargets  []CanaryTarget
 	CanaryInterval time.Duration
 	CanaryTimeout  time.Duration
+
+	// NoDeps disables service dependency discovery (deps.edge / deps.peer).
+	NoDeps bool
+	// DNS, when set, names edge destinations from recent DNS answers.
+	DNS *deps.DNSCache
 
 	Logger *slog.Logger
 
@@ -83,7 +89,11 @@ func (m *Module) Start(ctx context.Context, emit agent.Emit) error {
 	// worker share it through this serialised wrapper.
 	sp := &lockedProcs{inner: procs}
 
-	tr := NewTracker(TrackerConfig{Services: cfg.Services, MaxConns: cfg.MaxConns}, src, sp)
+	tc := TrackerConfig{Services: cfg.Services, MaxConns: cfg.MaxConns}
+	if !cfg.NoDeps {
+		tc.Deps = deps.NewCollector(deps.Config{DNS: cfg.DNS})
+	}
+	tr := NewTracker(tc, src, sp)
 	eg := NewEgress(withCanaries(cfg.Egress, cfg.CanaryTargets), src, sp)
 
 	send := func(evs []event.Event) {

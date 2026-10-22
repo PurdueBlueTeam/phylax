@@ -19,3 +19,10 @@ func startNFLog(context.Context, []uint16, *slog.Logger) (<-chan NFLogPacket, er
 type lockedProcs struct{ inner ProcResolver }
 
 func (l *lockedProcs) Resolve(in []uint64) map[uint64]Proc { return l.inner.Resolve(in) }
+
+func (l *lockedProcs) Parent(pid int) int {
+	if p, ok := l.inner.(Parenter); ok {
+		return p.Parent(pid)
+	}
+	return 0
+}

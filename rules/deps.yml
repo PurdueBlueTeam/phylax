@@ -1,0 +1,105 @@
+# Service dependency rules (producer: internal/collect/net via internal/deps, kinds
+# deps.edge / deps.edge_gone). Fields: service (manifest id), svc_comm, svc_exe, svc_key,
+# edge (proto/addr/port), dst_addr, dst_port, dst_name, public, new (first sighting of
+# the edge), learning (first seen inside the agent's learning window), strength
+# (strong = request-driven), count. The agent learns each service's dependencies for
+# its first 15 minutes; afterwards a new edge is the signal. Declared manifest
+# dependencies (service.dependencies, by address) are always exempt.
+profiles:
+  - name: deps.seen
+    event: deps.edge
+    key: [service]
+    value: edge
+    learn: 15m
+---
+id: D14.new-dependency
+title: Service opened a dependency it did not have during the learning window
+description: >
+  A listening service (or its workers) now connects to a private address and port it never used
+  while the baseline was learned. A replaced Postfix or DNS binary forwarding to an attacker host
+  looks like this.
+severity: high
+tier: 1
+attack: [T1071, T1090]
+collect: [process_tree]
+exempt_tagged: true
+entities: [service, dst_addr, dst_port]
+message: "{service} ({svc_exe}) now depends on {dst_addr}:{dst_port}/{proto} ({strength})"
+when:
+  event: deps.edge
+  all:
+    - new: true
+    - service: {present: true}
+    - public: false
+    - not: {edge: {in_profile: deps.seen}}
+    - not: {dst_addr: {in_profile: service.dependencies}}
+tests:
+  - name: mail starts talking to an unlearned internal host
+    should_match: true
+    seed: {deps.seen: {email-mail: ["tcp/10.0.0.5/389"]}}
+    event: {kind: deps.edge, fields: {service: email-mail, new: true, public: false, proto: tcp, edge: tcp/10.0.0.77/25, dst_addr: 10.0.0.77, dst_port: 25, strength: strong, svc_exe: /usr/lib/postfix/sbin/master}}
+  - name: learned dependency
+    should_match: false
+    seed: {deps.seen: {email-mail: ["tcp/10.0.0.5/389"]}}
+    event: {kind: deps.edge, fields: {service: email-mail, new: true, public: false, proto: tcp, edge: tcp/10.0.0.5/389, dst_addr: 10.0.0.5, dst_port: 389}}
+  - name: declared by the manifest
+    should_match: false
+    seed: {deps.seen: {email-mail: ["tcp/10.0.0.5/389"]}, service.dependencies: [10.0.0.9]}
+    event: {kind: deps.edge, fields: {service: email-mail, new: true, public: false, proto: tcp, edge: tcp/10.0.0.9/88, dst_addr: 10.0.0.9, dst_port: 88}}
+  - name: periodic re-report is not new
+    should_match: false
+    seed: {deps.seen: {email-mail: ["tcp/10.0.0.5/389"]}}
+    event: {kind: deps.edge, fields: {service: email-mail, new: false, public: false, proto: tcp, edge: tcp/10.0.0.77/25, dst_addr: 10.0.0.77, dst_port: 25}}
+---
+id: D14b.external-dependency
+title: Service depends on a public address that is not declared or learned
+description: >
+  A listening service connects to a public address after the baseline. This is the 2026 red team
+  shape: custom Postfix or DNS binaries forwarding to their Kali host.
+severity: critical
+tier: 1
+attack: [T1048, T1071]
+collect: [process_tree, freeze_ring]
+exempt_tagged: true
+entities: [service, dst_addr, dst_port]
+message: "{service} ({svc_exe}) connects to public {dst_addr}:{dst_port}/{proto}"
+when:
+  event: deps.edge
+  all:
+    - new: true
+    - service: {present: true}
+    - public: true
+    - not: {edge: {in_profile: deps.seen}}
+    - not: {dst_addr: {in_profile: service.dependencies}}
+tests:
+  - name: postfix forwards to an outside host
+    should_match: true
+    seed: {deps.seen: {email-mail: ["tcp/10.0.0.5/389"]}}
+    event: {kind: deps.edge, fields: {service: email-mail, new: true, public: true, proto: tcp, edge: tcp/203.0.113.9/25, dst_addr: 203.0.113.9, dst_port: 25, svc_exe: /tmp/postfix}}
+  - name: learned external peer (DNS forwarder)
+    should_match: false
+    seed: {deps.seen: {ad-dns: ["udp/8.8.8.8/53"]}}
+    event: {kind: deps.edge, fields: {service: ad-dns, new: true, public: true, proto: udp, edge: udp/8.8.8.8/53, dst_addr: 8.8.8.8, dst_port: 53}}
+---
+id: D14c.dependency-gone
+title: A learned service dependency stopped appearing
+description: the dependency was part of the baseline and has been idle past the threshold; the service may have been replaced or its upstream broken.
+severity: medium
+tier: 2
+attack: [T1489, T1036]
+collect: []
+exempt_tagged: true
+entities: [service, dst_addr, dst_port]
+message: "{service} no longer connects to {dst_addr}:{dst_port}/{proto}"
+when:
+  event: deps.edge_gone
+  all:
+    - service: {present: true}
+    - learning: true
+tests:
+  - name: baseline dependency vanished
+    should_match: true
+    event: {kind: deps.edge_gone, fields: {service: email-mail, learning: true, proto: tcp, dst_addr: 10.0.0.5, dst_port: 389}}
+  - name: late-appearing edge going away
+    should_match: false
+    event: {kind: deps.edge_gone, fields: {service: email-mail, learning: false, proto: tcp, dst_addr: 10.0.0.77, dst_port: 25}}
