@@ -1,0 +1,21 @@
+{{define "plan_live"}}<div id="plan-live"{{if not .Data.Done}} hx-get="/plans/{{.Data.ID | urlq}}/nodes" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+<p>State: <strong class="state-{{.Data.State}}">{{.Data.State}}</strong>{{if .Data.Waiting}} - waiting for {{.Data.Waiting}}{{end}}</p>
+<table><thead><tr><th>Node</th><th>Host</th><th>Action</th><th>Risk</th><th>Needs</th><th>Dry run</th><th>Run state</th><th>Approval</th></tr></thead><tbody>
+{{$p := .}}{{range .Data.Nodes}}<tr>
+<td>{{.ID}}{{if .Gate}} (gate){{end}}</td><td>{{.Host}}</td><td>{{.Action}}</td><td>{{.Risk}}</td><td>{{join .Needs ", "}}</td>
+<td class="st-{{.DryStatus}}">{{.DryStatus}}{{if .DryReason}}: {{.DryReason}}{{end}}{{if .Diff}}<pre class="diff">{{.Diff}}</pre>{{end}}</td>
+<td class="state-{{.State}}">{{.State}}{{if .Reason}}: {{.Reason}}{{end}}{{range .Phases}}<br><span class="mono">{{.}}</span>{{end}}</td>
+<td>{{if .Approved}}approved by {{.ApprovedBy}}{{else if .CanApprove}}<form method="post" action="/plans/{{$p.Data.ID | urlq}}/nodes/{{.ID | urlq}}/approve"><input type="hidden" name="csrf_token" value="{{$p.CSRF}}"><input name="note" placeholder="note" maxlength="500"><button type="submit">Approve node</button></form>{{else if .NeedsOwnApproval}}needs own approval{{end}}</td>
+</tr>{{end}}</tbody></table></div>{{end}}
+{{define "content"}}
+<h1>Plan {{.Data.ID}}{{if .Data.Name}}: {{.Data.Name}}{{end}}</h1>
+<p><a href="/plans">All plans</a>. Created by {{.Data.By}}, failure policy {{.Data.OnFailure}}, hash <span class="mono">{{.Data.Hash}}</span></p>
+<div class="actions">
+{{if .Data.CanDryRun}}<form method="post" action="/plans/{{.Data.ID | urlq}}/dryrun"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">{{if .Data.HasDryRun}}Re-run dry run{{else}}Dry run{{end}}</button></form>{{end}}
+{{if .Data.CanApprove}}<form method="post" action="/plans/{{.Data.ID | urlq}}/approve"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Approve plan</button></form>{{end}}
+{{if .Data.CanApply}}<form method="post" action="/plans/{{.Data.ID | urlq}}/apply"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Apply</button></form>{{end}}
+{{if .Data.CanRollback}}<form method="post" action="/plans/{{.Data.ID | urlq}}/rollback"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Roll back</button></form>{{end}}
+</div>
+{{if .Data.HasDryRun}}<p>Dry run:{{range .Data.Counts}} {{.Key}} {{.Value}};{{end}} {{if .Data.Approvable}}approvable{{else}}<strong class="state-failed">not approvable</strong>{{end}}</p>{{else}}<p>No dry run yet.</p>{{end}}
+{{template "plan_live" .}}
+{{end}}

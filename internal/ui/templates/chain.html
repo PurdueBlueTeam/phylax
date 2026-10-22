@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Chain {{.Data.ID}}</h1>
+<p><a href="/chains">All chains</a>. Confidence {{.Data.Confidence}}.{{if .Data.Truncated}} <strong>Truncated at the hop limit.</strong>{{end}}</p>
+{{range .Data.Notes}}<p class="notice">{{.}}</p>{{end}}
+<table><thead><tr><th>#</th><th>After</th><th>Time (Central)</th><th>UTC</th><th>Host</th><th>Kind</th><th>What</th><th>ATT&amp;CK</th><th>Link</th><th>Evidence</th></tr></thead><tbody>
+{{range .Data.Rows}}<tr><td>{{.Ord}}</td><td>{{if ge .Cause 0}}{{.Cause}}{{else}}-{{end}}</td><td>{{.Local}}</td><td>{{.UTC}}</td><td>{{.Host}}</td><td>{{.Kind}}</td>
+<td>{{.What}}{{range .Notes}}<br><em>{{.}}</em>{{end}}{{range .Items}}<br>[{{if .Verified}}verified{{else}}{{.State}}{{end}}] {{.Text}}{{end}}</td>
+<td>{{.Technique}}</td><td>{{.Method}}, {{.Level}}{{if .Guess}} (guess){{end}}</td><td class="mono">{{join .Evidence ", "}}</td></tr>
+{{end}}</tbody></table>
+{{end}}

@@ -17,3 +17,15 @@ th,td{border-bottom:1px solid var(--line);padding:.3rem .5rem;text-align:left}
 .login,.stack{max-width:22rem}
 label{display:block;margin:.5rem 0}
 input{display:block;width:100%;box-sizing:border-box}
+.sla-warn{color:#b36b00;font-weight:bold}
+.sla-critical{color:var(--err);font-weight:bold}
+.link-silent,.link-disconnected{color:var(--err)}
+.link-connected{color:inherit}
+.state-failed,.st-rejected,.st-missing,.st-blocked{color:var(--err);font-weight:bold}
+.st-will_change{font-weight:bold}
+pre.diff{margin:0;white-space:pre-wrap;font:12px/1.3 ui-monospace,monospace}
+.actions form{display:inline}
+.warn{border:2px solid var(--err);padding:.5rem}
+.sev-critical,.sev-high{color:var(--err);font-weight:bold}
+td.mono,.mono{font-family:ui-monospace,monospace;font-size:12px}
+.dash .pane table{font-size:12px}

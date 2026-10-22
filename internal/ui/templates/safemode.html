@@ -1,0 +1,14 @@
+{{define "content"}}
+<h1>Safe mode: {{.Data.Host}}</h1>
+<div class="warn">
+{{if .Data.On}}<p>Turning safe mode <strong>on</strong> suspends tier-0 responses and running plan nodes on this host. Detection and collection keep running; rollbacks still run. The agent stays in safe mode across restarts until you turn it off.</p>
+{{else}}<p>Turning safe mode <strong>off</strong> lets tier-0 responses and plan nodes run again on this host.</p>{{end}}
+</div>
+<form method="post" action="/agents/{{.Data.Host | urlq}}/safemode" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<input type="hidden" name="on" value="{{if .Data.On}}1{{else}}0{{end}}">
+<label>Type the host name to confirm <input name="confirm" autocomplete="off" required></label>
+<button type="submit">{{if .Data.On}}Enable{{else}}Disable{{end}} safe mode</button>
+<a href="/agents/{{.Data.Host | urlq}}">Cancel</a>
+</form>
+{{end}}
