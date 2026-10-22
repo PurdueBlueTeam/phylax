@@ -157,7 +157,7 @@ func TestRoleEnforcedAndUnknownTypeFatal(t *testing.T) {
 	}{
 		{"wrong-direction", func(w net.Conn) {
 			fw := NewFrameWriter(w)
-			_, body, _ := Marshal(&Step{Plan: "p", Node: "n", Host: "h", Action: "a", Sig: "s"})
+			_, body, _ := Marshal(&Step{Plan: "p", Node: "n", Host: "h", Action: "a", Phase: "apply", Sig: []byte("s")})
 			fw.WriteFrame(TypeStep, body, false)
 		}, ErrUnexpected},
 		{"unknown-type", func(w net.Conn) { NewFrameWriter(w).WriteFrame(Type(0x3e), []byte(`{}`), false) }, ErrUnknownType},
@@ -241,7 +241,7 @@ func TestSlowHandlerDoesNotStallControlOrAcks(t *testing.T) {
 	if seq := <-gotAck; seq != 77 {
 		t.Fatalf("ack = %d", seq)
 	}
-	ctrl.TrySend(PrioCritical, &Control{Kind: "x", On: true})
+	ctrl.TrySend(PrioCritical, &Control{Host: "h", Kind: "x", On: true, Sig: []byte("s")})
 	eventually(t, 2*time.Second, "control delivered", seenCtl.Load)
 	close(release)
 }

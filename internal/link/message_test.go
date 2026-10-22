@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,18 +18,22 @@ func sampleMessages(t *testing.T) []Message {
 	evs, _ := src.Events(0, 10)
 	digest := strings.Repeat("ab", 32)
 	return []Message{
-		&Hello{Proto: 1, Host: "ubuntu-ecom", Version: "0.3.0", Roles: []string{"capture"}, Caps: map[string]any{"af_packet_v3": true}, LastSeq: 7, Token: "tok"},
+		&Hello{Proto: 1, Minor: ProtoMinor, Host: "ubuntu-ecom", Version: "0.3.0", Roles: []string{"capture"}, Caps: map[string]any{"af_packet_v3": true}, LastSeq: 7, Token: "tok",
+			Deadman: []DeadmanEntry{{ID: "d1", Node: "p:n", State: "armed", Deadline: 99}}},
 		&Welcome{Proto: 1, Enrolled: true, Config: &Config{Version: 1, Epoch: 1, Body: json.RawMessage(`{"modules":{}}`), Sig: "sig"}},
 		&Heartbeat{Seq: 9, HostClock: time.Date(2026, 10, 18, 14, 3, 12, 441e6, time.UTC), SpoolDepth: 12, Modules: map[string]string{"link": "ok"}},
 		&Events{Events: evs},
-		&StepResult{Plan: "p", Node: "n", Epoch: 1, Seq: 2, Phase: "apply", Status: "ok", After: json.RawMessage(`{"x":1}`)},
+		&StepResult{V: 1, Plan: "p", Node: "n", Host: "h", Epoch: 1, Seq: 2, Phase: "apply", Status: "applied", StepDigest: digest, AfterDigest: digest,
+			StartedMS: 5, FinishedMS: 6, Detail: json.RawMessage(`{"x":1}`), Sig: []byte("signature")},
 		&Chunk{SHA256: digest, Offset: 0, Total: 3, Data: []byte("abc")},
 		&ChunkHave{SHA256: digest, Ranges: [][2]uint64{{0, 100}}},
 		&Ack{Seq: 42},
-		&Step{Plan: "p", Node: "n", Host: "h", Epoch: 1, Seq: 1, Action: "service.state", Params: json.RawMessage(`{"unit":"ssh"}`), Sig: "s"},
+		&Step{V: 1, Plan: "p", PlanHash: digest, Node: "n", Host: "h", Epoch: 1, Seq: 1, Action: "service.state", Phase: "apply",
+			Params: json.RawMessage(`{"unit":"ssh"}`), Risk: "service", Approval: &Approval{By: "op", At: 5, Note: "ok"}, RollbackPolicy: "manual",
+			SecretsDigest: digest, NotBefore: 10, NotAfter: 20, DeadmanS: 30, Secrets: []byte("s3"), Sig: []byte("signature")},
 		&Config{Version: 2, Body: json.RawMessage(`{}`), Sig: "s"},
 		&Fetch{ID: "f1", Kind: "pcap"},
-		&Control{Kind: "safe_mode", On: true},
+		&Control{V: 1, Host: "h", Kind: "safe_mode", On: true, Args: json.RawMessage(`{}`), Epoch: 1, Seq: 4, NotBefore: 1, NotAfter: 2, Sig: []byte("sig")},
 		&RelayRequest{Target: "10.0.0.5:443", Class: "device-proxy", ID: "r1"},
 		&TokenIssue{Host: "h", Token: "t", TTLS: 600},
 	}
@@ -51,6 +56,28 @@ func TestMessageRoundTrip(t *testing.T) {
 		}
 		if got.MsgType() != typ {
 			t.Errorf("%T type mismatch", m)
+		}
+	}
+}
+
+// The typed envelopes round-trip field for field (nothing rides in a generic field).
+func TestTypedEnvelopesRoundTrip(t *testing.T) {
+	for _, m := range sampleMessages(t) {
+		switch m.(type) {
+		case *Step, *StepResult, *Control, *Hello:
+		default:
+			continue
+		}
+		typ, body, err := Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := Unmarshal(typ, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(m, got) {
+			t.Errorf("%T lost fields:\n%+v\n%+v", m, m, got)
 		}
 	}
 }
@@ -88,6 +115,9 @@ func TestInvalidMessagesRejected(t *testing.T) {
 		{TypeChunk, `{"sha256":"` + hex.EncodeToString(make([]byte, 32)) + `","offset":5,"total":6,"data":"YWJj"}`}, // past end
 		{TypeRelayRequest, `{"target":"nohostport","class":"x","id":"1"}`},
 		{TypeTokenIssue, `{"host":"h","token":"t","ttl_s":0}`},
+		{TypeControl, `{"kind":"safe_mode","host":"h","on":true}`}, // unsigned control
+		{TypeStep, `{"plan":"p","node":"n","host":"h","action":"a","phase":"apply"}`}, // unsigned step
+		{TypeHello, `{"proto":1,"host":"h","minor":-1}`},
 		{Type(0x3f), `{}`},
 	}
 	for _, b := range bad {

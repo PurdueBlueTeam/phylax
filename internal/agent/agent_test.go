@@ -17,9 +17,9 @@ import (
 func TestEnrollmentHeartbeatsAndPlaceholders(t *testing.T) {
 	ctl := newFakeController(t, "ubuntu-ecom", "tok-1", 0)
 	ctl.sendOnWelcome = []link.Message{
-		&link.Step{Plan: "p1", Node: "n1", Host: "ubuntu-ecom", Epoch: 1, Seq: 7, Action: "user.lock", Sig: "x"},
+		&link.Step{Plan: "p1", Node: "n1", Host: "ubuntu-ecom", Epoch: 1, Seq: 7, Action: "user.lock", Phase: "check", Sig: []byte("x")},
 		&link.Config{Version: 3, Epoch: 1, Body: json.RawMessage(`{}`), Sig: "x"},
-		&link.Control{Kind: "safe_mode", On: true},
+		&link.Control{V: 1, Host: "ubuntu-ecom", Kind: "safe_mode", On: true, Epoch: 1, Seq: 1, NotBefore: 1, NotAfter: 2, Sig: []byte("unsigned-garbage")},
 	}
 	l := Layout{Root: t.TempDir()}
 	writeBundle(t, l, ctl, "tok-1")
@@ -38,14 +38,18 @@ func TestEnrollmentHeartbeatsAndPlaceholders(t *testing.T) {
 		for _, e := range evs {
 			kinds[e.Kind] = true
 		}
-		sm := false
-		for _, h := range hbs {
-			sm = sm || h.SafeMode
-		}
 		return kinds["test.hello"] && kinds["agent.health"] && kinds["agent.config_rejected"] &&
-			len(hbs) >= 3 && sm && len(ctl.results) == 1
+			kinds["agent.control_refused"] && len(hbs) >= 3 && len(ctl.results) == 1
 	})
 	evs, hellos, hbs := ctl.snapshot()
+	for _, h := range hbs {
+		if h.SafeMode {
+			t.Fatal("an unsigned control switched safe mode on")
+		}
+	}
+	if hellos[0].Minor != link.ProtoMinor {
+		t.Fatalf("hello minor %d", hellos[0].Minor)
+	}
 	if hellos[0].Token != "tok-1" || hellos[0].Host != "ubuntu-ecom" || hellos[0].Version != "9.9" || hellos[0].Roles[0] != "capture" {
 		t.Fatalf("hello: %+v", hellos[0])
 	}

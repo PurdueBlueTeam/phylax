@@ -29,6 +29,7 @@ type fakeController struct {
 	results       []link.StepResult
 	enrolled      bool
 	sendOnWelcome []link.Message // extra messages sent after welcome/ack
+	sess          *link.Session  // the current session
 
 	addr   string
 	cancel context.CancelFunc
@@ -97,6 +98,7 @@ func (c *fakeController) handle(ctx context.Context, conn *link.Conn) {
 				}
 				c.enrolled = true
 				extra := c.sendOnWelcome
+				c.sess = sess
 				c.mu.Unlock()
 				sess.TrySend(link.PrioCritical, &link.Welcome{Proto: 1, Enrolled: true})
 				sess.TrySend(link.PrioCritical, &link.Ack{Seq: c.rx.Acked()})
@@ -201,3 +203,27 @@ type funcModule struct {
 
 func (m funcModule) Name() string                            { return m.name }
 func (m funcModule) Start(ctx context.Context, e Emit) error { return m.fn(ctx, e) }
+
+// send queues a message to the connected agent.
+func (c *fakeController) send(m link.Message) error {
+	c.mu.Lock()
+	s := c.sess
+	c.mu.Unlock()
+	if s == nil {
+		return io.ErrClosedPipe
+	}
+	return s.TrySend(link.PrioCritical, m)
+}
+
+// eventsOf returns the fields of received events of one kind.
+func (c *fakeController) eventsOf(kind string) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []map[string]any
+	for _, e := range c.events {
+		if e.Kind == kind {
+			out = append(out, e.Fields)
+		}
+	}
+	return out
+}

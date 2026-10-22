@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -48,8 +47,22 @@ type execState struct {
 	fresh bool
 	sem   chan struct{}
 
-	mu     sync.Mutex
-	unsent []*link.StepResult
+	mu      sync.Mutex
+	unsent  []*link.StepResult
+	running map[resultKey]bool
+	log     *resultLog
+}
+
+// setRunning marks a verified step as executing (or done) for status queries.
+func (x *execState) setRunning(s *plan.Step, on bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	k := resultKey{s.Epoch, s.Seq}
+	if on {
+		x.running[k] = true
+	} else {
+		delete(x.running, k)
+	}
 }
 
 func (a *Agent) initExec() error {
@@ -87,7 +100,11 @@ func (a *Agent) initExec() error {
 	if n <= 0 {
 		n = 8
 	}
-	x := &execState{env: env, fresh: c.FreshCheck, sem: make(chan struct{}, n),
+	rl, err := openResultLog(a.cfg.Layout.Results())
+	if err != nil {
+		return fmt.Errorf("agent: result log: %w", err)
+	}
+	x := &execState{env: env, fresh: c.FreshCheck, sem: make(chan struct{}, n), running: map[resultKey]bool{}, log: rl,
 		ver: &plan.Verifier{Key: key, HostID: a.bundle.Host, Store: plan.FileSeqStore{Path: a.cfg.Layout.PlanSeq()}}}
 	a.exec = x
 	return nil
@@ -103,26 +120,6 @@ func (a *Agent) stepHandler() func(context.Context, *link.Step, Reply) error {
 	return a.placeholderStep
 }
 
-func (a *Agent) controlHandler() func(context.Context, *link.Control) error {
-	if f := a.cfg.Handlers.Control; f != nil {
-		return f
-	}
-	return a.defaultControl
-}
-
-// StepToWire packs a signed plan step into the link message: the routing
-// fields are copied for logs and cross-checking, the signed envelope rides in
-// Params (the link layer carries it opaquely).
-func StepToWire(s *plan.Step) (*link.Step, error) {
-	raw, err := s.Encode()
-	if err != nil {
-		return nil, err
-	}
-	return &link.Step{Plan: s.PlanID, Node: s.NodeID, Host: s.Host, Epoch: s.Epoch, Seq: s.Seq,
-		Action: s.Action, Phase: s.Phase, Params: raw, DeadmanS: s.DeadmanSec,
-		Sig: base64.StdEncoding.EncodeToString(s.Sig)}, nil
-}
-
 // handleStep verifies a step on the receive path (so (epoch, seq) is consumed
 // in arrival order) and runs it off that path.
 func (a *Agent) handleStep(ctx context.Context, w *link.Step, reply Reply) error {
@@ -135,17 +132,16 @@ func (a *Agent) handleStep(ctx context.Context, w *link.Step, reply Reply) error
 		if phase == "" {
 			phase = plan.PhaseCheck
 		}
-		return reply(ctx, link.PrioStep, &link.StepResult{Plan: w.Plan, Node: w.Node, Epoch: w.Epoch, Seq: w.Seq,
-			Phase: phase, Status: "rejected", Error: msg})
+		return reply(ctx, link.PrioStep, &link.StepResult{Plan: w.Plan, Node: w.Node, Host: w.Host, Epoch: w.Epoch, Seq: w.Seq,
+			Phase: phase, Status: StatusRejected, Error: msg})
 	}
-	s, err := x.ver.VerifyBytes(w.Params)
-	if err != nil {
+	// The wire message is the typed form of the signed body: the body is
+	// rebuilt from its fields, so any tampered field fails the signature.
+	s := plan.StepFromWire(w)
+	if err := x.ver.Verify(s); err != nil {
 		return refuse(err.Error())
 	}
-	if s.PlanID != w.Plan || s.NodeID != w.Node || s.Host != w.Host || s.Epoch != w.Epoch || s.Seq != w.Seq ||
-		s.Action != w.Action || (w.Phase != "" && s.Phase != w.Phase) {
-		return refuse("step envelope does not match the signed body")
-	}
+	x.setRunning(s, true)
 	if s.Phase != plan.PhaseCheck && (s.Approval == nil || s.Approval.By == "" || s.Approval.By == DryRunApprover) {
 		return a.finishStep(ctx, reply, s, plan.OutcomeFailed, "step has no approval record", nil)
 	}
@@ -317,9 +313,12 @@ func planDetail(o *actions.Outcome) []byte {
 }
 
 // finishStep signs and sends the result; if the link is down the result is
-// kept (bounded) and flushed after the next reconnect.
+// kept (bounded) and flushed after the next reconnect. Every result is also
+// recorded durably so the controller can ask for it again (step_status).
 func (a *Agent) finishStep(ctx context.Context, reply Reply, s *plan.Step, outcome, errMsg string, detail []byte) error {
 	started := time.Now()
+	x := a.exec
+	defer x.setRunning(s, false)
 	res, err := plan.NewResult(s, outcome)
 	if err != nil {
 		return err
@@ -337,16 +336,13 @@ func (a *Agent) finishStep(ctx context.Context, reply Reply, s *plan.Step, outco
 	if err := res.Sign(key); err != nil {
 		return err
 	}
-	signed, _ := json.Marshal(res)
-	m := &link.StepResult{Plan: s.PlanID, Node: s.NodeID, Epoch: s.Epoch, Seq: s.Seq, Phase: s.Phase,
-		Status: outcome, Error: res.Error, After: signed}
-	if len(detail) > 0 {
-		m.Before = detail
+	m := plan.ResultToWire(res, detail)
+	if err := x.log.add(m); err != nil {
+		a.log.Warn("could not persist step result", "err", err)
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if err := reply(sctx, link.PrioStep, m); err != nil {
-		x := a.exec
 		x.mu.Lock()
 		if len(x.unsent) < maxUnsent {
 			x.unsent = append(x.unsent, m)

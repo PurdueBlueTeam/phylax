@@ -7,6 +7,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
 // Reply sends a message back on the current session.
@@ -18,10 +19,12 @@ type Reply func(ctx context.Context, p link.Priority, m link.Message) error
 // session's handler goroutine and must return promptly (the executor runs
 // long work off this path).
 type Handlers struct {
-	Config  func(ctx context.Context, c *link.Config) error
-	Step    func(ctx context.Context, s *link.Step, reply Reply) error
-	Fetch   func(ctx context.Context, f *link.Fetch, reply Reply) error
-	Control func(ctx context.Context, c *link.Control) error
+	Config func(ctx context.Context, c *link.Config) error
+	Step   func(ctx context.Context, s *link.Step, reply Reply) error
+	Fetch  func(ctx context.Context, f *link.Fetch, reply Reply) error
+	// Control receives only controls that already passed signature, host,
+	// window and replay verification (the agent verifies before any handler).
+	Control func(ctx context.Context, c *link.Control, reply Reply) error
 }
 
 func (a *Agent) placeholderConfig(_ context.Context, c *link.Config) error {
@@ -37,8 +40,8 @@ func (a *Agent) placeholderStep(ctx context.Context, s *link.Step, reply Reply) 
 	if phase == "" {
 		phase = "check"
 	}
-	return reply(ctx, link.PrioStep, &link.StepResult{Plan: s.Plan, Node: s.Node, Epoch: s.Epoch, Seq: s.Seq,
-		Phase: phase, Status: "rejected", Error: "step execution not implemented on this agent"})
+	return reply(ctx, link.PrioStep, &link.StepResult{Plan: s.Plan, Node: s.Node, Host: s.Host, Epoch: s.Epoch, Seq: s.Seq,
+		Phase: phase, Status: StatusRejected, Error: "step execution not implemented on this agent"})
 }
 
 func (a *Agent) placeholderFetch(_ context.Context, f *link.Fetch, _ Reply) error {
@@ -46,20 +49,44 @@ func (a *Agent) placeholderFetch(_ context.Context, f *link.Fetch, _ Reply) erro
 	return nil
 }
 
-// defaultControl implements the controls the agent core owns: safe_mode and
-// deadman_confirm (args {"id": "<entry id>"} or {"plan": ..., "node": ...}).
-// Others are logged. Control messages ride the pinned mutual-TLS stream; they
-// are not separately signed (a forged confirm could only disarm a rollback).
-func (a *Agent) defaultControl(ctx context.Context, c *link.Control) error {
+// handleControl verifies a control (mandatory: signed by the plan key, for
+// this host, inside its validity window, with a sequence number above the
+// durable control mark) and only then dispatches it. Anything else is refused
+// and reported as an agent.control_refused event.
+func (a *Agent) handleControl(ctx context.Context, w *link.Control, reply Reply) error {
+	refuse := func(why string) error {
+		a.log.Warn("control refused", "kind", w.Kind, "why", why)
+		a.emit(event.Event{Kind: "agent.control_refused", Priority: event.PriorityHigh,
+			Fields: map[string]any{"kind": w.Kind, "reason": why, "epoch": w.Epoch, "seq": w.Seq}})
+		return nil
+	}
+	if a.ctlVer == nil {
+		return refuse("no plan-signing key configured: controls are never accepted unsigned")
+	}
+	c := plan.ControlFromWire(w)
+	if err := a.ctlVer.Verify(c); err != nil {
+		return refuse(err.Error())
+	}
+	if f := a.cfg.Handlers.Control; f != nil {
+		return f(ctx, w, reply)
+	}
+	return a.defaultControl(ctx, c, reply)
+}
+
+// defaultControl implements the controls the agent core owns: safe_mode,
+// deadman_confirm (args {"id": "<entry id>"} or {"plan": ..., "node": ...}) and
+// step_status (args {"plan","node","phase","epoch","seq"}: re-send the signed
+// result of that step, or say why there is none). Others are logged.
+func (a *Agent) defaultControl(ctx context.Context, c *plan.Control, reply Reply) error {
 	switch c.Kind {
-	case "safe_mode":
+	case plan.ControlSafeMode:
 		a.safeMode.Store(c.On)
 		if a.exec != nil {
 			if err := a.exec.env.Safe.Set(c.On); err != nil {
 				a.log.Error("persist safe mode", "err", err)
 			}
 		}
-	case "deadman_confirm":
+	case plan.ControlDeadmanConfirm:
 		var args struct {
 			ID   string `json:"id"`
 			Plan string `json:"plan"`
@@ -70,10 +97,46 @@ func (a *Agent) defaultControl(ctx context.Context, c *link.Control) error {
 			return nil
 		}
 		a.confirmDeadman(ctx, args.Plan, args.Node, args.ID)
+	case plan.ControlStepStatus:
+		return a.stepStatus(ctx, c, reply)
 	default:
 		a.log.Warn("unhandled control", "kind", c.Kind, "on", c.On)
 	}
 	return nil
+}
+
+// stepStatus answers a step_status query.
+func (a *Agent) stepStatus(ctx context.Context, c *plan.Control, reply Reply) error {
+	var q struct {
+		Plan  string `json:"plan"`
+		Node  string `json:"node"`
+		Phase string `json:"phase"`
+		Epoch uint64 `json:"epoch"`
+		Seq   uint64 `json:"seq"`
+	}
+	if err := json.Unmarshal(c.Args, &q); err != nil || q.Plan == "" || q.Node == "" || q.Phase == "" || q.Seq == 0 {
+		a.log.Warn("step_status with bad args", "err", err)
+		return nil
+	}
+	x := a.exec
+	if x == nil {
+		return nil
+	}
+	k := resultKey{q.Epoch, q.Seq}
+	if m, ok := x.log.get(k); ok && m.Plan == q.Plan && m.Node == q.Node {
+		return reply(ctx, link.PrioStep, m) // the very same signed result as the first time
+	}
+	status := StatusUnknown
+	x.mu.Lock()
+	run := x.running[k]
+	x.mu.Unlock()
+	if run {
+		status = StatusRunning
+	} else if mark, err := x.ver.Store.Load(); err == nil && !mark.Less(plan.Mark{Epoch: q.Epoch, Seq: q.Seq}) {
+		status = StatusLost
+	}
+	return reply(ctx, link.PrioStep, &link.StepResult{Plan: q.Plan, Node: q.Node, Host: a.bundle.Host, Epoch: q.Epoch,
+		Seq: q.Seq, Phase: q.Phase, Status: status})
 }
 
 // onDeadmanResult reports every in-process dead-man timer fire to the controller.

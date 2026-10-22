@@ -93,3 +93,13 @@ func (r registryCatalog) Action(name string) (plan.ActionSpec, bool) {
 	return plan.ActionSpec{Name: spec.Name, Risk: plan.Risk(spec.Risk), Locks: locks,
 		ValidateParams: func(m map[string]any) error { _, err := spec.Validate(m); return err }}, true
 }
+
+// ctlSeq allocates the per-host control sequence from the store, durably. It is
+// a counter separate from the step sequence.
+type ctlSeq struct{ st *store.Store }
+
+func (s ctlSeq) Next(host string, _ uint64) (uint64, error) {
+	return s.st.NextStepSeq(context.Background(), "control/"+host)
+}
+
+var _ plan.SeqAllocator = ctlSeq{}

@@ -176,8 +176,14 @@ type harness struct {
 	addr  string
 	hosts map[string]*testHost
 
+	m         *manifest.Manifest
+	cfg       controller.Config
+	stopServe context.CancelFunc
+	served    chan error
+
 	mu     sync.Mutex
 	steps  []*link.Step
+	ctls   []*link.Control
 	events []controller.StepEvent
 	drop   func(controller.StepEvent) bool
 }
@@ -239,14 +245,31 @@ func testManifest() *manifest.Manifest {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{t: t, hosts: map[string]*testHost{}}
-	m := testManifest()
-	cfg := controller.Config{AgentListen: "127.0.0.1:0", DataDir: filepath.Join(t.TempDir(), "data"),
-		SilenceThreshold: controller.Duration(time.Minute)}
-	c, err := controller.New(context.Background(), cfg, controller.Options{
+	h := &harness{t: t, hosts: map[string]*testHost{}, m: testManifest(),
+		cfg: controller.Config{AgentListen: "127.0.0.1:0", DataDir: filepath.Join(t.TempDir(), "data"),
+			SilenceThreshold: controller.Duration(time.Minute)}}
+	h.startController()
+	t.Cleanup(func() {
+		for _, th := range h.hosts {
+			th.stop()
+		}
+		h.stopController()
+	})
+	return h
+}
+
+// startController starts a controller on the harness data dir: the first call
+// picks a free port, later calls (a restart) reuse the address, so agents find
+// the new instance by themselves.
+func (h *harness) startController() {
+	t := h.t
+	t.Helper()
+	m := h.m
+	c, err := controller.New(context.Background(), h.cfg, controller.Options{
 		Logger:      quiet(),
 		Registry:    newRegistry(),
 		StepTimeout: 4 * time.Second,
+		ResumeGrace: 6 * time.Second,
 		// The controller lints only h1: h2's scored service is left to the
 		// agent's own guard, which must refuse by itself.
 		Guard: func(host string) actions.ScoringGuard {
@@ -255,9 +278,14 @@ func newHarness(t *testing.T) *harness {
 			}
 			return actions.AllowAll{}
 		},
-		OnStepSent: func(_ string, s *link.Step) {
+		OnStepSent: func(host string, s *link.Step) {
 			h.mu.Lock()
 			h.steps = append(h.steps, s)
+			h.mu.Unlock()
+		},
+		OnControlSent: func(host string, c *link.Control) {
+			h.mu.Lock()
+			h.ctls = append(h.ctls, c)
 			h.mu.Unlock()
 		},
 		OnStepResult: func(e controller.StepEvent) bool {
@@ -271,8 +299,17 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.c = c
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var ln net.Listener
+	addr := h.addr
+	if addr == "" {
+		addr = "127.0.0.1:0"
+	}
+	for i := 0; i < 100; i++ {
+		if ln, err = net.Listen("tcp", addr); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,16 +317,49 @@ func newHarness(t *testing.T) *harness {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- c.Serve(ctx, ln) }()
-	t.Cleanup(func() {
-		for _, th := range h.hosts {
-			th.cancel()
-			<-th.done
-		}
-		cancel()
-		<-done
-		c.Close()
-	})
-	return h
+	h.c, h.stopServe, h.served = c, cancel, done
+}
+
+// stopController stops serving and closes the store (a controller crash as far
+// as the persisted state is concerned: nothing is flushed on the way out).
+func (h *harness) stopController() {
+	if h.stopServe == nil {
+		return
+	}
+	h.stopServe()
+	<-h.served
+	h.c.Close()
+	h.stopServe = nil
+}
+
+func (th *testHost) stop() {
+	if th.cancel == nil {
+		return
+	}
+	th.cancel()
+	<-th.done
+	th.cancel = nil
+}
+
+// start (re)starts the host's agent on its state directory.
+func (th *testHost) start(h *harness) {
+	t := h.t
+	t.Helper()
+	env := &actions.Env{Host: th.name, Root: th.root, Registry: newRegistry(), Locks: actions.NewLocks(),
+		Guard:         actions.GuardFromManifest(testManifest(), th.name),
+		Accounts:      &actions.FileAccounts{Root: th.root},
+		Services:      th.svc,
+		QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
+	a, err := agent.New(agent.Config{Layout: th.layout, Logger: quiet(), Exec: &agent.ExecConfig{Env: env, FreshCheck: true},
+		HeartbeatInterval: 100 * time.Millisecond, DialTimeout: 3 * time.Second,
+		Backoff:    link.Backoff{Min: 20 * time.Millisecond, Max: 100 * time.Millisecond},
+		Supervisor: agent.SupervisorOptions{Backoff: link.Backoff{Min: time.Millisecond, Max: 10 * time.Millisecond}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	th.cancel, th.done = cancel, make(chan error, 1)
+	go func() { th.done <- a.Run(ctx) }()
 }
 
 func (h *harness) addHost(name string) *testHost {
@@ -312,22 +382,8 @@ func (h *harness) addHost(name string) *testHost {
 		Host: name, Token: tok, PlanKey: hex.EncodeToString(h.c.PlanPublicKey())}); err != nil {
 		t.Fatal(err)
 	}
-	env := &actions.Env{Host: name, Root: th.root, Registry: newRegistry(), Locks: actions.NewLocks(),
-		Guard:         actions.GuardFromManifest(testManifest(), name),
-		Accounts:      &actions.FileAccounts{Root: th.root},
-		Services:      th.svc,
-		QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
-	a, err := agent.New(agent.Config{Layout: th.layout, Logger: quiet(), Exec: &agent.ExecConfig{Env: env, FreshCheck: true},
-		HeartbeatInterval: 100 * time.Millisecond, DialTimeout: 3 * time.Second,
-		Backoff:    link.Backoff{Min: 20 * time.Millisecond, Max: 100 * time.Millisecond},
-		Supervisor: agent.SupervisorOptions{Backoff: link.Backoff{Min: time.Millisecond, Max: 10 * time.Millisecond}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	th.cancel, th.done = cancel, make(chan error, 1)
-	go func() { th.done <- a.Run(ctx) }()
 	h.hosts[name] = th
+	th.start(h)
 	eventually(t, name+" to connect", 10*time.Second, func() bool {
 		st, ok := h.c.AgentStatus(name)
 		return ok && st.Connected
@@ -557,16 +613,10 @@ func TestEndToEnd(t *testing.T) {
 
 		// Tamper: same signature, different file. Bump the sequence too so
 		// only the signature can save the agent.
-		inner, err := plan.DecodeStep(step.Params)
-		if err != nil {
-			t.Fatal(err)
-		}
+		inner := plan.StepFromWire(step)
 		inner.Params = json.RawMessage(`{"path":"/etc/evil","content":"pwned\n"}`)
 		inner.Seq += 1000
-		w, err := agent.StepToWire(inner)
-		if err != nil {
-			t.Fatal(err)
-		}
+		w := plan.StepToWire(inner)
 		base = refused()
 		if err := h.c.SendRaw(ctx, "h2", w); err != nil {
 			t.Fatal(err)
@@ -590,7 +640,7 @@ func TestEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w, _ = agent.StepToWire(rs)
+		w = plan.StepToWire(rs)
 		base = refused()
 		if err := h.c.SendRaw(ctx, "h2", w); err != nil {
 			t.Fatal(err)
@@ -685,7 +735,7 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	t.Run("safe_mode_refuses_apply_but_not_check", func(t *testing.T) {
-		if err := h.c.SendRaw(ctx, "h2", &link.Control{Kind: "safe_mode", On: true}); err != nil {
+		if err := h.c.SendControl(ctx, "h2", "safe_mode", true, nil); err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, "safe mode on", 5*time.Second, func() bool { s, _ := h.c.AgentStatus("h2"); return s.SafeMode })
@@ -699,7 +749,7 @@ func TestEndToEnd(t *testing.T) {
 		if st.State != controller.PlanFailed || !strings.Contains(st.Nodes["w"].Reason, "safe mode") || h2.exists("etc/safe") {
 			t.Fatalf("safe mode: %s %+v", st.State, st.Nodes)
 		}
-		if err := h.c.SendRaw(ctx, "h2", &link.Control{Kind: "safe_mode", On: false}); err != nil {
+		if err := h.c.SendControl(ctx, "h2", "safe_mode", false, nil); err != nil {
 			t.Fatal(err)
 		}
 		eventually(t, "safe mode off", 5*time.Second, func() bool { s, _ := h.c.AgentStatus("h2"); return !s.SafeMode })
