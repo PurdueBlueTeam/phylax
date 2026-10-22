@@ -33,7 +33,7 @@ func init() {
 			if err != nil {
 				return agent.ModuleSpec{}, fmt.Errorf("detect rules: %w", err)
 			}
-			return spec(&detectModule{env: env, rs: rs, s: s}, s.RatePerSec, s.Burst), nil
+			return subSpec(&detectModule{env: env, rs: rs, s: s}, s.RatePerSec, s.Burst), nil
 		},
 	})
 }
