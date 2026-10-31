@@ -1,6 +1,6 @@
 # Phylax — Design Doc
 
-Version 4, Oct 31, 2026 · @David. Supersedes v3 (Oct 22, 2026; `git show v3:phylax_design.md`). Status: phase 1. The core sections are written; the module sections are placeholders that follow the module template and are written next, from the brief in `docs/impl/modules.md`.
+Version 4, Oct 31, 2026 · @David. Supersedes v3 (Oct 22, 2026; `git show v3:phylax_design.md`). Status: v4 complete draft. The core sections, all 34 module sections, operations, testing, risks and the appendices are written and reconciled against each other (one event-kind table, one action table, one test list, one catalogue). Pending the builder check and David's approval.
 
 ## Summary
 
@@ -254,6 +254,8 @@ Quotient was built and run in Docker and its checks read against source [Q §0].
 16. **Evidence decides.** Every module states the evidence that it matters for points. Detection depth is valued: detection and hunting are not cut for simplicity alone, only when there is no evidence they matter. A module without evidence starts off and is a cut candidate at the next review.
 17. **Learn or enter at runtime.** Anything specific to one event (team number, scorer accounts, credlist names, round delay, a new service) is learned from observation or entered in the UI, because the repository is frozen before the access week.
 
+Review rows carried by the principles above (traceability; the row text is in `docs/impl/review.md`): review D27 (Principle 1: simplicity first, complexity register entry per addition; CHANGE); review D28 ((see docs/impl/review.md)); review D29 ((see docs/impl/review.md)); review D30 ((see docs/impl/review.md)); review D31 (Principle 5: one source of truth, manifest generates plans, rules, firewall, decoys, roles; KEEP); review D32 ((see docs/impl/review.md)); review D33 ((see docs/impl/review.md)); review D34 ((see docs/impl/review.md)); review D35 ((see docs/impl/review.md)); review D36 ((see docs/impl/review.md)); review D37 ((see docs/impl/review.md)); review D38 ((see docs/impl/review.md)); review D39 (Principle 13: fail closed (no unsigned step, no unauthenticated mutating endpoint, no module without config); CHANGE); review D40 ((see docs/impl/review.md)); review D41 ((see docs/impl/review.md)).
+
 ## The module contract
 
 Every capability above the core is a module. The contract makes "modular, not bloated" checkable: CI fails a module that breaks it, and a module that cannot meet it is a cut candidate (review N1.1, N1.2, N1.3; review decision 1).
@@ -274,7 +276,19 @@ A module is:
 
 **Core packages** a module may import: `internal/event`, `internal/module`, `internal/agent` (agent side: `Env`, `Emit`, `RegisterFactory`), `internal/link` (message types only), `internal/plan` (config and step types), `internal/actions` (the action framework: `Action`, `Env`, `Register`, locks, tags, guard), `internal/store` (the read-only query API and the module table migration hook), `internal/manifest` (types), `internal/ui` (the registrar), `internal/vault` (scoped secret reader).
 
-**Shared libraries** (no state, no events, no goroutines that outlive a call) a module may import: `internal/atomicfile`, `internal/parsers/*`, the protocol clients in `internal/checks` (`ntlm`, `smb`, `winrm`, `ssh`, `mssql`, `ldap`, `web`), `internal/integrity` ledger format readers. A shared library that grows state or events becomes a module.
+**Shared stateless libraries are allowed; importing another module's package is not.** A shared library is a package that holds no state between calls, emits no events, registers nothing at run time and starts no goroutine that outlives a call. Any module may import it, because it is a function library and not a module: it has no manifest, no config block and no health. The allowed set is a closed list kept in the CI check (`go list -deps` per module package); adding a package to the list is a design change recorded here. The list:
+
+| Library | Holds | Used by |
+| --- | --- | --- |
+| `internal/atomicfile` | Temp-and-rename writes that keep mode, owner and labels | every module that writes files |
+| `internal/parsers/*` | Protocol, log and file-format parsers (HTTP, SMTP, SMB, TDS, DNS, auth logs, access logs, hosts files) | `capture`, `logs`, `traceback`, `deps`, `checks` |
+| `internal/checks/probe` | The scorer-mimic probe library: `Run`, `Faithful`, `Sweep`, `AuthOnly`, `Spec`, `Item`, `Cred`, `Result`. It carries the protocol clients (`ntlm`, `smb`, `winrm`, `ssh`, `mssql`, `ldap`, `web`) and nothing that schedules | `checks` (the owner), `vantage`, `creds`, `backup`, `respond`, `content_guard`, the executor (`Env.Probe`) |
+| `internal/sockets` | `sock_diag` dump and the inode-to-process join (Linux), the extended-table readers (Windows) | `net`, `deps`, `depot` (`gotools`), `inventory` |
+| `internal/signing` | Release-key `Signer` and `Verifier` (ed25519 detached signatures, the signed-index envelope) | `integrity`, `depot`, the core (plan and config signing uses the same types) |
+| `internal/integrity/format` | Ledger file readers and the package-database readers (dpkg, rpm); read-only | `integrity`, `hunt`, `depot` |
+| `internal/inventory/fold` | One pure function that folds an `inventory.snapshot` plus `inventory.row` events into the current rows of a table | `inventory`, `deps`, `vuln`, `hunt`, `traceback`, the manifest drift check |
+
+A shared library that grows state, an event or a goroutine becomes a module and goes through the whole contract. A module never reaches a sibling through a shared library either: a library holds mechanisms (a probe, a parser, a socket reader), never another module's decisions (a verdict, a proposal, a stored finding).
 
 **Core modules that are not optional:** `health` (agent), the execution engine's `exec` (agent), link and spool. They implement the same interfaces so the Platform page and the conformance suite treat them uniformly.
 
@@ -300,12 +314,13 @@ type Event struct {
 
 `Tag` moves out of `Fields` into the envelope so every event type carries it (v3 "the tag reaches every event type") and rules exempt tagged events with one condition. Adding the two fields changes the canonical encoding, so the protocol minor version rises and the controller accepts both forms for one release.
 
-**Kinds** come in two classes:
+**Kinds** come in three classes (the full list is the Event kinds table below):
 
 - **Common kinds** describe one thing several producers report: `process_start`, `process_exit`, `file_change`, `conn`, `listener`, `auth_event`, `dns_query`, `telemetry_gap`. They are declared in `internal/event/kinds.go` with one Go struct each, and the manifest of every producer lists them under `Emits`. Rules match on common kinds so one rule covers Linux and Windows (audit and winevt both emit `process_start`).
 - **Module kinds** are `<module>.<name>` (`detect.alert`, `integrity.verdict`, `capture.flow`, `scorer.round`). Only the named module may emit them.
+- **Core kinds** (`agent.*`, `spool.gap`, `enroll.*`, `plan.*`) are emitted by the agent supervisor, executor, dead-man and spool and by the controller's own enrollment, link-monitor and plan code.
 
-Existing kind names in the code (`proc.exec`, `exec`, `fim`, `login` and others) are mapped to declared kinds during the retrofit; the old names are accepted as aliases by the controller for one release.
+Existing kind names in the code (`proc.exec`, `exec`, `fim`, `login` and others) are mapped to declared kinds during the retrofit; the old names are accepted as aliases by the controller for one release (alias table under Event kinds).
 
 **Typed events.** A declared kind has a Go struct. Modules build and read events through generic helpers, so a field name typo is a compile error and a schema mismatch is a decode error:
 
@@ -325,6 +340,204 @@ func Decode[T any](e Event, kind string) (T, error)    // strict: wrong kind, un
 ```
 
 A consumer declares the schema versions it understands; the controller stores events of any version and analysers skip versions they do not know, reporting the count in their health.
+
+### Event kinds
+
+One table lists every event kind, who emits it and who consumes it. It is the single source for kind names: module sections, rules, the Splunk `forward` list and the report generators all use these names, and CI compares the table with the `event.Declare` registry and with every module's `Consumes` (T46). There are 161 kinds: 8 common kinds, 26 core kinds and 127 module kinds. All are at schema version 1; a schema bump adds a row note here and in the owning module's Events part.
+
+**Classes.** *Common* kinds describe one thing several producers report and are declared in `internal/event/kinds.go`. *Core* kinds are emitted by the agent supervisor, the executor, the dead-man, the spool and the controller's own plan, enrollment and link-monitor code; the controller-origin ones are stored under agent `controller`, and the ones raised as alerts also produce alert rows through the ingest hook (alert-class events with priority high or critical become alert rows, whichever agent they come from). *Module* kinds are `<module>.<name>` and only the named module may emit them.
+
+**Rules for the table.** A consumed kind must have an emitter in the table (CI fails otherwise). A module lists in `Consumes` every kind its rules, analysers and lint rules read, including the kinds named inside rule files. A kind with no consumer is stored and shown in the UI. A kind that is declared but not yet emitted by code is marked in its module's Status part, not here. `process_exit` and `dns_query` exist on Windows only today; consumers list them so the same rule or analyser works when a Linux source arrives.
+
+| Kind | Class | Schema | Emitter | Consumers |
+| --- | --- | --- | --- | --- |
+| `process_start` | common | 1 | `audit`, `winevt` | `detect`, `content_guard`, `integrity`, `ad`, `traceback`, `chains`, `deps`, `splunk` |
+| `process_exit` | common | 1 | `winevt` (Windows only; `audit` has no fork or exit rules) | `traceback`, `deps` |
+| `file_change` | common | 1 | `audit`, `winevt` | `detect`, `respond`, `content_guard`, `integrity`, `ad`, `traceback`, `chains` |
+| `conn` | common | 1 | `audit`, `winevt`, `net` (`net_rules` events carry `source: audit`); `capture` flows are translated to `conn` on the controller | `detect`, `egress`, `traceback`, `chains`, `deps` |
+| `listener` | common | 1 | `net` | `detect`, `traceback`, `deps`, `report` |
+| `auth_event` | common | 1 | `winevt`, `logs` | `detect`, `scorer`, `traceback`, `chains`, `splunk` |
+| `dns_query` | common | 1 | `winevt` (Windows only; Linux has no DNS source) | `detect`, `deps`, `honeytokens` |
+| `telemetry_gap` | common | 1 | `audit`, `winevt`, `net`, `logs`, `inventory` | `detect`, `respond`, `content_guard`, `integrity`, `checks`, `traceback`, `chains` |
+| `agent.start` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.health` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.step` | core | 1 | agent executor | none (stored, shown in the UI) |
+| `agent.step_result` | core | 1 | agent executor | `report`, `backup` |
+| `agent.step_refused` | core | 1 | agent executor | none (stored, shown in the UI) |
+| `agent.config_applied` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.config_rejected` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.control_refused` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.module_crash` | core | 1 | agent supervisor | none (stored, shown in the UI) |
+| `agent.deadman_fired` | core | 1 | agent dead-man | `notify` |
+| `agent.deadman_recovered` | core | 1 | agent dead-man | none (stored, shown in the UI) |
+| `agent.deadman_recovery_error` | core | 1 | agent dead-man | none (stored, shown in the UI) |
+| `agent.enrolled` | core | 1 | controller (enrollment) | `hunt`, `creds` |
+| `agent.reenrolled` | core | 1 | controller (enrollment) | `hunt`, `creds` |
+| `agent.silent` | core | 1 | controller (link monitor) | `teamfeed`, `notify` |
+| `agent.resumed` | core | 1 | controller (link monitor) | none (stored, shown in the UI) |
+| `spool.gap` | core | 1 | agent spool | `traceback` |
+| `enroll.refused` | core | 1 | controller (enrollment) | none (stored, shown in the UI) |
+| `enroll.key_mismatch` | core | 1 | controller (enrollment) | none (stored, shown in the UI) |
+| `enroll.key_reuse` | core | 1 | controller (enrollment) | none (stored, shown in the UI) |
+| `plan.step_timeout` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `plan.bad_result` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `plan.deadman_fired` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `plan.rollback_failed` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `plan.restore_failed` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `plan.confirm_failed` | core | 1 | controller (plan engine) | none (stored, shown in the UI) |
+| `audit.module_load` | module | 1 | `audit` | `detect` |
+| `audit.rules_changed` | module | 1 | `audit` | `detect` |
+| `winevt.sec_event` | module | 1 | `winevt` | `net`, `detect`, `integrity`, `ad`, `splunk` |
+| `winevt.sensor_state` | module | 1 | `winevt` | `detect` |
+| `net.egress_denied` | module | 1 | `net` | `detect`, `firewall`, `egress`, `report` |
+| `net.shadow_drop` | module | 1 | `net` | `detect`, `firewall` |
+| `net.canary_result` | module | 1 | `net` | `detect`, `egress`, `vantage`, `report` |
+| `net.sensor_degraded` | module | 1 | `net` | none (stored, shown in the UI) |
+| `logs.line` | module | 1 | `logs` | `detect` |
+| `inventory.snapshot` | module | 1 | `inventory` | `inventory`, `detect`, `hunt`, `deps`, `vuln` |
+| `inventory.row` | module | 1 | `inventory` | `inventory`, `detect`, `hunt`, `traceback`, `chains`, `deps`, `vuln` |
+| `inventory.probe_result` | module | 1 | `inventory` | `checks`, `traceback` |
+| `detect.alert` | module | 1 | `detect` | `respond`, `capture`, `creds`, `traceback`, `chains`, `honeytokens`, `report`, `notify`, `splunk` |
+| `detect.suppressed` | module | 1 | `detect` | none (stored, shown in the UI) |
+| `respond.action` | module | 1 | `respond` | none (stored, shown in the UI) |
+| `respond.breaker` | module | 1 | `respond` | none (stored, shown in the UI) |
+| `respond.loop` | module | 1 | `respond` | `hunt` |
+| `content_guard.change` | module | 1 | `content_guard` | none (stored, shown in the UI) |
+| `content_guard.restore` | module | 1 | `content_guard` | none (stored, shown in the UI) |
+| `content_guard.stop` | module | 1 | `content_guard` | none (stored, shown in the UI) |
+| `integrity.verdict` | module | 1 | `integrity` | `detect`, `hunt`, `egress`, `traceback`, `chains`, `report`, `backup` |
+| `integrity.yara` | module | 1 | `integrity` | none (stored, shown in the UI) |
+| `integrity.crosscheck` | module | 1 | `integrity` | `detect`, `hunt` |
+| `integrity.claims` | module | 1 | `integrity` | none (stored, shown in the UI) |
+| `integrity.ledger_unavailable` | module | 1 | `integrity` | none (stored, shown in the UI) |
+| `hunt.finding` | module | 1 | `hunt` | `detect`, `creds`, `report`, `backup` |
+| `hunt.run` | module | 1 | `hunt` | `report`, `backup` |
+| `ad.finding` | module | 1 | `ad` | `detect`, `hunt` |
+| `ad.gpo_finding` | module | 1 | `ad` | `respond` |
+| `ad.gpo_baseline` | module | 1 | `ad` | none (stored, shown in the UI) |
+| `firewall.applied` | module | 1 | `firewall` | none (stored, shown in the UI) |
+| `firewall.drift` | module | 1 | `firewall` | none (stored, shown in the UI) |
+| `firewall.restored` | module | 1 | `firewall` | none (stored, shown in the UI) |
+| `firewall.quarantine` | module | 1 | `firewall` | none (stored, shown in the UI) |
+| `firewall.shadow_summary` | module | 1 | `firewall` | none (stored, shown in the UI) |
+| `egress.candidate` | module | 1 | `egress` | none (stored, shown in the UI) |
+| `egress.suggest_block` | module | 1 | `egress` | none (stored, shown in the UI) |
+| `capture.txn` | module | 1 | `capture` | `scorer`, `report` |
+| `capture.flow` | module | 1 | `capture` | `detect`, `scorer`, `traceback`, `chains`, `report` |
+| `capture.scan` | module | 1 | `capture` | none (stored, shown in the UI) |
+| `capture.http_request` | module | 1 | `capture` | `detect`, `honeytokens` |
+| `capture.evidence` | module | 1 | `capture` | `report` |
+| `capture.stats` | module | 1 | `capture` | none (stored, shown in the UI) |
+| `capture.source_check` | module | 1 | `capture` | none (stored, shown in the UI) |
+| `devices.config` | module | 1 | `devices` | `detect`, `splunk` |
+| `devices.change` | module | 1 | `devices` | `splunk` |
+| `devices.deny` | module | 1 | `devices` | `egress`, `scorer`, `splunk` |
+| `devices.traffic` | module | 1 | `devices` | `capture`, `chains`, `report` |
+| `devices.backup` | module | 1 | `devices` | `report` |
+| `devices.version` | module | 1 | `devices` | `vuln` |
+| `devices.finding` | module | 1 | `devices` | `detect` |
+| `devices.capture` | module | 1 | `devices` | none (stored, shown in the UI) |
+| `checks.result` | module | 1 | `checks` | `detect`, `scorer`, `vantage`, `creds`, `traceback`, `report`, `backup` |
+| `checks.deferred` | module | 1 | `checks` | none (stored, shown in the UI) |
+| `checks.refused` | module | 1 | `checks` | none (stored, shown in the UI) |
+| `checks.red` | module | 1 | `checks` | `traceback`, `chains` |
+| `checks.latency` | module | 1 | `checks` | none (stored, shown in the UI) |
+| `checks.compare` | module | 1 | `checks` | `detect`, `vantage` |
+| `checks.flow` | module | 1 | `checks` | none (stored, shown in the UI) |
+| `checks.diagnosis` | module | 1 | `checks` | none (stored, shown in the UI) |
+| `scorer.round` | module | 1 | `scorer` | `creds`, `traceback`, `report`, `backup` |
+| `scorer.clock` | module | 1 | `scorer` | `checks`, `vantage`, `creds` |
+| `scorer.service` | module | 1 | `scorer` | none (stored, shown in the UI) |
+| `scorer.item_set` | module | 1 | `scorer` | `checks` |
+| `scorer.account` | module | 1 | `scorer` | `vantage`, `creds` |
+| `scorer.proposal` | module | 1 | `scorer` | `detect`, `checks` |
+| `scorer.blocked` | module | 1 | `scorer` | none (stored, shown in the UI) |
+| `scorer.silent` | module | 1 | `scorer` | none (stored, shown in the UI) |
+| `scorer.sla` | module | 1 | `scorer` | none (stored, shown in the UI) |
+| `scorer.note` | module | 1 | `scorer` | `scorer` |
+| `scorer.risk` | module | 1 | `scorer` | none (stored, shown in the UI) |
+| `vantage.scan` | module | 1 | `vantage` | `report` |
+| `vantage.exposure_change` | module | 1 | `vantage` | `detect` |
+| `vantage.canary_hit` | module | 1 | `vantage` | `detect` |
+| `vantage.pcr_verify` | module | 1 | `vantage` | `creds` |
+| `vantage.probe` | module | 1 | `vantage` | `creds` |
+| `vantage.refused` | module | 1 | `vantage` | none (stored, shown in the UI) |
+| `creds.state` | module | 1 | `creds` | `checks` |
+| `creds.proposal` | module | 1 | `creds` | none (stored, shown in the UI) |
+| `creds.txn` | module | 1 | `creds` | `chains` |
+| `creds.reverted` | module | 1 | `creds` | none (stored, shown in the UI) |
+| `creds.notice` | module | 1 | `creds` | none (stored, shown in the UI) |
+| `creds.t0` | module | 1 | `creds` | none (stored, shown in the UI) |
+| `traceback.source` | module | 1 | `traceback` | `chains` |
+| `traceback.change` | module | 1 | `traceback` | `scorer`, `chains` |
+| `traceback.result` | module | 1 | `traceback` | `chains` |
+| `chains.chain` | module | 1 | `chains` | `creds`, `report`, `splunk` |
+| `chains.item` | module | 1 | `chains` | `report` |
+| `chains.campaign` | module | 1 | `chains` | none (stored, shown in the UI) |
+| `deps.edge` | module | 1 | `deps` | `detect`, `deps` |
+| `deps.edge_gone` | module | 1 | `deps` | `detect`, `deps` |
+| `deps.peer` | module | 1 | `deps` | `deps` |
+| `deps.graph` | module | 1 | `deps` | `checks` |
+| `deps.proposal` | module | 1 | `deps` | none (stored, shown in the UI) |
+| `vuln.finding` | module | 1 | `vuln` | none (stored, shown in the UI) |
+| `vuln.summary` | module | 1 | `vuln` | none (stored, shown in the UI) |
+| `decoys.hit` | module | 1 | `decoys` | `detect`, `traceback`, `chains` |
+| `honeytokens.read` | module | 1 | `honeytokens` | `detect` |
+| `honeytokens.sighting` | module | 1 | `honeytokens` | `creds`, `traceback`, `chains` |
+| `honeytokens.generated` | module | 1 | `honeytokens` | none (stored, shown in the UI) |
+| `honeytokens.secrets_unavailable` | module | 1 | `honeytokens` | none (stored, shown in the UI) |
+| `honeytokens.aws_key_seen` | module | 1 | `honeytokens` | none (stored, shown in the UI) |
+| `report.draft` | module | 1 | `report` | none (stored, shown in the UI) |
+| `report.validated` | module | 1 | `report` | none (stored, shown in the UI) |
+| `report.figure` | module | 1 | `report` | none (stored, shown in the UI) |
+| `report.export` | module | 1 | `report` | none (stored, shown in the UI) |
+| `backup.taken` | module | 1 | `backup` | `report` |
+| `backup.restored` | module | 1 | `backup` | none (stored, shown in the UI) |
+| `backup.verified` | module | 1 | `backup` | none (stored, shown in the UI) |
+| `backup.failed` | module | 1 | `backup` | none (stored, shown in the UI) |
+| `teamfeed.say` | module | 1 | `teamfeed` | `report`, `teamfeed` |
+| `teamfeed.claim` | module | 1 | `teamfeed` | `report`, `teamfeed` |
+| `teamfeed.window` | module | 1 | `teamfeed` | none (stored, shown in the UI) |
+| `notify.sent` | module | 1 | `notify` | none (stored, shown in the UI) |
+| `notify.failed` | module | 1 | `notify` | none (stored, shown in the UI) |
+| `depot.sync_state` | module | 1 | `depot` | `vuln` |
+| `depot.deploy` | module | 1 | `depot` | none (stored, shown in the UI) |
+| `depot.problem` | module | 1 | `depot` | none (stored, shown in the UI) |
+| `wazuh.alert` | module | 1 | `wazuh` | none (stored, shown in the UI) |
+| `wazuh.health` | module | 1 | `wazuh` | none (stored, shown in the UI) |
+| `splunk.forwarder_state` | module | 1 | `splunk` | none (stored, shown in the UI) |
+| `suricata.alert` | module | 1 | `suricata` | none (stored, shown in the UI) |
+| `suricata.dns` | module | 1 | `suricata` | none (stored, shown in the UI) |
+| `suricata.http` | module | 1 | `suricata` | none (stored, shown in the UI) |
+| `suricata.zeek_conn` | module | 1 | `suricata` | none (stored, shown in the UI) |
+| `suricata.zeek_dns` | module | 1 | `suricata` | none (stored, shown in the UI) |
+| `suricata.run` | module | 1 | `suricata` | none (stored, shown in the UI) |
+
+**Controller-origin kinds** (`agent.enrolled`, `agent.reenrolled`, `agent.silent`, `agent.resumed`, `enroll.*`, `plan.*`) are the controller's alert kinds written as events of agent `controller`. `agent.enrolled` is emitted when `welcome` is sent for a first enrollment and `agent.reenrolled` when a host enrolls again after a reset or a re-enrollment run (Enrollment); both carry the host, the key hash and the manifest name. `agent.deadman_fired` is sent at critical priority and the controller marks the plan node rolled back on receipt (Known bugs 8).
+
+**Reserved name.** `net.sinkhole_capture` is not declared. It would be emitted by a sinkhole catcher module and consumed by `honeytokens` (the `akiascan` hook) only if the C2 fingerprinting lab keeps the sinkhole (`egress`, open question 3).
+
+**Aliases.** The code's old names stay accepted by the controller for one release, mapped to the declared kind when events are stored; rules, `rules/profiles.yml`, `rules/mw-redteam.yml` and `internal/traceback/obs.go` are renamed in the retrofit. This is the one place the old names are listed.
+
+| Old name | Declared kind |
+| --- | --- |
+| `proc.exec`, `exec` | `process_start` |
+| `process_end` | `process_exit` |
+| `fim` | `file_change` |
+| `login`, `auth_success`, `auth_fail` | `auth_event` (`result: success` or `fail`) |
+| `net_connect`, `net.connection_opened`, `net.connection_closed` | `conn` (`op: opened` or `closed`) |
+| `net.listener_added`, `net.listener_removed` | `listener` (`op: added` or `removed`) |
+| `sec_event` | `winevt.sec_event` |
+| `sensor_state` | `winevt.sensor_state` |
+| `log_line` | `logs.line` |
+| `net.txn`, `net.flow`, `net.scan`, `http_request` | `capture.txn`, `capture.flow`, `capture.scan`, `capture.http_request` |
+| `decoy.hit` | `decoys.hit` |
+| `honey.read` | `honeytokens.read` |
+| `zeek.conn`, `zeek.dns` | `suricata.zeek_conn`, `suricata.zeek_dns` |
+| `hunt.completed` | `hunt.run` |
+| `chains.remediation` | `chains.item` |
+
+D5d is wired to `integrity.verdict`; there is no `binary_integrity` kind (Known bugs 6).
 
 ### The capability manifest
 
@@ -422,7 +635,7 @@ The controller side mirrors the agent side. Today controller features are method
 type Host interface {
 	Config(v any) error                                     // decode the module's manifest block, strict
 	Query() store.Query                                     // read-only event-store queries
-	Emit(e event.Event) error                               // controller-origin events, stored under agent "controller"
+	Emit(e event.Event) error                               // controller-origin events, stored under agent "controller"; alert-class ones (priority high or critical) also become alert rows
 	Subscribe(kinds []string, buf int) (<-chan event.Event, func()) // events as they are committed
 	Propose(p Proposal) error                               // a one-click suggestion or a plan draft; never applies
 	Secrets(names ...string) (vault.Reader, error)          // only the secret names its config declares
@@ -447,7 +660,7 @@ type Analyzer struct {
 
 An analyser holds no state between runs; anything it must remember it writes as an event or into a table it owns. That is what makes traceback, chains, deps, SLA, egress ranking and the vulnerability matcher testable from fixture stores and switchable one at a time (review N1.3, cross-cutting idea 7). Analysers run on the controller's analysis worker with a per-run deadline and a per-module CPU budget; a run over budget is stopped and reported.
 
-`Proposal` is the one route from a module to change: a typed suggestion ("block 10.0.0.5 on the Palo", "restore /var/www/html/index.php from golden", "disable unit x") with evidence references, rendered as a one-click button that creates and approves a plan through the normal engine. Modules never sign or send steps themselves.
+`Proposal` is the one route from a module to change: a typed suggestion ("block 10.0.0.5 on the Palo", "restore /var/www/html/index.php from golden", "disable unit x") with evidence references, or a plan draft of several nodes (evidence runs, backup restores), rendered as a one-click button that creates and approves a plan through the normal engine. A response recipe of the `respond` module whose tier is 1 becomes a Proposal on the controller side of that module; its tier-0 half runs on the agent. Modules never sign or send steps themselves.
 
 **Store tables.** The core owns only `host`, `service`, `event`, `alert` and `incident` (plus plans, approvals, audit and UI accounts). A module that needs its own tables declares them in `Tables`, ships the migrations in its package, and only it writes them. Other modules read a module's findings from its events, not its tables.
 
@@ -474,6 +687,7 @@ type Health struct {
 	Detail string
 	Gaps   []Gap
 	Usage  Usage
+	Info   map[string]string // small typed facts the controller compares or displays, e.g. the audit module's `rules_hash`; carried in the heartbeat's per-module block, never free text for decisions
 }
 ```
 
@@ -594,14 +808,14 @@ hosts:
   rocky-ecom:      { segment: lan, ip: 172.20.240.10,  public: "172.25.{{ 20 + team }}.10",  os: { family: rhel,    distro: rocky,   version: "9" },      roles: [capture, decoys], labels: [web, linux] }
   ubuntu-email:    { segment: lan, ip: 172.20.240.15,  public: "172.25.{{ 20 + team }}.15",  os: { family: debian, distro: ubuntu,  version: "22.04" },  roles: [capture, decoys], labels: [mail, linux], domain_member: ad }
   debian-splunk:   { segment: lan, ip: 172.20.240.20,  public: "172.25.{{ 20 + team }}.20",  os: { family: debian, distro: debian,  version: "12" },     roles: [capture, decoys], labels: [splunk, linux] }
-  ad:              { segment: lan, ip: 172.20.240.100, public: "172.25.{{ 20 + team }}.100", os: { family: windows, version: "server-2022" },           roles: [capture, check_runner, domain_controller], labels: [windows, dc] }
-  mssql:           { segment: lan, ip: 172.20.240.120, public: "172.25.{{ 20 + team }}.120", os: { family: windows, version: "server-2019" },           roles: [capture, decoys], labels: [windows, sql], domain_member: ad }
+  ad:              { segment: lan, ip: 172.20.240.100, public: "172.25.{{ 20 + team }}.100", os: { family: windows, version: "server-2022" },           roles: [check_runner, domain_controller], labels: [windows, dc] }
+  mssql:           { segment: lan, ip: 172.20.240.120, public: "172.25.{{ 20 + team }}.120", os: { family: windows, version: "server-2019" },           roles: [decoys], labels: [windows, sql], domain_member: ad }
   ubuntu-wkst:     { segment: lan, ip: dhcp, os: { family: debian, distro: ubuntu, version: "22.04" },       roles: [controller, capture, check_runner], labels: [workstation] }
-  win11-wkst:      { segment: lan, ip: dhcp, os: { family: windows, version: "11" },                        roles: [capture], labels: [workstation, windows] }
+  win11-wkst:      { segment: lan, ip: dhcp, os: { family: windows, version: "11" },                        roles: [], labels: [workstation, windows] }
   kali:            { segment: kali_leg, ip: 172.17.0.2, os: { family: debian, distro: kali, version: "2026.2" }, roles: [check_runner, scanner, canary], labels: [vantage] }
 ```
 
-The public addresses use the same last octet as the internal ones. The workstations and the Kali go out through VyOS source NAT (`172.31.(20+team).2`), so they have no public address of their own [PKT §2]. Hosts with the `decoys` role never decoy on a scored port and never on a public address (the `decoys` module).
+The `capture` role is Linux only: Windows packet capture is cut (Removed in v4), so Windows hosts carry no `capture` role and their network coverage comes from Sysmon 3, Security 5156 and 5157 and the Palo logs. The `capture` module reports `degraded` on a role it cannot honour, which is why the example leaves the role off the Windows hosts. The public addresses use the same last octet as the internal ones. The workstations and the Kali go out through VyOS source NAT (`172.31.(20+team).2`), so they have no public address of their own [PKT §2]. Hosts with the `decoys` role never decoy on a scored port and never on a public address (the `decoys` module).
 
 #### Roles and links
 
@@ -749,11 +963,11 @@ The agent is the agent mode of the single static binary, running as a supervised
 | Measure | Target | Enforced by |
 | --- | --- | --- |
 | Binary size | 40 MB or less, 15 MB or less compressed | CI fails the build above it (`make size`; review D66). No agent-only build tag. |
-| Memory | 80 MB RSS or less steady, excluding the packet ring and kernel-held memory (reported separately in the heartbeat) | `debug.SetMemoryLimit` plus systemd `MemoryMax` or a Windows Job Object as the hard cap; per-module self-reported held bytes (review D67) |
+| Memory | 80 MB RSS or less steady for the agent without the `capture` module, excluding kernel-held memory (reported separately in the heartbeat). On a host with the `capture` role the capture module's ring and freeze hold are Go heap (256 MiB each by default, `ring_mb` and `hold_mb`) and are budgeted on top: the hard cap is 80 MB plus the module's configured `HeldMB`, and the heartbeat reports the capture module's held bytes separately from the base figure | `debug.SetMemoryLimit` plus systemd `MemoryMax` or a Windows Job Object as the hard cap, computed from the 80 MB base plus the held budgets of the modules enabled on the host; per-module self-reported held bytes (review D67) |
 | CPU | 3% average; a 5 s burst of one core at most | systemd `CPUQuota` or the Job Object; per-module self-timed budgets; sweeps run at low priority; capture drops packets before slowing the host |
-| Disk | Spool 200 MB cap; packet ring the smaller of 2 GB or 10% of free disk | Oldest low-priority data shed first; alerts and evidence never shed (review D68) |
+| Disk | Spool 200 MB cap; frozen capture evidence (pcap slices) under the `capture` module's `disk_budget_mb` (default 512 MB) | Oldest low-priority data shed first; alerts and evidence never shed (review D68) |
 
-Kernel-held memory is reported in the heartbeat (audit backlog, inotify watches, the AF_PACKET ring) [OA §5.7] but not accounted per module.
+Kernel-held memory is reported in the heartbeat (audit backlog, inotify watches, the kernel's TPACKET_V3 mapping) [OA §5.7] but not accounted per module. The capture module's own packet ring is not kernel memory: it is a copy-in circular buffer in the agent's heap, so it counts against the cap and is sized by configuration, not hidden from it. If a lab run shows the heap ring too costly on a small host, moving it to a file is a change inside the module (the ring API does not expose where the bytes live); the design follows the code until then.
 
 #### What "Go-native" means
 
@@ -838,9 +1052,20 @@ The operator UI is not on this listener. Four connection types on one port is st
 | Controller → agent | `step` | A signed plan step |
 | Controller → agent | `config` | Signed `AgentConfig`: module blocks, rules, ledger references, budgets |
 | Controller → agent | `fetch` | Request for a pcap slice, a file, a depot blob or raw telemetry |
-| Controller → agent | `control` | Signed: safe mode, freeze capture, dead-man confirm, step status |
+| Controller → agent | `control` | Signed; the types are listed below: `safe_mode`, `freeze_capture`, `deadman_confirm`, `step_status`, `work_window`, `round_clock` |
 | Relay ↔ controller | `relay_request` | Device-proxy and bootstrap splice requests on the relay control connection |
 | Controller → agent | `token_issue` | Re-enrollment token delivery where needed |
+
+**Control types.** Every `control` message is signed with the plan key, host-bound and replay-protected like a step. Adding a type raises the protocol minor version, and an agent that does not know a type answers `agent.control_refused` and carries on.
+
+| Type | Fields | Effect |
+| --- | --- | --- |
+| `safe_mode` | `on` | Suspends tier-0 responses and plan applies; checks and rollbacks still run (Execution engine: Safe mode) |
+| `freeze_capture` | `rule`, `alert_time`, `addrs` | Freezes the packet ring for a controller-scope rule that collects `freeze_ring` (`capture`) |
+| `deadman_confirm` | `node` | Disarms the dead-man for a node after the fresh-connection check |
+| `step_status` | `plan`, `node`, `state` | Tells the agent a node was cancelled or superseded |
+| `work_window` | `id`, `tag`, `until`, `end` | Opens, extends or ends a tagged work window (`teamfeed`). While a window is open the agent's emit path stamps its `tag` on every event the host emits (the envelope `Tag` field), exactly as it does for a plan tag. The window is persisted, ends on its own at `until` even with the link down, and never exempts anything the rules do not already exempt for tagged events |
+| `round_clock` | `epoch`, `delay`, `jitter`, `last_burst_end`, `window_start`, `window_end`, `min_window`, `confidence`, `provisional` | The scorer's round-clock estimate (`scorer.clock`), sent to agents that hold the `check_runner` or `scanner` role whenever the estimate changes. The agent extrapolates between refreshes, so a runner can hold a probe for the quiet window without asking. An agent that never receives one reports the `checks` gap `no round clock` and falls back to jittered intervals |
 
 **The agent `fetch` handler is a no-op today** (`internal/agent/handlers.go:41`; Known bugs). Depot pulls, ledger delivery, package installs from the depot and pcap slices all depend on it, so implementing it is a core task (review D117-D119): the agent answers `fetch` by streaming the requested object as chunks at bulk priority, bounded by the per-agent fetch cap, and the controller pushes depot blobs the same way in reverse.
 
@@ -940,11 +1165,12 @@ The one-liner carries two pins: the controller's public-key hash (`curl --pinned
 
 #### After enrollment
 
-SSH, WinRM and RDP are treated like any other service. If the manifest does not declare them for a host, hardening disables them, with the console as break-glass (review D144). On 2027 hosts the manifest declares SSH on the Linux hosts, WinRM on the AD host and RDP on the MSSQL host, because they are scored. Session eviction runs for every account rotated at T+0 as soon as the host's agent is up.
+SSH, WinRM and RDP are treated like any other service. If the manifest does not declare them for a host, hardening disables them, with the console as break-glass (review D144). On 2027 hosts the manifest declares SSH on the Linux hosts, WinRM on the AD host and RDP on the MSSQL host, because they are scored. Session eviction runs for every account rotated at T+0 as soon as the host's agent is up. The controller emits the core event `agent.enrolled` when it sends `welcome` for a first enrollment (host, key hash, manifest name); the `hunt` module starts its first run on it and `creds` opens the host's T+0 record (Event kinds).
 
 #### Re-enrollment after a reset
 
 - A per-VM reset does not exist in 2027. A new reservation resets all hosts, so the UI offers **Re-enroll all**: it revokes every old key, issues fresh tokens and runs first contact again in dependency order, after the T+0 console phase is repeated on the new hosts (review D145).
+- The controller emits `agent.reenrolled` for each host that enrolls again; `hunt` starts a targeted run and `creds` marks the host's credentials reverted from it.
 - Every rotated credential is marked `reverted` per (account, credlist), and the hardening plans run again from zero. Every action is idempotent.
 - **Quotient re-sync.** Quotient does not know about reverts: after a revert the host has the old passwords and Quotient keeps the new ones. Each reverted scored credential is either re-applied on the host or a PCR back to the old value is generated, per credlist, and the host's scored changes are blocked until it is resolved (the `creds` module, review N7.3).
 - A host reset in a variant event restores its default credentials and, for the DC, rolls back every domain change. The domain credentials are marked reverted and the AD plans re-run.
@@ -984,34 +1210,44 @@ type Action interface {
 }
 ```
 
-A module that owns an action family registers it from its package (`actions.Register`), and lists it in its manifest's `Actions`. The executor runs steps off the receive loop (8 at once; excess is answered `failed`), under the locks, inside the dead-man window from the step, and rolls back by itself on an apply or verify failure (review D69).
+A module that owns an action family registers it from its package (`actions.Register`), and lists it in its manifest's `Actions`. Controller-side actions (device adapters, `suricata.analyze_pcap`, `pcr.generate`) are marked `RunsController` and receive an `Env` with a `Probe` callback (see the scorer-mimic probe). The executor runs steps off the receive loop (8 at once; excess is answered `failed`), under the locks, inside the dead-man window from the step, and rolls back by itself on an apply or verify failure (review D69).
 
 #### Action families
 
-The core owns the general families that many modules' plans use. Module-owned families are listed for completeness and specified in their module sections.
+Action names follow the code. Where the code registers a name (`internal/actions`), the name is final and this table uses it; a name marked *new* is specified here or in the owning module's section and not registered yet. One name has one owner and appears in one row. The core owns the general families that many modules' plans use. A module that owns a family specifies it in its module section (risk, locks, scorer-visible touches), registers it from its package and lists it in its manifest's `Actions`; the manifest `Actions` lists are checked against this table in CI.
 
 | Family | Actions | Linux | Windows | Owner |
 | --- | --- | --- | --- | --- |
-| Files | `file.write`, `file.template`, `file.perms`, `file.quarantine`, `file.restore`, `file.hash`, `file.attr` (clear or set immutable), `dir.snapshot` | Native; atomic temp-and-rename that copies mode, owner, xattrs and SELinux label; `validate` hook | Native | core (review D151) |
-| Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys`, `session.terminate_predating` | Edit `/etc/shadow` and friends under the shadow-utils lock (`lckpwdf`), atomically, preserving aging fields and labels; SHA-512 crypt; clears and restores `chattr +i` on `/etc/shadow` and `/etc/passwd` | `NetUserSetInfo`, `NetLocalGroup*`, WTS session APIs | core (review D152, N3.1, N3.3) |
-| Services | `service.state`, `service.config` | systemd over D-Bus; `validate` hook on config | Service control manager APIs | core (review D154) |
-| Registry | `reg.set`, `reg.delete`, `reg.snapshot` | — | Native registry API | core (review D158) |
-| Kernel and system | `sysctl.set`, `module.block`, `hosts.file`, `selinux.restore` | `/proc/sys`, modprobe config | — | core (review D157). The unused `modules.disable_loading` action is deleted. `module.block` verify is fixed (Known bugs). |
-| Persistence cleanup | `cron.disable`, `unit.disable`, `unit.mask`, `task.disable`, `wmi.subscription_remove`, `runkey.remove`, `ld_preload.clear`, `caps.clear`, `pkg.unhold` | Native file edits, D-Bus | Task Scheduler and WMI through COM; registry | core (review D159). Every hunt finding ends here; disable and quarantine, never delete. |
-| Processes | `proc.kill_tree` (pidfd plus start-time check; `cgroup.kill` for units), `proc.suspend`, `proc.dump` | Signals, cgroup freeze, `/proc/<pid>/mem` | `TerminateProcess`; `MiniDumpWriteDump` | core (review D160). Collected samples and dumps are defanged (ELF or PE magic zeroed) so a stored sample cannot execute or trip AV. |
-| Logging | `audit.rules`, `audit.immutable`, `auditpol.set`, `eventlog.size`, `sysmon.install`, `sysmon.config` | Kernel audit over netlink | Native audit-policy API; `sysmon.install` uses `host.exec` | core (review D161) |
-| Databases | `mysql.exec`, `mysql.set_password`, `mysql.dump`, `mssql.exec` (read-mostly), `mssql.set_password` | Go MySQL driver | `go-mssqldb` over TCP or shared memory | core (review D162) |
-| Collection | `collect.files`, `collect.inventory`, `hunt.baseline_diff`, `hunt.persistence`, `hunt.ad`, `probe.run`, `yara.scan` | Native, except `yara.scan` (pinned YARA-X) | Same | core (review D166); probes and hunt checks are owned by `inventory` and `hunt` |
-| Agent | `agent.replace_binary`, `agent.config`, `agent.set_controller`, `agent.safe_mode`, `agent.rename` | Native | Native | core (review D169) |
+| Files | `file.write`, `file.template`, `file.perms`, `file.quarantine`, `file.restore`, `file.hash`, `file.attr` (clear or set immutable), `dir.snapshot` (*new*) | Native; atomic temp-and-rename that copies mode, owner, xattrs and SELinux label; `validate` hook | Native | core (review D151) |
+| Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys`, `session.terminate_predating` (*new*) | Edit `/etc/shadow` and friends under the shadow-utils lock (`lckpwdf`), atomically, preserving aging fields and labels; SHA-512 crypt; clears and restores `chattr +i` on `/etc/shadow` and `/etc/passwd` | `NetUserSetInfo`, `NetLocalGroup*`, WTS session APIs | core (review D152, N3.1, N3.3) |
+| Services | `service.state`, `service.config`, `systemd.dropin`, `cockpit.disable`, `win.service.config` | systemd over D-Bus; `validate` hook on config | Service control manager APIs | core (review D154) |
+| Config edits | `ini.set`, `conf.set`, `xml.set`, `agentopt.set` (agent options, e.g. Wazuh agent settings) | Native, in place, with the `validate` hook | Same | core |
+| Registry | `reg.set`, `reg.delete`, `reg.snapshot` (*new*) | — | Native registry API | core (review D158) |
+| Kernel and system | `sysctl.set`, `kernel.module_block`, `mount.remount` (*new*), `hosts.file` (*new*), `selinux.restore` (*new*) | `/proc/sys`, modprobe config; `mount.remount` changes the options of a mounted path (risk `service`, lock `mounts`, touches the mount options of the path, rollback remounts the prior options; the `hardening` noexec pack uses it) | — | core (review D157). The unused `modules.disable_loading` action is deleted. `kernel.module_block` verify is fixed (Known bugs 1). The earlier draft's `module.block` is `kernel.module_block` |
+| Persistence cleanup | `cron.disable`, `at.disable`, `unit.disable` (*new*), `unit.mask` (*new*), `task.disable` (*new*), `wmi.subscription_remove` (*new*), `runkey.remove` (*new*), `ld_preload.clear` (*new*), `caps.clear` (*new*), `pkg.unhold` (*new*) | Native file edits, D-Bus | Task Scheduler and WMI through COM; registry | core (review D159). Every hunt finding ends here; disable and quarantine, never delete. |
+| Processes | `proc.kill_tree` (pidfd plus start-time check; `cgroup.kill` for units), `proc.suspend`, `proc.dump` (all *new*) | Signals, cgroup freeze, `/proc/<pid>/mem` | `TerminateProcess`; `MiniDumpWriteDump` | core (review D160). Collected samples and dumps are defanged (ELF or PE magic zeroed) so a stored sample cannot execute or trip AV. |
+| Logging | `audit.rules`, `audit.immutable` (*new*), `win.audit_policy.set` (built; the earlier draft's `auditpol.set`), `eventlog.size` (*new*), `sysmon.install`, `sysmon.config` (*new*), `win.defender`, `win.defender.audit` | Kernel audit over netlink | Native audit-policy API; `sysmon.install` uses `host.exec`; the Defender actions use the Defender API | core (review D161); `audit.rules` works against the `audit` module's rule set |
+| Databases | `sql.query{engine, statement}` (built; engine `mysql`, `mariadb` or `mssql`; replaces the earlier draft's `mysql.exec` and `mssql.exec`), `sql.set_password{engine, user, host}` (*new*; replaces the earlier draft's `mysql.set_password` and `mssql.set_password`; the value comes from the step's secrets blob), `mysql.audit`, `mysql.lock`, `mssql.audit`, `mssql.lock` | Go MySQL driver | `go-mssqldb` over TCP or shared memory | core (review D162). Dumps and restores are `backup.*`, not here |
+| Web and application | `web.opencart_audit`, `web.rename_dir`, `web.remove_dir`, `web.roundcube_audit` (*new*) | Native | Same | core (the `hardening` packs use them) |
+| Splunk hardening | `splunk.rest` (GET only, search endpoints refused), `splunk.sidecar_off` (disables the Splunk PostgreSQL sidecar), `splunk.password` (guarded password rotation) | Over the 8089 management API | Same | `hardening` packs (all built); `splunk.hec_setup` is the `splunk` module's |
+| Windows hardening | `windows.smb1` | — | Registry and SCM | core; `windows.hotfix` belongs to `depot`, `win.firewall` to `firewall` |
+| Collection | `collect.files`, `collect.inventory`, `probe.run` (*new*) | Native | Same | core (review D166); `collect.inventory` and `probe.run` are implemented by `inventory`, the `hunt.*` actions by `hunt`, `yara.scan` by `integrity` |
+| Probes and checks | `health.check` (*new*; runs the scorer-mimic probe of a service target and fails the node when it is red), `net.tcp_probe`, `net.http_probe`, `command.check`, `deception.decoy_check` | Native; the probe library is `internal/checks/probe` | Same | core for the first four (the probes themselves are the `checks` module's shared library), `decoys` for `deception.decoy_check` |
+| Agent | `agent.replace_binary`, `agent.config`, `agent.set_controller`, `agent.safe_mode`, `agent.rename` (all *new*) | Native | Native | core (review D169) |
 | Escape hatch | `host.exec` | Approval required (or pinned pre-approval); labeled everywhere | Same | core (review D85) |
-| Firewall | `fw.apply`, `fw.snapshot`, `fw.restore`, `fw.quarantine` | `google/nftables` over netlink | Windows Firewall through COM | `firewall` |
-| Domain | `ad.*`, `ldap.modify`, `ad.krbtgt_reset`, `ad.netlogon_enforce`, `ad.gpo_*`, `service.sddl_reset` | — | DC agent | `ad` |
-| Integrity | `ledger.sweep`, `ledger.verify_pin`, `binary.restore_from_depot` | Native | Native | `integrity` |
-| Packages | `pkg.install`, `pkg.upgrade`, `pkg.reinstall`, `pkg.repair`, `pkg.fetch_to_depot` | From the depot over `fetch` | Windows Update Agent COM | `depot` |
-| Backups | service dumps and restores | Services' own dump tools as labeled actions | Same | `backup` |
-| Credentials | `pcr.generate`, `pcr.verify` | — | — | `creds` |
-| Integrations | `wazuh.deploy`, `wazuh.health`, `splunk.hec_setup`, `suricata.analyze_pcap` | Pinned installers from the cache | Same | `wazuh`, `splunk`, `suricata` |
-| Devices | `palo.apply`, `palo.commit`, `palo.snapshot`, `palo.revert`, `vyos.apply`, `device.rotate_admin` | Controller-side adapters | — | `devices` |
+| Firewall | `fw.apply{op}` (*new*; `op` is `policy`, the default, with `mode: shadow` or `enforce`, or `block` or `unblock` with `sources`), `fw.snapshot`, `fw.restore`, `fw.quarantine` (all *new*), `firewall.allow` (built), `win.firewall` (built) | `google/nftables` over netlink | Windows Firewall through COM | `firewall`. The dead-man rollback handlers `fw.nft.restore` and `fw.win.restore` are handler kinds the dead-man journal names, not plan actions |
+| Domain | `ad.account.audit_groups`, `ad.account.admincount_sweep`, `ad.account.disable`, `ad.account.reset_password`, `ad.account.group_remove`, `ad.account.krbtgt_reset` (the earlier draft's `ad.krbtgt_reset`), `ad.secure_channel` (the earlier draft's `ad.netlogon_enforce`), `ad.zerologon_check`, `ad.dc.rpc_range` (all built); `hunt.ad`, `ad.gpo_baseline`, `ad.gpo_effective`, `ad.gpo_unlink`, `ad.gpo_disable`, `ad.gpo_restore`, `service.sddl_reset` (all *new*). The directory is read and written through the `ADBackend` interface, whose read methods (members of a group with nesting, ACLs, GPO list and links, SPNs) are part of the interface, so the checks and the actions share one backend and tests use a fake | — | DC agent | `ad`. The earlier draft's `ldap.modify` is dropped: no plan needs a write the `ad.account.*` and `ad.gpo_*` actions do not cover |
+| Integrity | `ledger.sweep`, `ledger.verify_pin`, `binary.restore_from_depot`, `yara.scan` (all *new*) | Native; `yara.scan` uses the pinned YARA-X | Same | `integrity` |
+| Hunt | `hunt.baseline_diff`, `hunt.persistence`, `hunt.apps`, `hunt.creds`, `hunt.remote_access` (all *new*; `hunt.ad` is in Domain) | Native | Same | `hunt` |
+| Packages | `pkg.install`, `pkg.upgrade`, `pkg.remove` (built), `pkg.reinstall`, `pkg.repair`, `pkg.fetch_to_depot` (*new*), `windows.hotfix` (built; cached MSU only) | From the depot over `fetch` | Windows Update Agent COM, deferred | `depot` |
+| Content guard | `guard.snapshot`, `guard.restore` (*new*) | Native | Native | `content_guard` |
+| Backups | `backup.files`, `backup.sql`, `backup.splunk`, `backup.ad`, `backup.dns`, `backup.gpo`, `backup.adcs`, `backup.boot`, `backup.verify`, `backup.restore` (all *new*) | Services' own dump tools as labeled actions | Same | `backup` |
+| Credentials | `pcr.generate` (controller-side), `pcr.verify` (executed by the Kali agent), `probe.zerologon_check` (executed by the Kali agent, read-only) | — | — | `creds` for `pcr.generate`; `vantage` for the other two |
+| Deception | `file.plant` (built; never replaces an existing file), `ad.honey_account` (built), `win.lsass_decoy` (*new*) | Native | Native; ADSI on a DC | `honeytokens` |
+| Integrations | `wazuh.health`, `wazuh.capture`, `wazuh.test_alert`, `splunk.hec_setup` (built), `suricata.analyze_pcap` (*new*) | Controller-side or on the manager host | Same | `wazuh`, `splunk`, `suricata`. Deploys are plans (`plans/wazuh.deploy.yaml`), not actions |
+| Devices | `palo.apply`, `palo.commit`, `palo.permitted_ips`, `palo.snapshot`, `palo.revert`, `palo.capture`, `vyos.apply`, `vyos.snapshot`, `device.rotate_admin`, `device.backup`, `ftd.export` | Controller-side adapters | — | `devices` |
+
+The scored-content write exception, the transaction exception for scored passwords and the expiry option are specified under the scoring-safety lint, Plans and Expiry below.
 
 **SELinux** (review D171). Rocky 9 runs SELinux enforcing. File actions write a temporary file and rename it into place, so the new file would get its directory's default label, which is wrong for files such as `/etc/shadow` (`shadow_t`). File actions copy the original file's label (or use the policy default for new files) before the rename and check it in verify. The agent's install path gets a `bin_t` label so systemd runs it unconfined. Unit tests run against SELinux-enforcing images.
 
@@ -1023,7 +1259,7 @@ The core owns the general families that many modules' plans use. Module-owned fa
 
 #### `host.exec`
 
-Needed for the unforeseen (review D85). It runs a binary on the host, needs its own approval record and is labeled "runs a host binary" everywhere. Pre-approved, hash-pinned tools may run without a per-node approval: package managers installing from the depot, the Sysmon installer, YARA-X, the validators above, the services' own dump tools in backup actions, and `nmap` and `xfreerdp` on the Kali. Every default-plan use of `host.exec` has a complexity-register line.
+Needed for the unforeseen (review D85). It runs a binary on the host, needs its own approval record and is labeled "runs a host binary" everywhere. Pre-approved, hash-pinned tools may run without a per-node approval: package managers installing from the depot, the Sysmon installer, YARA-X, the validators above, the services' own dump tools in backup actions, `nmap` and `xfreerdp` on the Kali, and Suricata and Zeek on the controller (`suricata.analyze_pcap`, which runs them unprivileged on a copy of the pcap). Every default-plan use of `host.exec` has a complexity-register line.
 
 #### Session eviction
 
@@ -1056,9 +1292,18 @@ Every plan node declares which scorer-visible properties it touches. The lint re
 
 Where an organizer-set "insecure" value is the reason the scorer works, the pre-change baseline snapshot says so [SH intro]. The verdict table for each service in `ccdc-private/research/topics/scoring-safe-hardening.md` is the source of the rule data.
 
+**The two sanctioned exceptions.** Both are narrow and visible in the node, so a reviewer sees them:
+
+- **Scored-content restore.** A `Touch` carries an optional `Restore` marker. Only `guard.restore` (`content_guard`) sets it, and the guard accepts the marker only for a path on a service's `content.guard` list and only when the source is the plan-tagged golden copy. Any other node that touches scored content is rejected as before. The probe before and after still runs.
+- **Scored-password change.** The rule "Scored passwords change only through the PCR transaction" is keyed by transaction id: a node that sets a scored account's password passes only when it carries `txn: <id>` for an open `creds.txn` and sits in a plan from `plans/creds/`. The lint reads `creds.state` through a registered lint rule (below). A password change on a scored account without a transaction id is rejected on the controller and again on the agent.
+
+**Lint registration.** The lint is a registry, not a closed list. `internal/plan/lint` exposes `Register(Rule)` with `Rule{ID, Doc, Check func(Node, Ctx) []Finding}`; `Ctx` carries the manifest and a read-only `store.Query`. The core registers the rules in the table above. A module registers its own from its package `init` (it lists them in its manifest under `Content`), so no core package depends on a module: `deps` registers `DEP001` to `DEP003` and `DEP101`, which read `deps.graph` through `Ctx.Query`, and `creds` registers the transaction rule above. Lint ids are one namespace (`SS###` for scoring safety, `FW###` for the firewall, `DEP###` for dependencies; the detection-rule ids `D`/`V`/`DEP1`-`DEP3` are a different namespace), enforced by the registry test. A registered rule needs inline tests like any rule. Rules that need the store run on the controller at template time and at approval; the agent's last-line guard runs the rules expressible as rendered guard data (`phylax guard <host>`).
+
 #### The scorer-mimic probe
 
 Each node that touches a learned service runs the **scorer-mimic probe** for that service before and after (review D177). A probe reproduces Quotient's exact transport for one service (the probe library is the `checks` module). It uses two different scored users, chosen per credlist so each list the service draws from is exercised. A failed "after" probe rolls the node back. A failed "before" probe stops the node: the service is already down and the change would hide the cause. Probes are bounded (one retry after 5 s, then fail) so a flapping service cannot hold a plan open.
+
+**The probe inside a device transaction.** Controller-side actions (the Palo and VyOS adapters) run against an `Env` whose `Probe(ctx, service) error` callback is supplied by the executor. It runs the same scorer-mimic probe through the shared `internal/checks/probe` library with the current vault credentials and the quiet-window gate, and the adapters pass it as the `extra` function of their health hook. A red probe inside the commit window therefore reverts the device through the device protocol's own mechanism (PAN-OS commit confirm, VyOS soft-revert), and the revert stays inside the safe-change protocol instead of becoming a separate `health.check` node after the commit. Agent-side actions get the same `Env.Probe` for their before and after probes.
 
 #### Plans
 
@@ -1073,13 +1318,21 @@ nodes:
   review_fw: { gate: approval, needs: [fw_shadow], note: "Check would-be drops before enforcing" }
   fw_enf:    { action: fw.apply, target: rocky-ecom, params: { mode: enforce }, needs: [review_fw], deadman: 90s }
   php:       { action: file.template, target: rocky-ecom, params: { path: /etc/php.d/99-phylax.ini, validate: php_lint } }
-  oc_admin:  { action: mysql.exec, target: rocky-ecom, params: { op: rotate_admin_row } }
+  oc_admin:  { action: sql.query, target: rocky-ecom, params: { engine: mysql, statement: "UPDATE oc_user SET password = ? WHERE user_id = 1", secret_params: [ecom.admin] } }
   reload:    { action: service.state, target: rocky-ecom, params: { unit: httpd.service, state: reloaded }, needs: [php] }
   verify:    { action: health.check, target: ecom-http, needs: [reload, fw_enf], probe: scorer_mimic }
 on_failure: stop_dependents     # or: continue | rollback_plan
 ```
 
 The UI shows plans as a DAG (a table with `needs` edges today; docs/ui.md), coloring each node live. Branches run in parallel (review D184). A gate pauses its dependents. The health check runs only when everything it depends on is done. Plan templates live in `plans/<module>/` as `plans/<name>.yml|yaml` (unknown fields are an error; the file is capped at 256 KiB).
+
+**Plan and node options** beyond `needs`, `deadman` and `on_failure`:
+
+- **`window: scorer_quiet`** on a node (or the whole plan) holds an approved plan until a `scorer.clock` quiet window opens and its minimum width fits, then applies it. The hold is shown on the node ("waiting for a quiet window"), is controller-side, and has a `max_hold` after which the node fails rather than applying late. The dead-man and expiry timers start when the node starts, not at approval. The `scorer` section owns the window; `creds` and the scored-service nodes of `hardening` and `backup` use it.
+- **`gate: manual`** is an approval gate that also records an operator's typed reply. `ask:` is the question and `reply:` its kind (`count`, `text` or `choice` with `choices`). The reply, the operator's login and the named approver are stored as the gate's output and in the audit trail, and a later node may read it as `${gate_id.reply}`. The `creds` plan uses it to record the portal's accepted count or "skipped" after the human enters a PCR list. A plain `gate: approval` stays the default.
+- **`txn: <id>`** marks a node as part of a credential transaction; the lint exception for scored passwords keys on it (scoring-safety lint).
+- **`expires_after: <duration>`** makes a change time-boxed (Expiry below).
+- **`module:`** names the owning module; a file without it fails CI. Targets take label expressions (above).
 
 #### Plan, approve, apply
 
@@ -1102,9 +1355,13 @@ For any node marked `deadman` (the default for `lockout`-class actions) the **ag
 
 There is no SSH involved, so the dead-man covers the agent's own link, which is the link that matters. Safe mode never prevents a rollback. **Known gap:** a dead-man that fires while the agent is still connected is not reconciled on the controller until the next reconnect (docs/controller.md); the fix is to send the `agent.deadman_fired` event at critical priority and have the controller mark the node rolled back on receipt (Known bugs).
 
+#### Expiry
+
+Some changes are meant to end by themselves: an egress allowance for a patch-window depot miss, a temporary firewall hole, a quarantine. A node marked `expires_after: 30m` is time-boxed. The agent writes an **armed record** with the node's rollback data and arms the same OS-level one-shot timer the dead-man uses (a transient systemd timer on Linux, a scheduled task on Windows), but with **no confirm step**: at the deadline the agent, or the timer if the agent is dead, runs `phylax agent rollback <id>`, which applies the recorded undo under the node's locks, removes the armed record and reports the expiry as an `agent.step_result` with phase `expire` (the audit trail shows what ended and when). This is the dead-man's machinery with the confirm turned off, so it fires even if the controller is lost, and it is the reason the primitive is not a controller-side delay node. A later node may extend the expiry (a new armed record replaces the old) and a `step_status` cancellation removes it. Safe mode never prevents an expiry, for the same reason it never prevents a rollback. Device nodes use the device protocol's own timers (PAN-OS commit confirm, VyOS soft-revert) and do not take `expires_after`.
+
 #### Locks
 
-Each host has named resource locks: `firewall`, `accounts`, `sshd`, `packages`, `audit`, and one per service (review D187). Plan nodes and tier-0 responses take the same locks, by the same names. While a plan node holds `firewall`, automatic firewall restores on that host wait. A node holds its locks only while it runs, not while the plan waits at a gate. Each successful node updates the host's declared state, so a tier-0 restore during a gate restores what the plan has applied so far.
+Each host has named resource locks: `firewall`, `accounts`, `sshd`, `packages`, `audit`, and one per service (review D187). Plan nodes and tier-0 responses take the same locks, by the same names. While a plan node holds `firewall`, automatic firewall restores on that host wait. A node holds its locks only while it runs, not while the plan waits at a gate. Other lock names modules use: `mounts` (`mount.remount`), `content:<service>` (`content_guard`), `gpo:<guid>` (`ad.gpo_*`), `ad:honey` (`ad.honey_account`), `service:<name>` for a per-service lock, and per-path locks that file actions take for the path they change. Each successful node updates the host's declared state, so a tier-0 restore during a gate restores what the plan has applied so far.
 
 #### Safe mode
 
@@ -1114,7 +1371,7 @@ One switch in the UI sends a signed `control: safe_mode` to every agent (review 
 
 - Everything an action creates (firewall rules, units, tasks, accounts, files) is tagged with the plan id, so detection can tell our changes from anyone else's (review D189).
 - **The tag reaches every event type** through the envelope's `Tag` field (review D190). `process_start` events from a plan step, account-change events, `chattr`, `auditctl`, `useradd`, package-manager runs and patch or work-window runs all carry the plan or window tag. Rules exempt tagged events instead of guessing from process names. This is how our own hardening, which runs `chattr +i`, `auditctl -D`, firewall commits and Defender exclusions, produces no untagged alerts [DR §3, PR E6].
-- **Work windows:** a `phylax claim <host>` from the team feed opens a tagged window for hand work (the `teamfeed` module).
+- **Work windows:** a `phylax claim <host>` from the team feed opens a tagged window for hand work (the `teamfeed` module). The controller sends the signed `control: work_window`; the agent stamps the window tag on every event it emits while the window is open (Wire protocol: control types).
 - Changes made by hand during an inject are flagged as drift. An operator either adopts them into the manifest overrides with one click, or reverts them (Manifest: drift).
 
 #### Audit trail
@@ -1131,7 +1388,7 @@ The manifest is a set of YAML files, validated against a JSON Schema in CI and a
 | --- | --- |
 | `topology.yml` | Controller host and ports, segments, relays, NAT mappings, the Kali path, backup targets (review D42) |
 | `hosts.yml` | Hosts: segment, internal and public address, OS, default credentials reference, roles, `labels`, `modules` (enable or disable per host), `domain_member` (the DC a host joins), `rpc_range` (the DC's pinned RPC range) (review D43, N1.4) |
-| `services.yml` | Services: kind, scored flag, listeners, `runtime` (`host`, `docker` or `podman`), process identity and binary pins, content roots, data, dependencies, health checks, transport (review D194, N7.6) |
+| `services.yml` | Services: kind, scored flag, listeners, `runtime` (`host`, `docker` or `podman`), process identity and binary pins, `packages` (the package names that provide the service), content roots with `guard` (files `content_guard` may restore) and `honey_ok` (directories where honey web files may be planted), data, `scored_indexes` for a Splunk service (indexes the scored search reads, which `splunk.hec_setup` must never touch), dependencies, health checks, transport (review D194, N7.6) |
 | `accounts.yml` | Managed accounts: scope, scored flag, `credlists` (a list: one account can sit on several Quotient lists), rotation policy, files that embed them (review D195) |
 | `scorer.yml` | The scorer: engine (`quotient`), team Identifier scheme, known or estimated Delay, Jitter, Timeout, SLA threshold and accrual (`reset` or `per_round`, phase schedule), credlist names as learned or entered (review D196) |
 | `devices.yml` | Network devices: vendor, management address, segment, adapter, which relay proxies them (review D197) |
@@ -1156,9 +1413,11 @@ services:
     runtime: host                        # or docker: { container: opencart, image: ... }
     listen: [{ proto: tcp, port: 80 }, { proto: tcp, port: 443 }]
     process: { unit: httpd.service, binaries: [/usr/sbin/httpd], pin: true }
+    packages: [httpd, php, php-mysqlnd]   # packages that provide the service: a package change restarts it, so the scoring lint reads this map (not a hard-coded list)
     transport: { plaintext: true, tls_verify: false }
     content:
       roots: [/var/www/html]
+      honey_ok: [/var/www/html/image/catalog/demo]   # directories where the planting plan may place honey web files (honeytokens)
       upload_dirs: [/var/www/html/image/catalog]
       normalize: [opencart_token, csrf, session_cookie, timestamps]
       guard: [/var/www/html/index.php]   # content_guard: files restored from golden, opt-in per service
@@ -1338,6 +1597,7 @@ Pages registered by a disabled module disappear (review D464, D468, D469, D471-D
 | Platform | One page (review D475-D477, D479): per agent link state and lag, spool depth and congestion, clock offset, safe mode, config status, every module's health with gaps and budget use, telemetry gap counts; per relay connections, bytes and errors; the controller's CPU, memory, disk, database size and last snapshot; cache progress (from `depot`) and integration health (from opt-in integration modules). Anything degraded shows on the Overview. Replaces v3's separate Integrations and Cache pages. | shell |
 | Settings | Manifest overrides, the adoption queue, suppression records, runtime facts, secrets unlock (review D478) | shell |
 | Audit, Account | Audit log (filter by operator and action); password change | shell |
+| Since you left | The hand-over digest (review D505). The outgoing SOC person presses "Hand over" on the Overview, which records the time and their name in the audit log and opens a free-text note box; the incoming person opens this page: everything since the last hand-over, newest first (plan completions and failures, drift adoptions, open work windows and feed entries, new and changed incidents, approvals waiting, safe-mode changes, modules or agents that degraded, and the outgoing person's notes). Read-only, built from the store, no new tables beyond the hand-over audit entry | shell |
 | Checks, Credentials, Services, Chains, Integrity, Traffic, Vantage, Deception, Hunts, Devices, Reports | Registered by `checks`, `creds`, `checks`/`traceback`, `chains`, `integrity`, `capture` (with egress folded in), `vantage`, `decoys`/`honeytokens`, `hunt`, `devices`, `report` (review D465-D467, D464, D468-D474) | modules |
 
 #### The host x step grid
@@ -1405,6 +1665,7 @@ All of these were missing from the discarded pre-v3 engine [CR §5, PR E1–E9];
 | Exactly one key per condition, enforced by schema validation; deterministic evaluation | A multi-key map was evaluated on a random key |
 | Operators `eq`, `in`, `re`, `contains`, `startswith`, `endswith` (and `_any` forms), `gt`, `lt`, `cidr`, `in_profile`, `present`; string matching case-insensitive by default with an explicit case-sensitive flag | Hand-porting public rules is then mechanical |
 | `count` with `by` and `distinct`, per host, source, account or process, not one global window per rule | A global SSH-failure count cannot tell the scorer from an attacker |
+| `jitter` (v4): the interval variation of a series of events with the same `by` key, as `jitter: { below: 0.2, min_events: 10 }` (coefficient of variation of the gaps), controller-scope | Beacon periodicity (`D13c`) needs the regularity of gaps, which `count` cannot express |
 | Parent fields on process events (`parent.exe`, `parent.cmdline`, `parent.service`) | Every parent-based public rule needs them |
 | Actor on file events (pid, exe, auid) | Package managers are excluded by process, or by window tag where the actor is unknown |
 | The plan or work-window `tag` on every event kind (envelope field) | Our own hardening must not alert |
@@ -1433,44 +1694,44 @@ Third-party logic is hand-ported, never imported. A hand-ported rule carries `so
 
 ## Module catalogue
 
-Every capability above the core. "Core" in the last column means the module runs by default wherever its OS and role conditions hold; "opt-in" means it is off unless the manifest enables it (decision 1). Status is from the 2026-10-22 implementation status report plus spot checks; nothing is lab-proven yet.
+Every capability above the core, 34 modules. "Core" in the last column means the module runs by default wherever its OS and role conditions hold (the condition is in brackets); "opt-in" means it is off unless the manifest enables it (decision 1). Each row matches the module's own capability manifest (sides, OS, default) and Status part. Status is from the 2026-10-22 implementation status report plus spot checks; nothing is lab-proven yet. The 34 modules are: 5 telemetry, 3 detection and response, 4 integrity and hunting, 4 network, 4 scoring and credentials, 4 analysis, 2 deception, 1 reports, 3 operations and 4 integrations and depot; 23 are core-default and 11 opt-in.
 
 | Module | Group | Runs on | Does | Status | Default |
 | --- | --- | --- | --- | --- | --- |
 | `audit` | Telemetry | Agent, Linux | Process, file-watch and connect telemetry from kernel audit over netlink; hash sweep; audit health and rule-hash check | built | core |
-| `winevt` | Telemetry | Agent, Windows | Sysmon (renamed, config as code) and event logs through `EvtSubscribe` with bookmarks; 4688 fallback; enrollment backscan | built | core |
-| `net` | Telemetry | Agent | Listeners and connections with owning process via `sock_diag` and fd-inode join; Community ID; denied egress via NFLOG and 5157; canary sender | built | core |
+| `winevt` | Telemetry | Agent, Windows | Sysmon (renamed, config as code) and event logs through `EvtSubscribe` with bookmarks; 4688 fallback; enrollment backscan | built | core (Windows) |
+| `net` | Telemetry | Agent, Linux today (the Windows half is unbuilt) | Listeners and connections with owning process via `sock_diag` and fd-inode join; Community ID; denied egress via NFLOG and 5157; canary sender | built on Linux | core |
 | `logs` | Telemetry | Agent, Linux | Application and auth log tailing (sshd, Cockpit, web admin, access logs) into `auth_event` and log events | missing | core |
 | `inventory` | Telemetry | Agent + controller | Differential snapshots (listeners, accounts, tasks, services, units, mounts, software versions); typed `probe.run` queries | missing | opt-in |
 | `detect` | Detection and response | Agent + controller | Rule evaluation on every event, locally; the detection catalogue (D1-D23) and hand-ported rule packs | built | core |
-| `respond` | Detection and response | Agent | Tier-0 responses with guards, tier-1 one-click proposals, tier-2 checklists, response recipes | partial | core |
-| `content_guard` | Detection and response | Agent | Restores declared scored content and boot-critical files from plan-tagged golden copies, alert-only until switched to act | missing | opt-in |
+| `respond` | Detection and response | Agent + controller | Tier-0 responses with guards, tier-1 one-click proposals, tier-2 checklists, response recipes | partial | core |
+| `content_guard` | Detection and response | Agent | Restores declared scored content and boot-critical files from plan-tagged golden copies, alert-only until switched to act | missing | opt-in (per service) |
 | `integrity` | Integrity and hunting | Agent + controller | Binary integrity ledger (alert only), exec-time hashing, service pinning, sweeps, YARA over files and memory | partial | core |
 | `hunt` | Integrity and hunting | Agent + controller | Prebake hunt against reference baselines, rootkit cross-checks, persistence and credential-file hunts, application reference checks, review queue | partial | core |
 | `hardening` | Integrity and hunting | Content over core actions | Plan packs: first-hour mitigations, baseline Windows/AD/Linux hardening, banners and password policy, service config templates, reboot-survival preflight, noexec temp mounts | partial | core |
-| `ad` | Integrity and hunting | Agent on the DC | Domain actions, continuous AD checks, privileged-account allowlist and path query, GPO response, DC service repair, krbtgt reset | partial | core |
-| `firewall` | Network | Agent | Host firewall apply, shadow mode with a would-drop summary, quarantine, conntrack flush, default-deny egress | built | core |
+| `ad` | Integrity and hunting | Agent on the DC | Domain actions, continuous AD checks, privileged-account allowlist and path query, GPO response, DC service repair, krbtgt reset | partial | core (DC role) |
+| `firewall` | Network | Agent + controller (the summarizer) | Host firewall apply, shadow mode with a would-drop summary, quarantine, conntrack flush, default-deny egress | partial | core |
 | `egress` | Network | Controller | Denied-egress analysis and ranking, per-executable egress allowlist alerts, the sinkhole question | partial | core |
-| `capture` | Network | Agent (Linux) + controller | Packet ring, flows, TCP reassembly, protocol parsers, freeze on alert | built | core |
-| `devices` | Network | Controller | Palo Alto and VyOS adapters with safe-change protocols, drift, deny-log pull, config backups, Palo-side pcap, FTD export | built | core |
-| `checks` | Scoring and credentials | Controller + check runners | Quotient-faithful active checks and scorer-mimic probes, multi-step Orange flows, service doctor | built | core |
+| `capture` | Network | Agent (Linux) + controller | Packet ring, flows, TCP reassembly, protocol parsers, freeze on alert | built | core (capture role) |
+| `devices` | Network | Controller | Palo Alto and VyOS adapters with safe-change protocols, drift, deny-log pull, config backups, Palo-side pcap, FTD export | partial | core (when `devices.yml` declares devices) |
+| `checks` | Scoring and credentials | Controller + check runners | Quotient-faithful active checks and scorer-mimic probes, multi-step Orange flows, service doctor | partial | core |
 | `scorer` | Scoring and credentials | Controller | Round clock, bursts and quiet windows, scorer fingerprints and check discovery, scorer-account learning, SLA streaks, points at risk | built | core |
-| `vantage` | Scoring and credentials | Agent on the Kali + controller | Faithful checks through the public path, credential verification, perimeter scans, egress canaries, Zerologon check-only | built | core |
+| `vantage` | Scoring and credentials | Agent on the Kali + controller | Faithful checks through the public path, credential verification, perimeter scans, egress canaries, Zerologon check-only | built | core (Kali roles) |
 | `creds` | Scoring and credentials | Controller | Credential inventory per (account, credlist), password generation, selective scored changes as host change plus a typed PCR list, revert re-sync | partial | core |
 | `traceback` | Analysis | Controller | Traffic labels, change detection, trace-back from a change to its cause | built | core |
 | `chains` | Analysis | Controller | Hops, cross-host stitching, chains, campaign view, remediation items | built | core |
-| `deps` | Analysis | Agent + controller | Service dependency discovery and `depends_on` proposals | built | core |
+| `deps` | Analysis | Agent (Linux) + controller | Service dependency discovery and `depends_on` proposals | built | core |
 | `vuln` | Analysis | Controller | Version-driven matcher against cached CISA KEV and vault vendor advisories | missing | opt-in |
 | `decoys` | Deception | Agent (unprivileged process) | LAN-only decoy services and the fake shell | built | opt-in |
-| `honeytokens` | Deception | Agent + controller | Per-host honeytokens, honey files, LSASS decoy session, honey AD accounts | built | opt-in |
+| `honeytokens` | Deception | Agent + controller | Per-host honeytokens, honey files, LSASS decoy session, honey AD accounts | partial | opt-in |
 | `report` | Reports and generators | Controller | IR drafter, pre-submit validator, deliverable-coverage skeletons, generated artifacts, evidence runs, traffic reports, device exports | partial | core |
 | `backup` | Operations | Agent + controller | As-found, golden, periodic and pre-change service backups; AD/DNS/CA/GPO record-level backup; restores with record counts | missing | opt-in |
 | `teamfeed` | Operations | Agent CLI + controller | `phylax say` and `phylax claim` from any enrolled host; claims open tagged work windows | missing | opt-in |
 | `notify` | Operations | Controller | Local audible alarm and an optional webhook sink | missing | opt-in |
 | `depot` | Integrations and depot | Controller + agent | Content-addressed cache with one signed index, trusted tool depot, package installs from the depot, `phylax tools` fallbacks | partial | core |
 | `wazuh` | Integrations and depot | Content + controller | Wazuh deploy plan and health, active response off | partial | opt-in |
-| `splunk` | Integrations and depot | Controller | Splunk HEC forwarding and a small dashboards pack | built | opt-in |
-| `suricata` | Integrations and depot | Controller | Suricata and Zeek offline over pulled pcap slices, joined by Community ID | built | opt-in |
+| `splunk` | Integrations and depot | Controller | Splunk HEC forwarding and a small dashboards pack | partial | opt-in |
+| `suricata` | Integrations and depot | Controller | Suricata and Zeek offline over pulled pcap slices, joined by Community ID | partial | opt-in |
 
 The brief for writing each section (review rows, answers, v3 line ranges, code packages) is `docs/impl/modules.md`.
 
@@ -1539,7 +1800,7 @@ module.Manifest{
 	Privilege: "root", // CAP_AUDIT_CONTROL and CAP_AUDIT_READ in the initial namespaces
 	Roles:     nil,    // any Linux host
 	Consumes:  nil,
-	Emits: []event.Type{ /* process_start v1, file_change v1, conn v1, telemetry_gap v1, audit.rules_changed v1 */ },
+	Emits: []event.Type{ /* process_start v1, file_change v1, conn v1, telemetry_gap v1, audit.rules_changed v1, audit.module_load v1 */ },
 	Budget: module.Budget{
 		CPUMillisPerSec: 150, HeldMB: 96, EventsPerSec: 2000, Burst: 4000,
 		BytesOutPerMin: 24 << 20, DiskMB: 1,
@@ -1606,6 +1867,7 @@ Emitted (all with `Agent` set by the spool, `Schema` 1 unless noted):
 | `process_start` (common) | high, normal when the exec failed | `pid`, `ppid`, `uid`, `gid`, `euid`, `egid`, `auid`, `ses`, `tty`, `comm`, `exe`, `image`, `exec_path`, `argv`, `argc`, `cmdline`, `argv_truncated`, `argv_incomplete`, `proctitle`, `cwd`, `syscall`, `success`, `exit`, `key`, `audit_serial`, `source: audit`, `boot_id`, `start_ticks`, `cgroup`, `env` (loader-injection variables only), `parent{pid, exe, comm, cmdline, start_ticks, live, unresolved}`, `pexe`, `pcomm` |
 | `file_change` (common) | critical for audit-reported changes, high for sweep-found ones | audit: `op`, `path`, `old_path`, `paths`, `dirs`, `paths_truncated`, `self_tamper`, the identity fields above, `writer_cmdline`, `writer_start_ticks`. Sweep: `source: sweep`, `op` (`create`, `delete`, `modify`, `attr`), `path`, `content_changed`, `writer_known: false`, `size`, `mode`, `uid`, `gid`, `sha256`, `old_sha256`, `target`, `is_dir` |
 | `conn` (common) | normal | only with `net_rules`: `family`, `addr`, `port`, `direction`, identity fields. Retrofit: the code emits this as `net_connect`; the old name is accepted as an alias for one release. `source: audit` separates it from the `net` module's socket-table events |
+| `audit.module_load` | high | `syscall`, `module`, `exe`, `comm`, `pid`, `ppid`, `uid`, `auid`, `key: phylax_kmod`; emitted by the fixed `init_module`/`finit_module` audit rule (to build, A2.Q3) |
 | `telemetry_gap` (common) | high | `source: audit`, `reason` (`sequence_gap`, `enobufs`, `queue_overflow`, `kernel_lost`, `rate_limited`, `sweep_overflow`), `count`, `count_exact`, `from`, `to` |
 | `audit.rules_changed` | critical | `source`, `reason` (comma list of `audit_disabled`, `reader_displaced`, `rules_changed`, `never_rule`, `install_failed`), `expected_hash`, `actual_hash`, `missing`, `missing_count`, `stale_count`, `repaired`, `never_rules`, `failed_count`, `failed`, and when known `enabled`, `audit_pid`, `lost`, `backlog` |
 
@@ -1634,7 +1896,7 @@ Priority notes: file changes under the watch rules are critical because content 
 
 `fork`/`clone` rules are not installed in the code; lineage comes from the exec records plus `/proc` and the process table. This differs from the v3 text ("plus `fork`/`clone` with the thread-clone filter"); the code's choice is kept because an exec-only stream already gives parents, and `fork`/`clone` multiply the event rate for little gain.
 
-**Module-load rule (A2.Q3, to build).** There is no `kernel.modules_disabled` lock: it is one-way, does nothing against modules the image already ships, and risks breaking later loads. Instead the rule builder adds `-a always,exit -F arch=b64 -S init_module,finit_module -k phylax_kmod` (and `b32`), so any module load emits an event regardless of tool. The existing detection rules key on the `insmod` and `modprobe` command names only (`rules/linux_exec.yml:219`); the new `detect` rule matches on the `phylax_kmod` key. The rule is a fixed line in the rule set, not a config option. The event arrives as `process_start`-shaped data without `EXECVE`; it needs a small `kmod_load` branch in `Assemble` (open item: either a new common kind or a `file_change`-style kind owned by `audit`, `audit.module_load`).
+**Module-load rule (A2.Q3, to build).** There is no `kernel.modules_disabled` lock: it is one-way, does nothing against modules the image already ships, and risks breaking later loads. Instead the rule builder adds `-a always,exit -F arch=b64 -S init_module,finit_module -k phylax_kmod` (and `b32`), so any module load emits an event regardless of tool. The existing detection rules key on the `insmod` and `modprobe` command names only (`rules/linux_exec.yml:219`); the new `detect` rule matches on the `phylax_kmod` key. The rule is a fixed line in the rule set, not a config option. The event arrives as `process_start`-shaped data without `EXECVE`; it needs a small `kmod_load` branch in `Assemble` (resolved: the event is the module kind `audit.module_load`, owned by `audit`, schema 1, high priority, with `syscall` (`init_module` or `finit_module`), `module` (name or path when the fd resolves), `exe`, `comm`, `pid`, `ppid`, `uid`, `auid` and `key: phylax_kmod`; `detect` rule `D11b` consumes it).
 
 **Verify loop (every 10 s).** Reads the kernel status and rules and checks:
 
@@ -1700,7 +1962,7 @@ To add: a test for the module-load rule, the filesystem-type gap, the `HealthRep
 
 Conformance (module contract): starts with no config (`Section` returns disabled), reaches `ok` or `unavailable` within 10 s on a fixture host, stops within 5 s, emits only declared kinds, survives link loss (every `emit` error is counted, none is fatal), survives reconfiguration (a new web root replaces the module; no `Keep` state is needed because the rule baseline is re-read from the kernel), `go test -race`.
 
-Lab tests (v3 ids, to be renumbered with the Testing section): T43 exec storm, T01 prebaked set present (file and exec evidence), T02 firewall disabled by timer (D10 path), T12 `LD_PRELOAD` rootkit hiding a process (the `env` field and the sweep), T36 hardening with no red steps (no untagged `file_change` from our own plans).
+Lab tests (ids from the Testing section matrix): T43 exec storm, T71 module budgets against the cgroup figure, T01 prebaked set present (file and exec evidence), T02 firewall disabled by timer (D10 path), T12 `LD_PRELOAD` rootkit hiding a process (the `env` field and the sweep), T36 hardening with no red steps (no untagged `file_change` from our own plans).
 
 ##### 12. Limits and open items
 
@@ -1708,9 +1970,9 @@ Lab tests (v3 ids, to be renumbered with the Testing section): T43 exec storm, T
 - `shortcut: no process_exit events; add -S exit_group rules only if a rule needs exit times`. v3 listed "process start and exit"; the code, and every rule so far, uses starts only, and exited parents are kept in the TTL table.
 - `shortcut: no /proc-diff backfill after an event loss; gaps are reported, not filled, add the backfill (source=backfill, lower confidence) if the lab shows gaps that matter for trace-back`. Review D90 kept the backfill; the code has the gap half only. If it is built, it belongs to this module.
 - `shortcut: the sweep re-hashes everything each pass within a rate limit, add a changed-files-only pass if the CPU budget needs it`.
-- Open: the heartbeat rules hash needs a typed place in `module.Health`. `Detail` text works; a `map[string]string` field (`Info`) would be cleaner. Core change request.
-- Open: plan-driven audit rule changes (`audit.rules`) must update the guard's baseline or tag the change; otherwise the verify loop repairs the plan's change. Agree the hook with the `exec` core.
-- Open: the module-load rule needs a declared event kind (see Behaviour).
+- Resolved: the heartbeat rules hash travels in the typed `Health.Info` map (`Info["rules_hash"]`, module contract: Health and budgets), next to `Detail`; the controller compares it with the hash it rendered. The module implements `HealthReporter` to fill it.
+- Resolved: plan-driven audit rule changes (`audit.rules`) and the guard share the `audit` lock. The guard does not repair while a plan node holds the lock, and a successful `audit.rules` node updates the declared rule set the guard verifies against (each successful node updates the host's declared state, Execution engine: Locks), so the plan's change becomes the new baseline instead of being repaired away.
+- Resolved: the module-load rule's event is the declared kind `audit.module_load` (see Behaviour and the Event kinds table).
 - Open: honey-file read detection (v3 mentioned fanotify) belongs to `honeytokens`; if it uses `perm=r` audit watches the rule set needs a hook for other modules' watches without a sibling import (config-rendered `extra_watches` with a key suffix is the likely answer).
 - Open: unsupported filesystem gap detection is unbuilt.
 - The audit failure mode, backlog and mode knobs are not in the signed config; add them if a lab run needs them.
@@ -1766,7 +2028,7 @@ module.Manifest{
 	Default:  true, // core-default on Windows
 	Tables:   nil,
 	Content:  []string{"sysmon"}, // sysmon_config.xml is embedded in the binary; the hash is pinned in the release
-	Actions:  []string{"sysmon.install", "sysmon.config", "auditpol.set", "eventlog.size"}, // core Logging actions that act on this module's sources
+	Actions:  []string{"sysmon.install", "sysmon.config", "win.audit_policy.set", "eventlog.size"}, // core Logging actions that act on this module's sources
 	Pages:    nil,
 	Evidence: []string{"[OA §5.4]", "[OA §5.6]", "[[pet4yserb-rrepo-windows#e1]]", "[[winning-at-ccdc-and-cptc-tips-for#e10]]"},
 }
@@ -1854,7 +2116,7 @@ Fields are strings from the event XML unless a number is safe to parse. Long val
 - *Install (reference procedure).* The Sysinternals license does not allow redistribution, so the controller fetches Sysmon from Microsoft during the cache sync and checks it against the hash pinned in the release; agents get it from the controller's depot (`depot`). The core `sysmon.install` action installs it with `host.exec` (pre-approved, hash-pinned) with no reboot, under a randomised service name and a renamed driver (`-d`, `-i`) [OA §5.6, §5.4]. The names are written to `sysmon_hints` in the signed config so the probe can find the renamed service.
 - *Probe.* Every 60 s a read-only service manager probe classifies the services: by exact hint, stock names (`Sysmon`, `Sysmon64`, `SysmonDrv`), the version resource product name, the service description ("System Monitor service", "System Monitor driver") and the image file name. The result gives present, running, driver running, renamed and config hash. A change emits `winevt.sensor_state`.
 - *Reinstall as tier 0 (review D93, D95).* If Sysmon is removed, stopped or reconfigured, `respond` runs `sysmon.install` and `sysmon.config` as a tier-0 action: it only restores Phylax's own sensor, touches nothing scored, and is idempotent. The module itself does not run it.
-- *Fallback order:* Sysmon, then Security 4688 with command-line auditing, which the hardening pack enables natively (`auditpol.set`). 4688 produces `process_start` only while Sysmon is not present and running, so there are no duplicates; before the first probe the fallback is on (duplicates beat a blind start).
+- *Fallback order:* Sysmon, then Security 4688 with command-line auditing, which the hardening pack enables natively (`win.audit_policy.set`). 4688 produces `process_start` only while Sysmon is not present and running, so there are no duplicates; before the first probe the fallback is on (duplicates beat a blind start).
 
 **Self-exclusion.** Process, network and file events whose `exe` is the agent's own binary are dropped (case-insensitive path compare), which avoids feedback and keeps the randomised path out of the stream (D-8).
 
@@ -1870,7 +2132,7 @@ Fields are strings from the event XML unless a number is safe to parse. Long val
 
 ##### 7. Actions and content
 
-The module registers no actions of its own. It depends on core Logging actions: `sysmon.install`, `sysmon.config` (the pre-approved `host.exec` of the pinned Sysmon binary, with the embedded config), `auditpol.set` (4688 command-line, DC and member profiles; `internal/actions` has `win.audit_policy.set`), and `eventlog.size`.
+The module registers no actions of its own. It depends on core Logging actions: `sysmon.install`, `sysmon.config` (the pre-approved `host.exec` of the pinned Sysmon binary, with the embedded config), `win.audit_policy.set` (4688 command-line, DC and member profiles; built in `internal/actions`; the earlier core draft called it `auditpol.set`), and `eventlog.size`.
 
 Content: the embedded Sysmon config (`sysmon_config.xml`), and the Windows detection rules in `rules/windows.yml`, which are `detect`'s.
 
@@ -1904,7 +2166,7 @@ Windows-only tests (`wevtapi_windows.go`, the probe): need a Windows runner in C
 
 Conformance: starts with no config (disabled), reaches `ok` or `unavailable` within 10 s on a fixture host (a fixture `Source` is injected), stops within 5 s, emits only declared kinds, survives link loss (emit refusal becomes `emit_refused` gaps, bookmarks still advance), survives reconfiguration (changed channel list replaces the module; bookmarks persist in `StateDir`, not in memory), `go test -race`.
 
-Lab tests (v3 ids): T11 log clear and Sysmon stopped (campaign 03: D10 fires, Sysmon reinstalled, heartbeat intact), T07 DCSync (4662 with replication rights), T24 Defender's reaction to the agent and to Sysmon, T36 no untagged alerts during our own hardening.
+Lab tests (matrix ids): T11 log clear and Sysmon stopped (campaign 03: D10 fires, Sysmon reinstalled, heartbeat intact), T07 DCSync (4662 with replication rights), T24 Defender's reaction to the agent and to Sysmon, T36 no untagged alerts during our own hardening, T61 GPO footholds (the GPO events the `ad` response reads).
 
 ##### 12. Limits and open items
 
@@ -1959,7 +2221,7 @@ module.Manifest{
 	Privilege: "root", // socket dump needs none; the inode-to-process join needs readable /proc/<pid>/fd; NFLOG needs CAP_NET_ADMIN
 	Roles:     nil,
 	Consumes:  []string{"winevt.sec_event"}, // Windows only: 5157 outbound blocks become net.egress_denied
-	Emits: []event.Type{ /* conn v1, listener v1, net.egress_denied v1, net.canary_result v1, net.sensor_degraded v1, telemetry_gap v1 */ },
+	Emits: []event.Type{ /* conn v1, listener v1, net.egress_denied v1, net.shadow_drop v1, net.canary_result v1, net.sensor_degraded v1, telemetry_gap v1 */ },
 	Budget: module.Budget{
 		CPUMillisPerSec: 80, HeldMB: 64, EventsPerSec: 200, Burst: 400,
 		BytesOutPerMin: 8 << 20, DiskMB: 0,
@@ -2014,6 +2276,7 @@ Emitted:
 | `listener` (common) | high | `op` (`added` or `removed`), `proto`, `addr`, `port`, `inode`, `sock_uid`, `service`, `baseline` (true for the first snapshot), process fields: `pid`, `pid_start`, `comm`, `exe`, `uid`, `exe_sha256`, `exe_deleted`. Code kinds `net.listener_added` and `net.listener_removed` are aliases for one release |
 | `conn` (common) | normal | `op` (`opened` or `closed`), `dir` (`inbound` or `outbound`), `proto`, `laddr`, `lport`, `raddr`, `rport`, `src`, `dst` (flow orientation), `community_id`, `service`, `state` (opened), `duration_ms` (closed), `bytes_out`, `bytes_in` (when counters are on), `baseline`, process fields. Aliases `net.connection_opened` and `net.connection_closed`. `source` is `net`; the `audit` module's `conn` events carry `source: audit` |
 | `net.egress_denied` | high | `dir: outbound`, `proto`, `laddr`, `lport`, `raddr`, `rport`, `community_id`, `attributed` (bool), `attempts` (retries counted, including those suppressed in the previous window), `nflog_group`, `prefix`, `sock_uid`, `inode`, process fields, `tag: canary` and `canary_tag` when the destination is a canary target |
+| `net.shadow_drop` | normal | Would-drop records from the firewall's shadow rules, both directions (added by this section; schema 1): `dir` (`inbound` or `outbound`), `proto`, `src`, `dst`, `sport`, `dport`, `community_id`, `prefix` (`phylax-shadow-input:` or `phylax-shadow-output:`), `nflog_group`, and for outbound drops the owning process fields as for `net.egress_denied`. The shadow rules log to their own NFLOG group, so a would-drop is never read as an enforced denial |
 | `net.canary_result` | normal, critical on a leak | `raddr`, `rport`, `proto`, `tag: canary`, `result` (`leak`, `blocked`, `error`), `expected` (true when blocked), `detail` (`refused`, `unreachable`, `timeout`, error text), `elapsed_ms`, `canary_tag` |
 | `net.sensor_degraded` | high | `module`, `sensor` (`nflog`), `error` |
 | `telemetry_gap` (common) | high | `source: net`, `reason` (to add: `nflog_enobufs`, `connection_table_full`), `count` |
@@ -2089,14 +2352,14 @@ To add: own-link exclusion; the `HealthReporter` output; NFLOG overflow as a gap
 
 Conformance: starts with no config (disabled), starts with a default config on a fixture host (a fake `Source` and `Feed` are injected), stops within 5 s, emits only declared kinds, survives link loss (emit errors are counted and ignored), survives reconfiguration (a changed service map replaces the module; the connection table is rebuilt from the next snapshot, so a `baseline` flag on the first snapshot after reconfiguration must not read as new activity: use `Env.Keep`), `go test -race`.
 
-Lab tests (v3 ids): denied egress attributed to a process (lab implant test, id to be assigned in the Testing section), the canary leak, T02 firewall disabled (the canary and the Palo deny logs still see), the Invitational questions R4 and E16 (what C2 traffic and what legitimate idle egress look like).
+Lab tests (matrix ids): denied egress attributed to a process (T05 on Linux, T06 on Windows, T62 for the sleep-masked beacons, T63 for listener attribution through `docker-proxy`), the canary leak, T02 firewall disabled (the canary and the Palo deny logs still see), the Invitational questions R4 and E16 (what C2 traffic and what legitimate idle egress look like).
 
 ##### 12. Limits and open items
 
 - `shortcut: polling at 2 s misses connections shorter than the interval; close the gap with audit connect records and NFLOG, shorten the interval only if a lab run shows scored-path connections being missed`.
 - `shortcut: sockets in other network namespaces are not dumped, see Behaviour (containers)`.
 - `shortcut: unprivileged mode shows only own-user sockets' owners; the agent runs as root, so this only matters for lab runs`.
-- Open: `net` calls `deps.Collector` directly in `Start` (`NoDeps`, `DNS` config). Under the contract the dependency collector should subscribe to `conn` and `listener` events through the on-host bus and emit `deps.edge` and `deps.peer` from the `deps` module. Change is in `deps` and `net` together; the `deps` section describes the target.
+- Resolved by the contract: `net` no longer calls `deps.Collector`. The dependency collector subscribes to `conn` and `listener` through the on-host bus and emits `deps.edge` and `deps.peer` from the `deps` module (see `deps`); the `NoDeps` and `DNS` settings move to the `deps` block. The change lands in `deps` and `net` together.
 - Open: own-link exclusion is unbuilt.
 - Open: Windows socket tables and the 5157 re-emit are unbuilt (decided here; the Windows `SockSource` is the main work).
 - Open: the sinkhole (D76, D222) is deferred to the C2 fingerprinting lab. If first-bytes fingerprints discriminate between frameworks, a sinkhole catcher returns as a separate Linux module that consumes `net.egress_denied`; it does not belong in `net`.
@@ -2255,7 +2518,7 @@ To build: fixture tests per parser (recorded lines from the lab images, success,
 
 Conformance: starts with no config (disabled), starts with a default config on a fixture host (fixture log files), stops within 5 s, emits only declared kinds, survives link loss (emit errors are counted, offsets still advance), survives reconfiguration (a new file list replaces the module; offsets live on disk, so `Keep` is not needed), `go test -race`.
 
-Lab tests: T37 scorer failed logins do not trip D9e (v3 id, to be renumbered), the purple-team false-positive run T36, and the Invitational questions S5 (which accounts the scorer logs in as, per service), S6 (NTLM or Kerberos on Windows), S10, E9 (which logs exist on each host).
+Lab tests: T37 scorer failed logins do not trip D9e, the purple-team false-positive run T36, T64 (the Roundcube login lines), and the Invitational questions S5 (which accounts the scorer logs in as, per service), S6 (NTLM or Kerberos on Windows), S10, E9 (which logs exist on each host).
 
 ##### 12. Limits and open items
 
@@ -2455,7 +2718,7 @@ To build: per-collector fixture tests (recorded `passwd`, `shadow`, `group`, `su
 
 Conformance: starts with no config (disabled), starts with default config on a fixture host (fixture procfs and `/etc`), stops within 5 s, reports health, emits only declared kinds, respects the budget under a 20000-row fixture, survives link loss (snapshots are on disk, events are retried by the spool), survives reconfiguration (a new table list keeps the existing tables' epochs through `Keep`), `go test -race`; analyser determinism for the controller fold (same store, same output).
 
-Lab tests: T12 (LD_PRELOAD rootkit: the `units` and `kernel_modules` rows), the prebake hunt T01 (reference diff uses the same tables), the Invitational questions E5 (what is running at drop flag), E7 (local accounts on every host), E3 (versions of every scored product) as data for the baseline.
+Lab tests (matrix ids): T69 (snapshots, `probe.run`, drift adoption and the version matcher), T12 (LD_PRELOAD rootkit: the `units` and `kernel_modules` rows), the prebake hunt T01 (reference diff uses the same tables), the Invitational questions E5 (what is running at drop flag), E7 (local accounts on every host), E3 (versions of every scored product) as data for the baseline.
 
 ##### 12. Limits and open items
 
@@ -2464,8 +2727,8 @@ Lab tests: T12 (LD_PRELOAD rootkit: the `units` and `kernel_modules` rows), the 
 - `shortcut: Windows tasks from XML files only`, `shortcut: container metadata from state files` (see Behaviour).
 - `shortcut: collection is periodic (60 s), not event-driven, so a change that is made and reverted between two collections is not seen; the audit module's file watches cover the persistence paths for that case`.
 - Open: listeners are not an inventory table because `net` covers them (decision applied here; confirm).
-- Core change request: consumers of inventory facts (drift in the core manifest, `report`, `hunt`, `vuln`, `deps`) each need current state. The contract says modules read events, not tables. Add one stateless shared library, `internal/inventory/fold` (types and one pure function folding a snapshot plus row events into rows), to the allowed shared libraries list; otherwise each consumer writes it.
-- Core change request: a shared stateless socket library (`internal/sockets`: sock_diag dump and inode-to-process join) would let `net`, the depot's Go-native `ss` and `lsof` and future `listeners` probes share one implementation. `internal/depot/gotools` imports `internal/collect/net` today.
+- Resolved: consumers of inventory facts (drift in the core manifest, `report`, `hunt`, `vuln`, `deps`) each need current state, and modules read events, not tables. `internal/inventory/fold` (types and one pure function folding a snapshot plus row events into rows) is on the shared stateless library list in the module contract, so no consumer writes its own.
+- Resolved: the shared stateless socket library `internal/sockets` (`sock_diag` dump and inode-to-process join) is on the shared library list in the module contract; `net`, the depot's Go-native `ss` and `lsof` (`internal/depot/gotools`, which imported `internal/collect/net` before) and future `listeners` probes share it.
 - Open: the exact list of Windows tables for persistence (Run keys, IFEO, LSA packages, Winlogon, WMI subscriptions) belongs to `hunt.persistence`, not to `inventory`; the boundary is that a hunt compares against a reference build while inventory reports change over time. If the prebake hunt reuses the same collectors, they should live in one place (`inventory`) and `hunt` should call `collect.inventory`. Settle when `hunt` is written.
 - Open: `probe.run` parameter types that take a path must name an allowed root per probe; no probe takes an arbitrary path yet.
 
@@ -2481,6 +2744,8 @@ Detection runs on the host, so it keeps working with the link down. Detections f
 - **Evidence that it matters.** Most red actions in 2026 were already covered by rules written from our own history: the redteam report found most red actions covered; the Postfix and DNS proxy binaries (D4b), the `startup_check.py` SSH-key spreader (D9), firewall-killer timers (D10), prebaked default-credential access (D18: red sprays defaults first [[discord-2026q-rt-debrief#e1]]), Zerologon then `secretsdump` as red's top AD path (D8b: [[discord-2026q-rt-debrief#e10]]). Local detection with the link down is principle 4.
 - **Evidence against, and how it is handled.** The scorer and our own hardening cause more false positives than the red team [DR §3]. The controls are in the core "Rule format" section (tag exemption, behavioural scorer exemption, exceptions, rate caps) and are applied to every rule below. Peer evidence: UCF's v1 engine killed processes on all 15 rules; v2 ships hand rules as alert, which supports alert-first (`flying-ace-engine/src/lib.rs`, `lib.rs:10,257@85aae3f`). UCF also embeds Rhai expressions in rules; we do not (anti-goal).
 - **Decisions applied.** The Sigma importer is cut (review D314, A4.Q2: it was a compiler for no demonstrated gain; UCF's `sigma_to_rhai.py` produced 117 untested rules with an unknown-field fallback of `true`; sigpwny's 2,410 Sigma searches were unusable and none were scheduled; no other team imports Sigma). About ten rules are hand-ported instead. The scheduled Splunk searches from Sigma are cut (review D318). Rules D19 and D20 are cut (review D339: no evidence red used a promiscuous NIC or allowed-protocol abuse against us). The sinkhole leg of D13 is dropped (review D333, D222; the sinkhole decision is deferred to the C2 fingerprinting lab, see `egress`).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D77 (Agent module `detect`: rules on every event, locally, link down; KEEP); review D319 ((see docs/impl/review.md)); review D320 ((see docs/impl/review.md)); review D321 ((see docs/impl/review.md)); review D322 (D4 unexpected outbound from server; D4b proxy signature; KEEP); review D323 ((see docs/impl/review.md)); review D325 ((see docs/impl/review.md)); review D326 ((see docs/impl/review.md)); review D328 (D8b Zerologon detection; KEEP); review D329 (D9 lateral movement, SSH peer push, UNC services, SSH brute force (scorer pattern exempt); KEEP); review D330 (D10 defense evasion (firewall, Defender, audit, log clearing, Sysmon tamper, agent silence); KEEP); review D338 (D18 default or old-credential logon; logon to rotation-pending account; one source to 3 hosts in 5 min; KEEP).
 
 **2. Status and code**
 
@@ -2514,7 +2779,7 @@ Rule ids owned by other modules are in the catalogue table's "Owner" column; the
 | OS | both |
 | Privilege | root (reads the bus only; needs no privilege itself, runs in the agent process) |
 | Roles | any host; controller side on the controller |
-| Consumes | `process_start`, `file_change`, `conn`, `listener`, `auth_event`, `dns_query`, `telemetry_gap`, plus module kinds named by rules: `net.egress_denied`, `net.canary_result`, `audit.rules_changed`, `sec_event`, `log_line`, `http_request`, `decoy.hit`, `honey.read`, `deps.edge`, `deps.edge_gone`, `integrity.verdict`, `integrity.crosscheck`, `inventory.*` (when enabled), `ad.finding`. Code names (`auth_success`, `net.connection_opened`, ...) are accepted aliases until the retrofit renames them |
+| Consumes | `process_start`, `file_change`, `conn`, `listener`, `auth_event`, `dns_query`, `telemetry_gap`, plus module kinds named by rules: `net.egress_denied`, `net.canary_result`, `net.shadow_drop`, `audit.rules_changed`, `audit.module_load`, `winevt.sec_event`, `winevt.sensor_state`, `logs.line`, `capture.http_request`, `decoys.hit`, `honeytokens.read`, `deps.edge`, `deps.edge_gone`, `integrity.verdict`, `integrity.crosscheck`, `inventory.snapshot` and `inventory.row` (when `inventory` is enabled), `ad.finding`, `hunt.finding`, `devices.config` and `devices.finding` (rule D14), `vantage.exposure_change`, `vantage.canary_hit`, `checks.compare` and `checks.result` (rules V1 to V4), `capture.flow` (rules D13e and D18b), `scorer.proposal` (rule D16). The old code names are accepted as aliases until the retrofit renames them; the alias table is in the module contract |
 | Emits | `detect.alert` (schema 1, critical), `detect.suppressed` (schema 1, normal) |
 | Budget | CPU 10 ms/s, held 16 MB, 5 events/s, burst 50, 200 KB/min out, disk 1 MB. Starting values; the Invitational collector replaces them with measured numbers (`docs/impl/invitational-data.md`) |
 | Default | core |
@@ -2555,7 +2820,7 @@ type DetectSettings struct {
 
 **5. Events**
 
-Consumed: the kinds in the manifest above. A rule names exactly one kind or a list of kinds in `when.event`; the engine indexes rules by kind, so an event only visits rules for its kind.
+Consumed: the kinds in the manifest above. A rule names exactly one kind or a list of kinds in the rule's `event` condition; the engine indexes rules by kind, so an event only visits rules for its kind.
 
 Emitted:
 
@@ -2601,21 +2866,21 @@ The controller sends `freeze_capture` for controller-scope rules; that is the fi
 | D2 | Content or config tampering; mounts over content; PHP ini semantics; app admin rows; web log attacks; dangerous webroot extensions; mail hooks; DB plugins | `file_change`, semantic parsers, SQL pollers, access logs | Untagged change in a content root or config (D2a); D2b new bind or overlay mount on content roots (needs `inventory`); D2c effective PHP config loses `disable_functions` entries or gains `auto_prepend_file`, `extension=` (needs a php.ini parser); D2d new or changed `oc_user` or `ps_employee` row (needs a SQL poller); D2e web-log attack strings; D2g executable or double-extension file in a content tree; D2h/D2i Postfix `master.cf` pipes, aliases, Dovecot post-login, `mysql.func`, `plugin_dir` | 0 if a webshell signature matches, else 1 | detect |
 | D3 | New listener; risky listener; remote-access inventory; known local-root exec | `listener`, `process_start` | Listening socket not in any service, decoy or learned baseline (the baseline comes from the manifest); D3d risky ports; D3c/D3c2 Tailscale, ngrok, chisel, frp, cloudflared, VNC, WSL feature, OpenSSH on Windows; D3e PwnKit-shaped `pkexec` with no arguments | 1 | detect |
 | D4 | Unexpected outbound connection; relay or proxy behaviour | `conn`, Sysmon 3, Palo traffic | D4: an established connection from a server process to a peer outside its declared dependencies. D4b: a service whose profile says `outbound: none` has an established external peer and near-symmetric bytes in and out (the regional's Postfix proxy signature; Postfix and DNS proxy binaries were seen in 2026) | 1 | detect |
-| D5 | Fileless or hidden execution; capabilities; masquerade; writes to binary directories; new SUID | `process_start`, `file_change`, `sec_event` | D5a deleted or memfd executable; D5b connection owned by a deleted-exe process; D5c new file capability; D5e/D5e2/D5e3 system-name masquerade, typo-squats, kernel-thread masquerade; D5f/D5g writes to `/usr/bin`, new SUID; D5h agent self-tamper. `LD_PRELOAD` is D6d3. **D5d binary integrity is owned by `integrity`** | 1 | detect (D5d integrity) |
-| D6 | Persistence created or altered; package holds; unit environment and capabilities; shell hooks; immutable flag; suspicious service install; SSH persistence files; PAM changes; task content; WMI; autoruns; IFEO; DNS plugin DLL | `file_change`, `sec_event`, `process_start` | Any untagged write to a persistence location (Appendices B and C, extended by the hunt's N5.8 list). D6c `apt-mark hold` or versionlock on PAM, ssh, sudo or libc. D6d unit `Environment=LD_PRELOAD` or ambient capabilities a service does not need. D6e `.screenrc`, `PROMPT_COMMAND`, `command_not_found` hooks. **D6f `chattr +i`/`+a` outside a plan tag.** D6g unsigned SYSTEM service. D6q task content (outside System32, encoded PowerShell, the `\Microsoft\` folder hiding a non-stock task). D6r WMI subscriptions, D6t/D6t2 autorun keys, D6u/D6u2/D6u3 IFEO, LSA packages, accessibility binaries | 0 on Windows registry/task/WMI persistence (disable, never delete), 1 elsewhere | detect |
-| D7 | Account changes; sudoers; UID 0 and shell invariants; Windows account events; hidden `$` accounts; privileged group adds | `file_change`, `sec_event` 4720, 4722, 4724, 4738, 4728, 4732, 4756, 4781 | Account created, enabled, renamed, reset or elevated outside our plans; D7b `/etc/sudoers.d`; D7d `uid==0 && name!=root`; D7e a hidden machine-style account; D7g Guest or built-in Administrator enabled (tier 0) | 1 | detect |
+| D5 | Fileless or hidden execution; capabilities; masquerade; writes to binary directories; new SUID | `process_start`, `file_change`, `winevt.sec_event` | D5a deleted or memfd executable; D5b connection owned by a deleted-exe process; D5c new file capability; D5e/D5e2/D5e3 system-name masquerade, typo-squats, kernel-thread masquerade; D5f/D5g writes to `/usr/bin`, new SUID; D5h agent self-tamper. `LD_PRELOAD` is D6d3. **D5d binary integrity is owned by `integrity`** | 1 | detect (D5d integrity) |
+| D6 | Persistence created or altered; package holds; unit environment and capabilities; shell hooks; immutable flag; suspicious service install; SSH persistence files; PAM changes; task content; WMI; autoruns; IFEO; DNS plugin DLL | `file_change`, `winevt.sec_event`, `process_start` | Any untagged write to a persistence location (Appendices B and C, extended by the hunt's N5.8 list). D6c `apt-mark hold` or versionlock on PAM, ssh, sudo or libc. D6d unit `Environment=LD_PRELOAD` or ambient capabilities a service does not need. D6e `.screenrc`, `PROMPT_COMMAND`, `command_not_found` hooks. **D6f `chattr +i`/`+a` outside a plan tag.** D6g unsigned SYSTEM service. D6q task content (outside System32, encoded PowerShell, the `\Microsoft\` folder hiding a non-stock task). D6r WMI subscriptions, D6t/D6t2 autorun keys, D6u/D6u2/D6u3 IFEO, LSA packages, accessibility binaries | 0 on Windows registry/task/WMI persistence (disable, never delete), 1 elsewhere | detect |
+| D7 | Account changes; sudoers; UID 0 and shell invariants; Windows account events; hidden `$` accounts; privileged group adds | `file_change`, `winevt.sec_event` 4720, 4722, 4724, 4738, 4728, 4732, 4756, 4781 | Account created, enabled, renamed, reset or elevated outside our plans; D7b `/etc/sudoers.d`; D7d `uid==0 && name!=root`; D7e a hidden machine-style account; D7g Guest or built-in Administrator enabled (tier 0) | 1 | detect |
 | D8 | Credential theft; Zerologon; LSASS; DCSync; AD object changes; Kerberos anomalies; hive and NTDS dumps; **GPO state** | Sysmon 10 and 1; Security 4662, 4742, 4768, 4769, 5136/5137, 4670, 4741; System/Netlogon 5827-5831; Kdcsvc 39-41 | D8c LSASS read by a non-allowlisted process. D8b Zerologon: System 5829 (Netlogon vulnerable-connection) or Security 4742 by ANONYMOUS LOGON on a DC machine account, or a burst of `DC$` network logons [DR §0, SV R2.4]. D8e DCSync (4662 replication rights from a non-DC). D8g RC4 ticket bursts, AS-REP without pre-auth. D8d GPO, ACL, delegation and `gPLink` changes. **New (review D327):** GPO-state rules for Guest in Administrators, `RestrictAnonymous`, extreme lockout thresholds and Defender exclusions set through policy [[mnccdc-redteam-gpo#e3]], [[mnccdc-redteam-gpo#e6]]; Kdcsvc events 39 to 41 for certificate-mapping abuse [[kb5014754-certificate-based#e6]] | 1 | detect |
 | D9 | Lateral movement and remote admin; SSH peer push; services backed by shares; SSH brute force | `auth_event`, Security 4624 (types 3, 10), 4648, 5140/5145, Sysmon 17/18 | Admin logon from a source other than the controller after rotation; admin-share access; remote service creation; D9b `ssh` client on a server connecting to another declared host; D9c FTP or IIS root on a UNC path; D9e failures per source and account **with the scorer's N-failures-then-success pattern exempt** [Q §9.6]; D9f SSH reverse tunnel | 1 | detect |
-| D10 | Defense evasion: firewall, Defender, audit policy, log clearing, Sysmon tamper, monitoring config, timestomp | `audit.rules_changed`, `telemetry_gap`, `sec_event`, `process_start` | Firewall changed or disabled (D10k/D10k2); Defender protection off or new exclusion (D10c); audit policy changed or logs cleared (D10d, D10g); Sysmon stopped (D10e); monitoring config changed (D10i); agent or monitoring service stopped (D10h); timestomp (D10j). **The audit rules hash in the heartbeat dropping or changing is the signal for D10.audit-rules-changed** (see `audit`); `auditctl -D` and `iptables -F` by untagged actors | 0 (restore) and 1 | detect |
+| D10 | Defense evasion: firewall, Defender, audit policy, log clearing, Sysmon tamper, monitoring config, timestomp | `audit.rules_changed`, `telemetry_gap`, `winevt.sec_event`, `process_start` | Firewall changed or disabled (D10k/D10k2); Defender protection off or new exclusion (D10c); audit policy changed or logs cleared (D10d, D10g); Sysmon stopped (D10e); monitoring config changed (D10i); agent or monitoring service stopped (D10h); timestomp (D10j). **The audit rules hash in the heartbeat dropping or changing is the signal for D10.audit-rules-changed** (see `audit`); `auditctl -D` and `iptables -F` by untagged actors | 0 (restore) and 1 | detect |
 | D11 | Rootkit indicators; kernel modules; BPF programs | `integrity.crosscheck`, `inventory`, Sysmon 6 | Hidden PIDs, sockets or modules; BPF programs outside the baseline; kernel taint change; unsigned or new driver. D11b/D11b2 kernel module load by command or file | 1 | `hunt` (checks run by `integrity`); D11b in detect |
 | D12 | Denied egress | `net.egress_denied`, Palo deny logs | **The first denied outbound connection from a server is the primary C2 signal** (review D332: a 300 s sleep needs about 50 minutes of data to show periodicity [[redefiningreality-cobalt-strike#e4]]); D12b repeated attempts from one process to one destination escalate | 1 | detect (analysis in `egress`) |
-| D13 | C2 pipes and beacons; reverse shells | `sec_event` 17/18, `process_start`, `http_request`, `net.egress_denied` | D13b default C2 or PsExec named pipe; D13b2 reverse-shell command shape; D13c beacon periodicity (jitter below 20% over at least 10 intervals; needs an interval-variation operator); D13d C2 HTTP profile; D13e scan-source rotation. **New (review D333):** Cobalt Strike and Mythic rules: `msedge.exe` or `wmiprvse.exe` making outbound connections or with an odd parent on a server; the pipe regex `TSVCPIPE-*` on Sysmon 17/18; a Windows-Update user agent or a `www.windowsupdate.com` certificate to a non-Microsoft destination; any read of `C:\Windows\beacon.bin` [[redefiningreality-cobalt-strike#e2]], [[redefiningreality-cobalt-strike#e4]], [[redefiningreality-cobalt-strike#e6]]. The sinkhole-capture leg is dropped | 1 | detect |
+| D13 | C2 pipes and beacons; reverse shells | `winevt.sec_event` 17/18, `process_start`, `capture.http_request`, `net.egress_denied` | D13b default C2 or PsExec named pipe; D13b2 reverse-shell command shape; D13c beacon periodicity (jitter below 20% over at least 10 intervals; needs an interval-variation operator); D13d C2 HTTP profile; D13e scan-source rotation. **New (review D333):** Cobalt Strike and Mythic rules: `msedge.exe` or `wmiprvse.exe` making outbound connections or with an odd parent on a server; the pipe regex `TSVCPIPE-*` on Sysmon 17/18; a Windows-Update user agent or a `www.windowsupdate.com` certificate to a non-Microsoft destination; any read of `C:\Windows\beacon.bin` [[redefiningreality-cobalt-strike#e2]], [[redefiningreality-cobalt-strike#e4]], [[redefiningreality-cobalt-strike#e6]]. The sinkhole-capture leg is dropped | 1 | detect |
 | D14 | Network device tampering | adapter diff, device logs | Owned by `devices`. The dependency rules that used `D14` are renamed `DEP1` to `DEP3` (Known bugs) | 1 | devices |
-| D15 | Decoy interaction; credential-file access | `decoy.hit`, `honey.read`, DC events | Owned by `decoys` and `honeytokens`. Severity by depth: connect (info), login or command (high), honey credential or key used anywhere (critical) | 1 | decoys, honeytokens |
+| D15 | Decoy interaction; credential-file access | `decoys.hit`, `honeytokens.read`, DC events | Owned by `decoys` and `honeytokens`. Severity by depth: connect (info), login or command (high), honey credential or key used anywhere (critical) | 1 | decoys, honeytokens |
 | D16 | Scorer check change | check discovery | Owned by `scorer` | info | scorer |
 | D17 | Service change; config moved; service stopped without a plan tag; destructive commands; web-admin brute force | change events, `process_start` | Untagged change to a scored service's content, config, behaviour or identity, with trace-back attached (D2a, D17b); D17b `moved_from`/delete on configs; D17c stop, disable, mask or kill of a scored unit (tier-0 restart under the circuit breaker); D17d `rm -rf`, `dd of=/dev/sd*`, `vssadmin delete`; D17e web-admin brute force (needs the access-log parser). **New (review D337):** a reboot and shutdown guard for `shutdown`, `reboot`, `halt`, `poweroff`, `init 0/6` and `systemctl reboot` by a non-operator session or an untagged context. The boot-critical file watchlist (fstab, grub, initramfs, passwd, shadow, sshd_config, network config, BCD) is in `content_guard` | 1 (0 for restart) | detect |
 | D18 | Default or old-credential logon; credential fan-out | `auth_event` | A successful login for an account in `rotation.pending`, or with a default credential, or from an unknown source; D18b one source authenticating to at least 3 hosts within 5 minutes (controller correlation). Scorer sources are excluded by behaviour. Red sprays defaults first [[discord-2026q-rt-debrief#e1]] | 1 | detect |
-| D21-D23 | Address or route change; re-infection hunt trigger; USB attach | `inventory`, `enroll`, `log_line` | D21 address, route or neighbour entry differs from the manifest topology (needs `inventory`). D22 starts the prebake hunt after any restore or re-enrollment. D23 USB attach is tier 0 on the controller host (redteam item 10 [[2025-minnesota-and-indiana-ccdc-debrief#e4]]) and tier 1 elsewhere. **D19 and D20 are cut** | 1 (0 on the controller host for D23) | detect |
+| D21-D23 | Address or route change; re-infection hunt trigger; USB attach | `inventory.row`, `agent.enrolled`, `agent.reenrolled`, `logs.line` | D21 address, route or neighbour entry differs from the manifest topology (needs `inventory`). D22 starts the prebake hunt after any restore or re-enrollment. D23 USB attach is tier 0 on the controller host (redteam item 10 [[2025-minnesota-and-indiana-ccdc-debrief#e4]]) and tier 1 elsewhere. **D19 and D20 are cut** | 1 (0 on the controller host for D23) | detect |
 | V1-V4 | Vantage alerts from the Kali | Kali probes, scans, canaries | Owned by `vantage` | info/1 | vantage |
 | DEP1-DEP3 | Dependency learned, external, gone | `deps.edge`, `deps.edge_gone` | Owned by `deps` | 1-2 | deps |
 
@@ -2627,7 +2892,7 @@ The controller sends `freeze_capture` for controller-scope rules; that is the fi
 - **Service and tool ACL tamper** (review N4.4): Security 4670 and System 7040 on scored services. Red locked a DNS service so even Administrator got Access Denied [[ccdc-journey-zero-to-nationals#e5]]. Pairs with the `service.sddl_reset` action in `ad`.
 - **Generic exec pack** (review N4.5), in `linux_exec.yml` and `windows.yml`: exec from `/tmp`, `/var/tmp`, `/dev/shm` or a dot-directory; offensive-tool names and arguments (Impacket, CME, Responder, Kerbrute, SharpHound, linpeas, pspy, Potato, Certipy, LaZagne, sqlmap, masscan); miner strings (stratum, xmrig, kinsing); Falco-style log clear and shell-history deletion. Peer: RnDSweats `SaltyBoxes/CustomScripts/falco/ccdc_extended_rules.yaml@92cae3b`. Tool-name rules are low confidence (a rename defeats them) so they stay alert-only; the weak keyword rules for "diamorphine" and "reptile" are skipped.
 - **Windows event rules** (review N4.6): 4740 lockout storm, 4725/4726 disable and delete, 4756 universal group change, 5140/5145 `ADMIN$` or `C$` from a non-admin source, 4104 download cradles (IEX, DownloadString, encoded), 1644 LDAP enumeration. Event 1644 needs the diagnostic-logging registry setting turned on first, which is a `winevt` and `hardening` item. Peer: cyberuci LOCS `windows.json`, CyberHawks `cyberhawks.zeek`.
-- **Pass-the-hash pack** (A7.Q7, content, size S). Red dumps every AD hash, so the scored users' hashes may be replayed. Rules over `auth_event` and Kerberos `sec_event`: an NTLM network logon (type 3) or new-credentials logon (type 9) by a **scored account** (`list: scorer.accounts`) from a source that is not labeled scorer by behaviour; an NTLM success for a scored account on a host where the scorer's service does not use NTLM; RC4 (`0x17`) TGT or service tickets for a scored account where AES is the norm; a TGT request for a scored account from a source with no scorer label; and a scored account used from two sources at once. The scorer label is the traffic label (`traceback`), joined on the controller (`scope: controller`), so the scorer's own NTLM WinRM and SMB logons never match. **These rules are alert-only and permanent: NTLM is never restricted and Protected Users is never applied to scored accounts** (NTLM and its transport stay, core lint).
+- **Pass-the-hash pack** (A7.Q7, content, size S). Red dumps every AD hash, so the scored users' hashes may be replayed. Rules over `auth_event` and Kerberos `winevt.sec_event`: an NTLM network logon (type 3) or new-credentials logon (type 9) by a **scored account** (`list: scorer.accounts`) from a source that is not labeled scorer by behaviour; an NTLM success for a scored account on a host where the scorer's service does not use NTLM; RC4 (`0x17`) TGT or service tickets for a scored account where AES is the norm; a TGT request for a scored account from a source with no scorer label; and a scored account used from two sources at once. The scorer label is the traffic label (`traceback`), joined on the controller (`scope: controller`), so the scorer's own NTLM WinRM and SMB logons never match. **These rules are alert-only and permanent: NTLM is never restricted and Protected Users is never applied to scored accounts** (NTLM and its transport stay, core lint).
 - **Hand-ported rules** (review D315 to D317), about ten from the sigpwny slop set (`files/sigma-savedsearches.conf`), each with a `source:` block: Cloudflared tunnel, Velociraptor child process, Raccine uninstall, browser remote debugging, `sc sdset` and hidden-service DACL (pairs with the ACL rule above), `regini`, ADExplorer snapshot, `certutil -exportPFX`, `whoami /all`, and CrackMapExec process patterns.
 
 *What the catalogue is tuned against.* Traffic generators send suspicious traffic from random addresses [PKT Systems 5], so bare connections are info-level, blocking is one click, and severities are tuned against that noise. A success metric is five or fewer false-positive alerts per hour from scorer and orange traffic only (core).
@@ -2673,7 +2938,7 @@ States: `ok`; `degraded` when the signed rule set failed to load (the previous s
 - Fixture: every rule has a `should_match: true` and a `should_match: false` test; `phylax rules test` runs them locally and CI fails on a missing or failing test. Tests use inline events (`event:` or `events:` with `at:` offsets) as built; a captured record from the lab can be referenced as a fixture file where an inline event is too large.
 - CI registry check: one rule-id namespace across all modules (prevents the old `D14` collision), ATT&CK ids validated against a pinned v19 dataset with revoked ids kept as aliases (review D344), and `THIRD_PARTY_RULES.md` regeneration.
 - Conformance: starts with no config (disabled), reconfigures without losing profiles (`Keep`), survives link loss, rejects unknown config fields, `go test -race`.
-- Lab (ids from the design's test matrix): T03 webshell (D1 and D17), T07 DCSync, T08 Kerberoasting with the honey SPN, T11 log clear and Sysmon stop, T12 `LD_PRELOAD` rootkit (D11), T20 scorer and orange traffic for 60 minutes with no red steps (false-positive count), T36 Phylax hardening with no red steps (zero untagged alerts), T37 `BadAttempts` and scorer fingerprints (no brute-force alert with the runner address changed each round), T38 Zerologon, hidden accounts, `chattr +i`, unit capabilities, PHP overrides, OpenCart admin rows and GPO and ACL changes each raise their alert. T42 (Sigma import) is deleted with the importer.
+- Lab (ids from the design's test matrix): T03 webshell (D1 and D17), T07 DCSync, T08 Kerberoasting with the honey SPN, T11 log clear and Sysmon stop, T12 `LD_PRELOAD` rootkit (D11), T20 scorer and orange traffic for 60 minutes with no red steps (false-positive count), T36 Phylax hardening with no red steps (zero untagged alerts), T37 `BadAttempts` and scorer fingerprints (no brute-force alert with the runner address changed each round), T38 Zerologon, hidden accounts, `chattr +i`, unit capabilities, PHP overrides, OpenCart admin rows and GPO and ACL changes each raise their alert. T42 (Sigma import) is retired with the importer.
 
 **12. Limits and open items**
 
@@ -2695,6 +2960,8 @@ Responses come in three tiers by reversibility. Only reversible actions on unsco
 - **What it does.** On the agent it consumes `detect.alert` events with `mode: act` and `tier: 0`, runs the recipe's tier-0 actions locally in seconds, even with the link down, under the guards below, and records each in the audit trail. For tier 1 and tier 2 it supplies the controller with the recipe: what to collect and which one-click actions to offer on the alert.
 - **Evidence.** Red plants firewall-killer timers (a known prebake), disables Defender and audit, and drops persistence at drop flag [TTP §1], so a response that waits for a human loses minutes on the cheap, reversible cases. Restore of a host firewall within seconds is the success metric the lab measures (T02). Against automatic action on a scored host: Wazuh active response and Velociraptor `execve` are lateral-movement paths, and a Tetragon-style kill-on-match policy can kill `sshd` on a scored host [gk]; UCF's v1 killed on all 15 rules and its v2 ships hand rules as alert (`lib.rs:10,257@85aae3f`). Hence tier 0 is narrow, guarded, alert-first and off until enabled (David: automatic actions beyond tier 0 are one-click suggestions, never silent).
 - **Decisions applied.** Review D346 (GPO check), D347 (CIDR blocks with a warning, conntrack delete), D348 (new reservation is costly), D349 to D352 (the four guards stay), D353 (no scripts), D354 (recipes as YAML next to rules, no IR template per recipe).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D78 (Agent module `respond`: tier-0 actions with guards; KEEP).
 
 **2. Status and code**
 
@@ -2874,7 +3141,7 @@ This module is where an automatic change can reach a scored host, so the limits 
 - Open: the catalogue lists `respond` as agent only; the recipe-to-proposal step is on the controller. Recommendation: change the catalogue row to "Agent + controller" and register the controller side as a small `ControllerModule`.
 - Open: whether the tier-0 breaker's red check can be fed by the `checks` module result on the controller with the link up. Recommendation: yes, through the existing `checks` result events, so no sibling import.
 - Open: enabling tier 0 per label. Recommendation: per host in `hosts.yml` through the `modules:` list plus the recipe list above; no label shortcut until the lab has run each recipe alert-only.
-- Core changes: the signed `AgentConfig` gains `Modules.Respond`; the retrofit adds the `respond.*` kinds; the action names in the status table are added by the owning families.
+- Core changes: the signed `AgentConfig` gains `Modules.Respond`; the retrofit adds the `respond.*` kinds (Event kinds). The action names its recipes use are in the core Action families table (done).
 
 #### `content_guard`
 
@@ -3025,15 +3292,15 @@ The Content guard page lists each guarded file: golden hash, current hash, mode,
 - Unit: constraint 1 (an unlisted path is ignored), constraint 2 (no golden entry: stop), constraint 3 (tagged change and held lock ignored), constraint 4 (a golden copy that makes the probe fail is rolled back; use the `test.failverify` action), constraint 5 (second restore in 10 minutes stops), constraint 6 (alert mode emits and does not write), atomic write preserving labels (SELinux image test), the account-database exclusion from act, a missed event caught by the sweep.
 - Fixture: a recorded `file_change` stream including a plan-tagged change, a work-window change and an untagged deface.
 - Conformance: starts with no config, rejects unknown fields, survives link loss, reconfiguration keeps the golden index, `go test -race`.
-- Lab: a planted defacement of the OpenCart index and of an SMB SOP file (the scorer's regex fails, then passes after restore), a `rm` of `/etc/fstab` on a lab VM (restored in act mode, proposal in alert mode), and a hand edit under a `phylax claim` window (ignored). T16 (a forced change breaking a scored page is caught by the probe) covers the rollback.
+- Lab: a planted defacement of the OpenCart index and of an SMB SOP file (the scorer's regex fails, then passes after restore), a `rm` of `/etc/fstab` on a lab VM (restored in act mode, proposal in alert mode), and a hand edit under a `phylax claim` window (ignored). T52 (the six constraints), T63 (the guard watches the Docker volume) and T16 (a forced change breaking a scored page is caught by the probe) covers the rollback.
 
 **12. Limits and open items**
 
 - `shortcut: the Windows BCD restore uses host.exec of bcdedit /import, upgrade to a native BCD hive write only if a lab run shows bcdedit fails on a DC.`
 - `shortcut: guarded files are copied whole into the golden store, so a very large listed file costs disk; upgrade to a chunked, deduplicated store if a service lists files above a few hundred MB.`
 - Open: where the golden copy is held. This section keeps it in the agent's own state directory so the guard works with the link down, written only by plan-tagged `guard.snapshot`. The `backup` module's golden backup is a separate copy on the controller. Recommendation: keep them separate, and let a golden backup restore push a fresh snapshot through a plan node, so no module reads another's files.
-- Open: how the lint allows `guard.restore` as the one scored-content write. Recommendation: the action declares a `Restore` touch kind that the guard accepts only for paths on a service's `content.guard` list.
-- Core changes: `Touch` gains a restore marker for the lint exception; `Modules.ContentGuard` in the signed config; `content.guard` is already in the `services.yml` reference example.
+- Resolved: the lint allows `guard.restore` as the one scored-content write through the `Restore` marker on `Touch`, accepted only for paths on a service's `content.guard` list and only from the plan-tagged golden copy (Execution engine: the two sanctioned exceptions).
+- Core changes: `Touch` gains the restore marker (done in the lint section); `Modules.ContentGuard` in the signed config; `content.guard` is in the `services.yml` reference example.
 
 ### Integrity and hunting
 
@@ -3078,7 +3345,7 @@ Status: **partial**. The checks and the ledger are built; the producer for D5d, 
 | OS | both |
 | Privilege | root |
 | Roles | any host; controller side on the controller |
-| Consumes | `process_start`, `sec_event` (Sysmon 6 driver load and Sysmon 7 image load hashes on Windows), `file_change` (sweep triggers), `telemetry_gap` |
+| Consumes | `process_start`, `winevt.sec_event` (Sysmon 6 driver load and Sysmon 7 image load hashes on Windows), `file_change` (sweep triggers), `telemetry_gap` |
 | Emits | `integrity.verdict` (schema 1, critical/high/normal), `integrity.yara` (schema 1, critical), `integrity.crosscheck` (schema 1, high), `integrity.claims` (schema 1, normal), `integrity.ledger_unavailable` (schema 1, high) |
 | Budget | CPU 8 ms/s average (sweeps and scans run at low priority and are throttled separately by `bytes_per_sec`), held 24 MB (identity cache and the loaded ledger), 2 events/s, burst 20, 100 KB/min out, disk 100 MB (ledger file and YARA corpus). Starting values; the Invitational collector measures the ledger size |
 | Default | core |
@@ -3088,7 +3355,7 @@ Status: **partial**. The checks and the ledger are built; the producer for D5d, 
 | Pages | Integrity (the verdict queue) |
 | Evidence | [[redefiningreality-cobalt-strike#e6]], [[ccdc-the-great-the-good-and-the-ok#e10]], [[dannygaev-ccdc2025#e11]], [[cert-cc-vulnerability-note-vu-260001#e2]], [[discord-2026q-lessons#e1]] |
 
-The core "Action families" table lists `yara.scan` under Collection (core). The scanner is this module's, so it is registered here; the core table needs the owner changed (part 12).
+`yara.scan` is registered by this module; the core Action families table lists it under Collection with `integrity` as its implementer.
 
 **4. Configuration**
 
@@ -3263,7 +3530,7 @@ The Integrity page is the verdict queue. Each row shows the path, hash, ledger v
 - `shortcut: per-host ledgers are composed on the controller from claimed packages, which needs the agent fetch handler (Known bug 4); until it works the ledger ships with the release only.`
 - Open: GoScanner or YARA-X as the default engine. Recommendation: Go by default (no host binary in a default path), and enable YARA-X for the rule files that appear in `Matcher.Skipped` after the UCF corpus loads. The lab run that settles it is the first load of the 17 rules.
 - Open: cadence of the cross-checks (5 minutes here) and the SUID sweep (5 minutes). Recommendation: keep the starting values until the Invitational collector reports their CPU cost.
-- Core changes: `yara.scan` ownership in the core action table; `Modules.Integrity` settings grow the fields above; the rule engine needs `first_sweep` routing in the controller (to the hunt queue) and the agent `fetch` handler.
+- Core changes: `Modules.Integrity` settings grow the fields above; the rule engine needs `first_sweep` routing in the controller (to the hunt queue) and the agent `fetch` handler. `yara.scan` ownership is settled in the core table (done).
 
 #### `hunt`
 
@@ -3301,7 +3568,7 @@ Status: **partial**. The pieces exist as separate actions; the hunt as a flow do
 | OS | both |
 | Privilege | root |
 | Roles | any host; controller side on the controller |
-| Consumes | `integrity.crosscheck`, `integrity.verdict` with `first_sweep`, `enroll`, `respond.loop`, `ad.finding` (for the AD part of the queue), `inventory.*` when that module is enabled |
+| Consumes | `integrity.crosscheck`, `integrity.verdict` with `first_sweep`, `agent.enrolled`, `agent.reenrolled`, `respond.loop`, `ad.finding` (for the AD part of the queue), `inventory.snapshot` and `inventory.row` when that module is enabled |
 | Emits | `hunt.finding` (schema 1, high), `hunt.run` (schema 1, normal) |
 | Budget | CPU 5 ms/s average (collection runs as a low-priority burst), held 16 MB, 2 events/s, burst 40, 200 KB/min out, disk 20 MB |
 | Default | core |
@@ -3341,7 +3608,7 @@ type HuntSettings struct {
 
 **5. Events**
 
-Consumed: as in the manifest. `enroll` and `respond.loop` start a targeted run; `integrity.crosscheck` and first-sweep `integrity.verdict` become findings.
+Consumed: as in the manifest. `agent.enrolled`, `agent.reenrolled` and `respond.loop` start a targeted run; `integrity.crosscheck` and first-sweep `integrity.verdict` become findings.
 
 Emitted:
 
@@ -3675,7 +3942,7 @@ This is the module with the most contact with the scored path, so the safety is 
 - Unit: `plans_test.go` validates every embedded template against `internal/plan` and the action catalog; new tests assert each pack's nodes have `Touches` that the guard accepts for the reference manifest, and that the lint rejects a deliberately unsafe variant of each pack (a `PasswordAuthentication no` node, a lockout GPO, a source-restricted scored port, a `noexec` remount with a scored service exec path).
 - Manifest CI: render every pack for the reference manifest and for a manifest with a Docker service.
 - Action tests with fixtures: the `kernel.module_block` AF_ALG branch with a fake `/proc/modules` and a fake socket probe; `mount.remount` on a tmpfs in a privileged lab test (skipped with a clear message otherwise); `php -l`/`apachectl -t` validators on a candidate file.
-- Lab: T16 (a hardening plan that breaks a scored page, an SSH `PermitTTY` or a mail plaintext setting is rejected by the lint; if forced, the probe is red and the node rolls back), T17 (link drop during an SSH-reconfigure and firewall-enforce plan; the dead-man rolls back), T34 (the first-hour library against real Quotient: zero failed rounds attributable to Phylax), T36 (hardening with no red steps: zero untagged alerts), T38 (Zerologon check in the lab).
+- Lab: T68 (opt-in `noexec` remount of temp directories), T72 (reboot-survival preflight), T64 (the Roundcube hardening), T16 (a hardening plan that breaks a scored page, an SSH `PermitTTY` or a mail plaintext setting is rejected by the lint; if forced, the probe is red and the node rolls back), T17 (link drop during an SSH-reconfigure and firewall-enforce plan; the dead-man rolls back), T34 (the first-hour library against real Quotient: zero failed rounds attributable to Phylax), T36 (hardening with no red steps: zero untagged alerts), T38 (Zerologon check in the lab).
 
 **12. Limits and open items**
 
@@ -3719,7 +3986,7 @@ Status: **partial**. The actions are built; the continuous checks, the path quer
 | GPO baseline, `ad.gpo_unlink`, `ad.gpo_disable`, `ad.gpo_restore`, effective-state check | none | missing |
 | `service.sddl_reset` and the `dc.service_repair` plan | none | missing |
 
-**Names follow the code.** The core action table lists `ad.krbtgt_reset` and `ad.netlogon_enforce`; the built actions are `ad.account.krbtgt_reset` and `ad.secure_channel`. This section uses the code names (part 12 asks the core table to follow).
+**Names follow the code.** The core action table now uses the built names `ad.account.krbtgt_reset` and `ad.secure_channel` (the earlier draft's `ad.krbtgt_reset` and `ad.netlogon_enforce`), and this section uses them.
 
 **3. Capability manifest**
 
@@ -3730,7 +3997,7 @@ Status: **partial**. The actions are built; the continuous checks, the path quer
 | OS | windows |
 | Privilege | root (SYSTEM) |
 | Roles | `domain_controller` |
-| Consumes | `sec_event` (5136, 5137, 5139, 5141 with `gpo: true`; 4662; 4742), `file_change` with `sysvol_policy: true`, `process_start` |
+| Consumes | `winevt.sec_event` (5136, 5137, 5139, 5141 with `gpo: true`; 4662; 4742), `file_change` with `sysvol_policy: true`, `process_start` |
 | Emits | `ad.finding` (schema 1, high), `ad.gpo_finding` (schema 1, high), `ad.gpo_baseline` (schema 1, normal) |
 | Budget | CPU 3 ms/s average (a check run is a short low-priority burst), held 8 MB, 1 event/s, burst 20, 50 KB/min out, disk 20 MB (GPO baseline copies) |
 | Default | core, on hosts with the `domain_controller` role |
@@ -3784,7 +4051,7 @@ The allowlist is the set of accounts the team expects to hold privilege. Organiz
 
 **5. Events**
 
-Consumed: as above; a GPO-shaped `sec_event` or `file_change` triggers an immediate GPO comparison between scheduled runs.
+Consumed: as above; a GPO-shaped `winevt.sec_event` or `file_change` triggers an immediate GPO comparison between scheduled runs.
 
 Emitted:
 
@@ -3874,7 +4141,7 @@ The Active Directory page lists open findings (privileged members outside the al
 - Unit (built, extend): the action tests in `ad_accounts_test.go` and `ad_netlogon_test.go` (nested resolution, cycles, refusals, the krbtgt gap, rollback); new tests for the allowlist audit, the path query on a fake directory (a nested group, a `WriteDacl` edge, a delegation edge, a GPO write right), the GPO baseline diff, `service.sddl_reset` verify on a fake security descriptor, and the printed re-add commands.
 - Fixture: recorded 5136/5137/5141 events and SYSVOL file events through the GPO field helpers (`gpo_test.go`).
 - Conformance: starts off a DC as `unavailable`, survives link loss, reconfiguration, `go test -race`.
-- Lab (a Windows Server 2022 DC with a member): T07 (DCSync), T08 (Kerberoasting with the honey SPN), T38 (Zerologon, hidden accounts, AD GPO and ACL changes each raise their alert), a seeded temp admin and a nested admin group found by the allowlist and the path query, an Enforced "Business GPO" detected, unlinked and restored with the agent link intact, and a locked service SDDL repaired with the probes green. Latencies are measured and reported.
+- Lab (a Windows Server 2022 DC with a member): T61 (GPO footholds: detect, chain, revert), T07 (DCSync), T08 (Kerberoasting with the honey SPN), T38 (Zerologon, hidden accounts, AD GPO and ACL changes each raise their alert), a seeded temp admin and a nested admin group found by the allowlist and the path query, an Enforced "Business GPO" detected, unlinked and restored with the agent link intact, and a locked service SDDL repaired with the probes green. Latencies are measured and reported.
 
 **12. Limits and open items**
 
@@ -3884,7 +4151,7 @@ The Active Directory page lists open findings (privileged members outside the al
 - `shortcut: ad/service_sddl.yml holds the defaults for the six DC services from one reference image; other builds need their own entry.`
 - Open: AD duplicate-group consolidation (about 500 duplicate groups across 10 departments was an inject-like task [MW Discord 2026-10-26, area 7 revision]). Recommendation: only a read-only duplicate-group report as an AD check if the task is asked; no remediation action without a request.
 - Open: whether `ad.gpo_restore` restores from the controller's copy when the DC's own baseline copy was tampered with. Recommendation: yes, the controller holds the baseline copy as chunks and the action takes the hash from the signed step.
-- Core changes: the core action table should use `ad.account.krbtgt_reset` and `ad.secure_channel`; `service.sddl_reset` and `ad.gpo_*` are added to the Domain family; `ADBackend` read methods; `Modules.AD` in the signed config.
+- Core changes: the core action table now uses `ad.account.krbtgt_reset` and `ad.secure_channel`, and carries `service.sddl_reset` and `ad.gpo_*` in the Domain family and the `ADBackend` read methods (done); `Modules.AD` in the signed config remains.
 
 ### Network
 
@@ -3957,6 +4224,7 @@ The block is `modules/firewall.yml`. The policy itself is not configured here: i
 firewall:
   deadman: 90s                  # dead-man window armed by fw.apply in enforce mode
   shadow_min: { linux: 10m, windows: 5m }   # a plan template's review gate refuses sooner
+  shadow_log_group: 101         # NFLOG group of the shadow would-drop rules; `net` reads it beside the deny group
   conntrack_flush: true         # delete existing flows a change should end
   quarantine: { revert_after: 10m }
   drift_check: 60s              # DetectDrift against the declared policy; 0 disables
@@ -3978,6 +4246,7 @@ type FirewallSettings struct {
 	ConntrackFlush bool           `json:"conntrack_flush"`
 	QuarantineSec  int            `json:"quarantine_revert_sec,omitempty"`
 	DriftCheckSec  int            `json:"drift_check_sec,omitempty"`
+	ShadowLogGroup uint16         `json:"shadow_log_group,omitempty"` // NFLOG group of the shadow rules (default 101)
 	Block          []BlockEntry   `json:"block,omitempty"`
 	Policy         *render.HostPolicy `json:"policy"`       // the declared policy for this host (Linux)
 	WinPolicy      *render.WinPolicy  `json:"win_policy"`   // Windows
@@ -4030,7 +4299,7 @@ The Windows policy maps groups to rule groups (`Phylax Base`, `Phylax Mgmt`, and
 
 *Shadow mode* (review D180). `fw.apply` with `mode: shadow` shows what a policy would drop without dropping it.
 
-- Linux: the policy is installed with every drop replaced by a log rule and accept chain policies. The would-be drop of each hook is logged with `limit rate 100/second burst 200`, prefix `phylax-shadow-input:` or `phylax-shadow-output:`, NFLOG group `deny_log_group` (or 1 when unset). Shadow never drops, not even invalid packets. The `net` module's NFLOG reader turns these into `net.shadow_drop` events. The `phylax_nat` table is not installed in shadow.
+- Linux: the policy is installed with every drop replaced by a log rule and accept chain policies. The would-be drop of each hook is logged with `limit rate 100/second burst 200`, prefix `phylax-shadow-input:` or `phylax-shadow-output:`, NFLOG group `shadow_log_group` (default 101; the enforced deny rules use `deny_log_group`, default 100, so a would-drop is never read as an enforced denial). Shadow never drops, not even invalid packets. The `net` module's NFLOG reader turns these into `net.shadow_drop` events. The `phylax_nat` table is not installed in shadow.
 - Windows: rules can only allow or block, so shadow is evaluated, not installed. The agent evaluates the proposed policy against its connection table and recent connection events (Sysmon 3, Security 5156/5157) and reports what would have been dropped. Windows packet capture is cut (review D235), so flows from `capture` are not an input. A Windows shadow window should run a few minutes (`shadow_min.windows`). `shortcut: the Windows evaluator sees only connections the sensors saw, not a full packet view; upgrade only if a lab run shows would-drops it missed`.
 - A plan template's review gate (Execution engine) sits between the shadow node and the enforce node. The gate shows the summarizer's table.
 
@@ -4121,11 +4390,11 @@ Gaps reported: foreign firewall present (firewalld, ufw, docker), Windows Firewa
 - `shortcut: Windows shadow is evaluated from sensor data, not installed; see part 6`.
 - `shortcut: Windows conntrack flush covers IPv4 TCP only; see part 6`.
 - Names: the core action table lists `fw.apply`, `fw.snapshot`, `fw.restore`, `fw.quarantine`; this section also registers `firewall.allow` and `win.firewall` (built), and gives `fw.apply` an `op` parameter (`policy`, `block`, `unblock`) that the `respond` section already uses. The core table needs those names added.
-- Needs from `net`: `net.shadow_drop` (both directions, with the `prefix`). Today `net` reads NFLOG for outbound denies only. In the current renderer a shadow-mode output policy emits both the deny-log rule and the shadow rule on the same NFLOG group, so a shadow would-drop also appears as `net.egress_denied`; the shadow rule should use its own group, or the `prefix` must distinguish them. Undecided; recommendation is a separate group number.
+- Needs from `net`: `net.shadow_drop` (both directions, with the `prefix`), now declared in the `net` section. Today `net` reads NFLOG for outbound denies only. In the current renderer a shadow-mode output policy emits both the deny-log rule and the shadow rule on the same NFLOG group, so a shadow would-drop also appears as `net.egress_denied`. Resolved: the shadow rule uses its own group (`shadow_log_group`, default 101; the deny rule keeps `deny_log_group`, 100), and the renderer change is part of the `GroupBlock` work below. `net` reads both groups (`nflog_groups` lists both) and the group number selects the kind.
 - Needs from the renderer (core manifest): `GroupBlock`, the `FW108` exemption, and the `windows_stage0` option. The renderer already builds the nat sinkhole chain; see `egress` for why that chain pre-empts the deny log.
 - Wiring: the agent builds no `LinuxManager` and registers none of the `fw.*` names; the `FirewallSettings` section in `plan.ModuleSettings` does not exist.
 - Docker-published ports (the 2026 ecom was OpenCart in Docker): the host listener is `docker-proxy` or a DNAT rule. The `phylax` table's input chain does not see DNATed forward traffic. A `forward` chain with the same group rules is needed when a service has `runtime: docker`. Not designed or built; open until the 2027 stack is known.
-- Time-boxed egress allowances for depot misses need an expiry primitive; see `egress`.
+- Time-boxed egress allowances for depot misses use the execution engine's expiry primitive (a node's `expires_after`, Execution engine: Expiry); see `egress`.
 - Rocky 9 coexistence beyond "second base chain at earlier priority" (a firewalld reload deleting our table is not possible, but a firewalld rule that drops what we accept is) is only reported, not fixed.
 - Quarantine of the controller host is refused (it would cut every agent).
 
@@ -4347,7 +4616,7 @@ No page of its own: egress folds into the Traffic page (review D470), which show
 **12. Limits and open items.**
 
 - **Sinkhole decision.** Pending the C2 fingerprinting lab (part 6). Two defects to fix before it can be enabled: (a) no catcher listener exists, and nothing emits `net.sinkhole_capture`; (b) in the current rendering the nat redirect at priority -100 sends denied TCP to loopback, where the filter chain's `iif/oif lo accept` rule takes it before the deny-log rule, so enabling the sinkhole silences the NFLOG attribution that the rest of this module depends on. If it is kept, the nat chain must log (NFLOG) before the redirect, and the catcher returns as a separate Linux agent module that consumes `net.egress_denied` (the `net` section: it does not belong in `net`). Because of (b) this module sets the reference `sinkhole.enabled` to `false`.
-- **Expiry of a time-boxed allowance** needs a primitive the execution engine does not have: a plan `delay` node, or a dead-man armed without a confirm. Recommendation: the second, because it also fires if the controller dies. Needs a decision in the core.
+- **Expiry of a time-boxed allowance.** Resolved by the execution engine's expiry primitive (Execution engine: Expiry): the allowance node carries `expires_after`, which arms the dead-man's one-shot OS timer with no confirm step, so it also fires if the controller dies. `plans/egress/patch_window.yaml` uses it.
 - **Destination class vocabulary** (`declared`, `lan`, `public`) is a first cut. A service that talks to a CDN or a cloud API would need more; the lab run decides.
 - **False-positive rate of `D4c`** is unmeasured. The mode stays alert; the Invitational (observe mode) is the first data.
 - **Palo deny pull** is a `devices` task; until it exists, a host with a dead agent has no egress coverage.
@@ -4373,6 +4642,8 @@ Evidence that it matters for points:
 - Scorer learning depends on it. The parsers follow what Quotient actually sends [Q §6, Q §9.13, SP §A4]. Against a real Quotient run (2026-10-22 lab, 84 rounds) the recorded Go TLS ClientHello parses to the JA3 `006598cf32b8feecd39e4337bdba9c44` and JA4 `t13i131000_f57a46bbacb6_ab7e3b40a677`, the SSH HASSH values for the real login and for `BadAttempts` match, and SMTP, IMAP, POP3, FTP, SMB, WinRM, DNS and ICMP sessions decode with no parser panics or reassembly gaps (`docs/capture.md`, lab table).
 - The ring exports real pcap, so Wireshark, Suricata and Zeek can read slices [OA §5.10].
 - Credential-bearing traffic is the reason for field-level sealing: no plaintext password reaches the controller's disk.
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D232 ((see docs/impl/review.md)); review D233 ((see docs/impl/review.md)); review D239 (Shared TCP reassembly (out of order, IPv6, VLAN); KEEP).
 
 **2. Status and code.**
 
@@ -4419,7 +4690,7 @@ module.Manifest{
 }
 ```
 
-Budget notes: `EventsPerSec: 600` is the supervisor budget in the code (per-class buckets: transactions 300/s, flows 300/s, scans 20/s). `HeldMB: 512` is the default ring (256 MiB) plus the freeze hold (256 MiB); see part 12, where this conflicts with the agent memory cap. `CPUMillisPerSec` is a starting cap against the agent-wide 3% average; the module has not been run on a real NIC under load.
+Budget notes: `EventsPerSec: 600` is the supervisor budget in the code (per-class buckets: transactions 300/s, flows 300/s, scans 20/s). `HeldMB: 512` is the default ring (256 MiB) plus the freeze hold (256 MiB); the core Footprint adds this `HeldMB` to the 80 MB base on a host with the `capture` role (part 12). `CPUMillisPerSec` is a starting cap against the agent-wide 3% average; the module has not been run on a real NIC under load.
 
 **4. Configuration.**
 
@@ -4493,7 +4764,7 @@ Emitted. The code's names (`net.txn`, `net.flow`, `net.scan`, `http_request`) ar
 | Flow records | One record per connection | Agent spool | Continuously |
 | Transactions | Parsed exchanges on declared service ports | Agent spool | Continuously |
 
-*Ring.* In the code the ring is an in-memory circular buffer bounded by bytes (`MaxBytes`, default 256 MiB) and packets (`MaxPackets`, default 2 M); oldest packets are evicted first, each packet is copied in so sources can reuse their buffers. v3 specified an on-disk ring of the smaller of 2 GB or 10% of free disk. The code's choice is reasonable for a first version and keeps the API stable if the ring moves to a file. The design follows the code and records the disk-ring sizing as open (part 12).
+*Ring.* In the code the ring is an in-memory circular buffer bounded by bytes (`MaxBytes`, default 256 MiB) and packets (`MaxPackets`, default 2 M); oldest packets are evicted first, each packet is copied in so sources can reuse their buffers. v3 specified an on-disk ring of the smaller of 2 GB or 10% of free disk. The code's choice is reasonable for a first version and keeps the API stable if the ring moves to a file. The design follows the code; the core Footprint budgets the heap ring (part 12).
 
 *Sources.* `OpenInterface` opens `AF_PACKET`/`SOCK_RAW`, sets TPACKET_V3, maps a block ring (8 x 1 MiB, 60 ms block timeout), attaches the classic BPF program before binding so nothing unfiltered is ever queued, then binds to the interface (or all). There is no promiscuous mode: a host records its own traffic. Kernel-stripped 802.1Q tags are re-inserted so pcap output shows the wire. Kernel drops are read from `PACKET_STATISTICS` (which resets on read, so the source accumulates). The filter returns full snap length on scored ports and ICMP, 128 bytes elsewhere (or nothing for unscored traffic when configured so), and drops excluded endpoints (the agent-to-controller link) in both directions, IPv4 and IPv6, tagged or untagged. Limits: at most 48 ports in the BPF program; IPv6 extension headers and non-first fragments are treated as "other".
 
@@ -4574,12 +4845,12 @@ Capture folds into the Traffic page: per host capture state (interface, ring fil
 - Fuzzing, 10 s each: `FuzzHTTP FuzzWinRM FuzzSSH FuzzTLS FuzzFTP FuzzSMTP FuzzIMAP FuzzPOP3 FuzzDNS FuzzDNSDatagram FuzzSMB2 FuzzTDS FuzzNTLM FuzzICMP`, and `FuzzReassembly` and `FuzzProcess` in capture.
 - Real AF_PACKET: `TestAFPacketTPACKETV3OnContainerLoopback` runs only with `PHYLAX_CAPTURE_DOCKER=1` and `/.dockerenv`; nothing else touches a real interface.
 - To add: TFTP and NTP parsers (fixtures and fuzz), `freeze_capture` end to end (controller rule, control message, agent freeze, `fetch`), the source-address check against a fixture Palo log, `go test -race` on the module, the conformance entries.
-- Lab: a real capture run on a real NIC under load (drop counts, block sizing, VLAN and bonded interfaces, CPU against the budget), the T33 expectations that depend on stitched flows, and the Palo inbound NAT question. The Windows raw-socket test (v3 T26) is dropped with the cut.
+- Lab: a real capture run on a real NIC under load (drop counts, block sizing, VLAN and bonded interfaces, CPU against the budget), the T33 expectations that depend on stitched flows, and the Palo inbound NAT question. The Windows raw-socket test (T26) is retired with the cut.
 
 **12. Limits and open items.**
 
-- **Memory cap conflict with the core.** The core Footprint table puts agent RSS at 80 MB "excluding the packet ring and kernel-held memory". The code's ring and hold are in the Go heap (256 MiB each by default), so they count against `debug.SetMemoryLimit` and `MemoryMax`. Either the ring moves to a file (the API allows it; v3 specified an on-disk ring sized at the smaller of 2 GB or 10% of free disk, and `policy.yml` still has `packet_ring_max_bytes` and `packet_ring_free_pct`, which the code ignores) or the cap excludes it. Undecided; recommendation is the file-backed ring.
-- **Reference manifest.** The core hosts example gives Windows hosts (`ad`, `mssql`, `win11-wkst`) the `capture` role. With Windows capture cut, those entries should drop the role so health does not read `degraded` forever.
+- **Memory cap.** Resolved by following the code: the ring (`ring_mb`, default 256 MiB) and the freeze hold (`hold_mb`, default 256 MiB) are Go heap, so they count against `debug.SetMemoryLimit` and `MemoryMax`. The core Footprint now budgets the module's `HeldMB` on top of the 80 MB base for a host with the `capture` role, and the heartbeat reports the capture bytes separately. `policy.yml`'s `packet_ring_max_bytes` and `packet_ring_free_pct` are dead fields and are deleted (Known bugs 13). If a lab run shows the heap ring too costly on a small host, moving it to a file is a change inside this module (the ring API does not expose where the bytes live); v3's on-disk ring sized at the smaller of 2 GB or 10% of free disk stays the fallback.
+- **Reference manifest.** Resolved: the core hosts example no longer gives the Windows hosts (`ad`, `mssql`, `win11-wkst`) the `capture` role, so health does not read `degraded` forever (Known bugs 23).
 - **Seal key distribution.** `capture.seal` is a file in the state directory with no distribution mechanism. A vault secret delivered in the signed config (`seal_key_ref`) is proposed; the key is then in each capture host's config.
 - **Agent `fetch`** is a core task (Known bug 4); the evidence pcaps and the controller's pull depend on it.
 - `shortcut: the freeze budget is one shared hold across windows, upgrade if two simultaneous large freezes starve each other`.
@@ -4602,6 +4873,8 @@ Evidence that it matters for points:
 - Palo deny logs cover hosts whose agent is dead or whose host firewall an implant disabled (review D219).
 - TOOL26T asked for a `TeamXX-CF` export from `show access-control-config`, so a Firepower existed in 2026 (injects report #7); SOFT08T [[soft08t]] asked for a firewall backup (review D417, N6.1).
 - The Palo's packet capture settles "is the scorer even getting through?" without guessing; David finds it interesting and it stays, gated on the device's licence and capability flag (review D244, area 6 answer).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D411 ((see docs/impl/review.md)); review D412 ((see docs/impl/review.md)); review D413 ((see docs/impl/review.md)); review D415 ((see docs/impl/review.md)).
 
 **2. Status and code.**
 
@@ -4842,9 +5115,9 @@ Page `/devices`: per device the kind, version, licence flags, link state, last d
 
 - `shortcut: backups are copied by SSH piping, no SFTP; see part 6`.
 - `shortcut: the Palo capture parameter set is unverified against a licensed VM; see part 6`.
-- **Scorer-mimic probes in the health callback.** The v3 protocol runs them inside the transaction. The adapter's health hook takes an `extra` function and callers pass `nil`. The controller `Host` interface has no probe call, and modules do not import `checks`. Options: the executor passes a probe callback into controller-side actions, or the plan runs a `health.check` node after the device node and rolls back on failure (the device commit is then outside the Tx window). Needs a core decision; recommendation is the callback, so the revert stays inside the protocol.
+- **Scorer-mimic probes in the health callback.** Resolved by the callback option (Execution engine: the probe inside a device transaction): the executor passes `Env.Probe` into controller-side actions, the adapter's health hook receives it as `extra`, and the revert stays inside the device protocol's own window. The adapters call the probe through the executor, so `devices` does not import `checks`.
 - **Pollers, `D14`, rotation, `palo.revert`, backups, capture, licence gating** are all unbuilt (part 2); `D14` has no rule file in `rules/` today.
-- **Adapter naming.** The core action table lists `palo.apply`, `palo.commit`, `palo.snapshot`, `palo.revert`, `vyos.apply`, `device.rotate_admin`. This section adds `palo.permitted_ips`, `palo.capture`, `vyos.snapshot`, `device.backup` and `ftd.export` (the first and third are built).
+- **Adapter naming.** Resolved: the core Action families table lists the full set: `palo.apply`, `palo.commit`, `palo.permitted_ips`, `palo.snapshot`, `palo.revert`, `palo.capture`, `vyos.apply`, `vyos.snapshot`, `device.rotate_admin`, `device.backup` and `ftd.export` (`palo.apply`, `palo.commit`, `palo.permitted_ips` and `vyos.apply` are built).
 - **Event naming.** The adapter's `ConfigEvent` is documented as the source of `device_config` events; they are renamed `devices.config`.
 - **VyOS `commit-confirm action reload`** on the 1.4.0 image is unknown until the lab.
 - **A second Palo segment or a Palo behind the relay** works through the device-proxy transport; it has no end-to-end test (the relay itself has none either; core Testing).
@@ -4866,6 +5139,8 @@ Evidence that it matters for points:
 - Our own changes cause outages and red gets blamed for them [[how-to-win-ccdc-scoring#e3]]. The doctor and the before/after probes say which.
 - Quotient is lax in places (a 404 passes with no regex; an SSH command passes on any output) and strict-where-lax checks catch what the scorer will not [Q §9.7]. Quotient's transport details come from its source [Q §0, Q §2, Q §9.11].
 - Peer evidence: DSU `cyber/doctor.sh@be21b75` runs a per-service diagnosis when a check fails (orchestration report).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D245 ((see docs/impl/review.md)); review D252 ((see docs/impl/review.md)); review D253 ((see docs/impl/review.md)); review D254 ((see docs/impl/review.md)); review D255 ((see docs/impl/review.md)); review D256 ((see docs/impl/review.md)); review D257 ((see docs/impl/review.md)); review D258 ((see docs/impl/review.md)); review D259 ((see docs/impl/review.md)); review D260 ((see docs/impl/review.md)); review D261 ((see docs/impl/review.md)); review D262 ((see docs/impl/review.md)); review D263 (RDP: TCP hold; auth probe from Kali with xfreerdp `/auth-only`; KEEP); review D264 ((see docs/impl/review.md)); review D265 ((see docs/impl/review.md)); review D266 ((see docs/impl/review.md)); review D267 ((see docs/impl/review.md)); review D268 ((see docs/impl/review.md)); review D269 ((see docs/impl/review.md)); review N7.2 (Orange Team customer-flow probes from Kali over the public path (ecom browse/cart/checkout, webmail send/read...; ADD); review N8.1 (Service doctor: when a scored check fails N times, run a content `collect` plan per service kind (config test...; ADD).
 
 **2. Status and code.**
 
@@ -5081,7 +5356,7 @@ The module is the heaviest active user of scored services, so it limits itself:
 - Unit: every probe against a local fake server (`ssh_test.go`, `smb_test.go` with `ntlmserver_test.go`, `web_dns_test.go`, `lineproto_test.go`, `misc_test.go`); strict-mode cases; credential redaction; quiet-window gate and allowlist (`checkrunner_test.go`); `Compare` classification.
 - New: TFTP and NTP against fake servers; flow runner with a fake web app (cookie jar, capture, form post, effects flag); doctor ranking from fixture collect output; check lifecycle (proposal, accept, retire, accept-current-response writes an override).
 - Conformance: starts with no config (disabled), reaches `ok` or `unavailable` within 10 s, stops cleanly, emits only declared kinds, respects its budget under a 40-check fixture, survives 60 s of failing `Emit`, survives reconfiguration with `Keep` state (the pass counters).
-- Lab (v3 ids; the v4 matrix renumbers them): T14 (a Quotient config hot-adds an HTTP path, a DNS record and a custom check: a proposal within one round), T15 (check discovery accuracy over 2 hours with Orange traffic: 100% of Quotient's checks proposed, 0 false proposals), T16 (a hardening plan breaks a scored page, `PermitTTY` or a mail plaintext setting: the lint rejects it; if forced, the probe is red in 60 s and the node rolls back), T20 (60 minutes of Quotient plus Orange traffic, 5 or fewer false-positive alerts per hour), T34 (hardening against real Quotient: 0 failed rounds attributable to Phylax), T39 (faithful checks against Quotient's results: 98% agreement or more, after calibration). New lab tests: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down).
+- Lab (matrix ids): T14 (a Quotient config hot-adds an HTTP path, a DNS record and a custom check: a proposal within one round), T15 (check discovery accuracy over 2 hours with Orange traffic: 100% of Quotient's checks proposed, 0 false proposals), T16 (a hardening plan breaks a scored page, `PermitTTY` or a mail plaintext setting: the lint rejects it; if forced, the probe is red in 60 s and the node rolls back), T20 (60 minutes of Quotient plus Orange traffic, 5 or fewer false-positive alerts per hour), T34 (hardening against real Quotient: 0 failed rounds attributable to Phylax), T39 (faithful checks against Quotient's results: 98% agreement or more, after calibration). New lab tests: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down).
 
 **12. Limits and open items.**
 
@@ -5091,12 +5366,12 @@ The module is the heaviest active user of scored services, so it limits itself:
 - `shortcut: SMTP, LDAP and HTTPS TLS verification is off because the scorer's is unspecified; IMAP and POP3 verify as documented. Upgrade when the scorer's behaviour is captured.`
 - `shortcut: doctor reads the journal with journalctl through host.exec, replace with a native reader.`
 - `shortcut: the union sweep samples one random credential per item, not the item-by-credential product; a credential-wide sweep is a loop over AuthOnly, add it if a lab run shows a credential-specific failure hiding.`
-- Open: the runner's quiet-window gate needs the round-clock estimate on the agent. Proposed: `scorer.clock` is carried to runners in the signed config block (`modules.checks.clock`: delay, jitter, last burst, window), refreshed when the estimate changes and extrapolated between refreshes. The core wire protocol has no message for it. Until it exists a runner uses its fallback (jittered intervals, `unavailable` health gap).
+- Resolved: the runner's quiet-window gate gets the round-clock estimate from the signed `control: round_clock` message (Wire protocol: control types), sent whenever the `scorer.clock` estimate changes to agents with the `check_runner` or `scanner` role and extrapolated between refreshes. Until the first one arrives a runner uses its fallback (jittered intervals, `unavailable` health gap `no round clock`).
 - Open: whether the controller scheduler or the `check_runner` on `ubuntu-wkst` is the in-LAN vantage. Both are specified; the lab picks.
 - Open: mailbox growth from SMTP probes and the real quota of the 2027 mail host.
 - Open: the exact Orange flows depend on the 2027 ecom and webmail products (Roundcube is expected). Flows are replaced from the packet.
-- Core change: alert rows from controller-origin alert-class events (confirm the ingest hook covers events with agent `controller`).
-- Core change: the shared-library list should name `internal/checks/probe` (see Status and code, item 2).
+- Resolved: alert-class events (priority high or critical) from agent `controller` also become alert rows through the ingest hook (Event kinds; the `Host.Emit` comment).
+- Resolved: `internal/checks/probe` is on the shared stateless library list (module contract), with `checks` as its owner.
 - Cross-section: the `checks.compare` event and rule V1 are specified here and in `vantage`. The `scorer` module owns the SLA tracker; `checks.result` with `mode: faithful` feeds it.
 
 #### `scorer`
@@ -5117,6 +5392,8 @@ Evidence that it matters for points:
 - The fingerprint table (Appendix G) is data for scorer recognition; the lab runs real Quotient for ground truth.
 
 Quotient facts the module relies on (`dbaseqp/Quotient@a845408`): `Timeout < Delay - Jitter` is enforced and the default Timeout is `Delay/2` (`engine/config/config.go:356`). The team API `GET /api/credlists` returns each credlist's name, path, usernames and format (`engine/credentials.go:158`, needs `EasyPCR`); the service-to-credlist mapping is admin-only. None of that is reachable from inside, so it is not an input. The module uses the measured round delay.
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D246 ((see docs/impl/review.md)); review D247 ((see docs/impl/review.md)); review D248 ((see docs/impl/review.md)); review D249 ((see docs/impl/review.md)); review D250 (BadAttempts exemption from lockout and brute-force rules; KEEP); review D270 ((see docs/impl/review.md)); review D271 ((see docs/impl/review.md)); review D272 ((see docs/impl/review.md)); review D273 ((see docs/impl/review.md)); review D274 ((see docs/impl/review.md)); review D275 ((see docs/impl/review.md)); review D276 (Passive toward the scorer: never connect to, scan or probe its addresses; KEEP); review D277 (SLA streak per service from capture; alert at threshold minus 2; CHANGE); review D336 (D16 scorer check change (new, changed, stale scorer checks; scorer traffic missing); KEEP).
 
 **2. Status and code.**
 
@@ -5223,7 +5500,7 @@ Consumes:
 | `checks.result` | `checks` | faithful results advance the probe-fed SLA streak |
 | `devices.deny` | `devices` | Palo deny entries attached to a blocked-service alert |
 | `traceback.change` | `traceback` | cause of lost uptime in the risk view |
-| `scorer.note` | the UI | hand-entered Up/Down verdicts |
+| `scorer.note` | `scorer` (the Services page form writes it through `Host.Emit`) | hand-entered Up/Down verdicts, advisory only |
 
 The exact capture and devices kind names are confirmed against those sections (part 12).
 
@@ -5240,6 +5517,7 @@ Emits:
 | `scorer.blocked` | 1 | high | `service`, `rounds_missed`, `window`, `deny_refs[]` (an upstream block: other services were seen, this one was not) |
 | `scorer.silent` | 1 | normal | `since`; the scorer stopped checking everything (not "healthy") |
 | `scorer.sla` | 1 | high | `service`, `level` (`warn` at threshold-2, `critical` at threshold-1, `penalty`), `streak`, `penalties`, `source` (`probe`, `capture`, `note`) |
+| `scorer.note` | 1 | normal | `service`, `verdict` (`up` or `down`), `round` (optional), `by` (operator name), `text`; hand-entered Up/Down verdicts, advisory only (the scorer is not reachable from inside); the `scorer_note` table keeps them for calibration |
 | `scorer.risk` | 1 | normal | `services[]` ranked by points at risk: `service`, `weight`, `lost_points`, `points_per_minute_down`, `down_since`, `cause` (`ours`, `red`, `platform`, `unknown`) |
 
 `scorer.round.sources` is the interface traffic labels use: a flow is `scorer` when it falls inside a burst of a `scorer.round` and its source is listed there. Addresses are never a label on their own.
@@ -5292,7 +5570,7 @@ The module touches no scored state: it reads events. Its output gates other modu
 - Unit (built): `clock_test.go` (bursts, lattice fit, dropped rounds, jitter estimate, window and hazard), `fingerprint_test.go`, `discovery_test.go` (learning, coverage, proposals, stale, blocked, accounts), `sla_test.go` (replay, discard, verdict, accrual).
 - New: `per_round` accrual with phases; credlist grouping from fixture user sets; points-at-risk from a fixture store (identical output twice from the same store and `now`); replay rebuild equals the live state; `sysadmin` is not special-cased.
 - Conformance: starts with no capture feed, stops cleanly, emits only declared kinds, respects its budget under a 10-service fixture, survives link loss and reconfiguration (the estimator is rebuilt by replay, no `Keep` needed beyond the overrides).
-- Lab (v3 ids): T30 (round clock: 20 bursts with jitter, a discarded round, a team-wide missing burst: Delay and Jitter within 1 s, the dropped round is not an incident), T37 (`BadAttempts` and scorer fingerprints with the runner address changed each round: no brute-force or lockout alert, scorer-labelled by behaviour), T15 and T14 (shared with `checks`), T39 for SLA agreement. New: account learning accuracy against Quotient's real user lists (100% of the accounts the scorer used in the window); credlist grouping against a Quotient with two lists. Invitational measurements S1-S14 (`docs/impl/invitational-data.md`) are the first real data.
+- Lab (matrix ids): T30 (round clock: 20 bursts with jitter, a discarded round, a team-wide missing burst: Delay and Jitter within 1 s, the dropped round is not an incident), T37 (`BadAttempts` and scorer fingerprints with the runner address changed each round: no brute-force or lockout alert, scorer-labelled by behaviour), T15 and T14 (shared with `checks`), T49 (eviction uses the measured round delay) and T50 (account and credlist learning against a Quotient with two credlists: 100% of the accounts the scorer used in the window, service-to-credlist inferred from observed auth events). Invitational measurements S1-S14 (`docs/impl/invitational-data.md`) are the first real data.
 
 **12. Limits and open items.**
 
@@ -5303,7 +5581,7 @@ The module touches no scored state: it reads events. Its output gates other modu
 - Open: `capture.flow` and `capture.txn` are the capture section's kinds; `devices.deny` entries are outbound denies, so a blocked inbound scored service is attached through `devices.traffic` instead. Use both when attaching Palo logs to a blocked-service alert.
 - Open: the real Delay, Jitter, Timeout, SLA threshold, Divisor and the credlist count are measured at the Invitational (S1, S2, S9, S12, S14).
 - Open: how the round-clock estimate reaches agents (see `checks`, Limits). `creds` and `vantage` need the same feed.
-- Core change: a plan option that holds an approved plan until a `scorer.clock` window opens (see `creds`).
+- Resolved: the plan options `window: scorer_quiet` (hold an approved plan until a `scorer.clock` window opens) and `gate: manual` (records an operator's typed reply, such as the portal count or skipped, as step output) are specified in the core (Execution engine: Plans, plan and node options).
 - Cross-section: the SLA tracker moves here from `checks_hub.go`; the Overview strip shows `scorer.sla` and `scorer.risk`.
 
 #### `vantage`
@@ -5321,6 +5599,8 @@ Evidence that it matters for points:
 - Red uses Zerologon and exposed management protocols; only 2 teams mitigated Zerologon in 2025 [[2025-minnesota-and-indiana-ccdc-debrief#e2]], [[discord-2026q-rt-debrief#e10]]. A check-only tester from outside proves the DC's public path is closed.
 - The egress canary proves the egress policy and the Palo rules from the inside, and gives the firewall-deny proof for injects (review N10.3).
 - Verifying a new password through the public path before the human submits the PCR catches a broken host change before it costs a scored round [Q §5].
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D340 ((see docs/impl/review.md)); review D341 ((see docs/impl/review.md)); review D342 ((see docs/impl/review.md)); review D343 ((see docs/impl/review.md)); review D370 ((see docs/impl/review.md)); review D371 ((see docs/impl/review.md)); review D372 ((see docs/impl/review.md)); review D373 ((see docs/impl/review.md)); review D374 ((see docs/impl/review.md)); review D375 (Quotient-faithful checks from Kali against public addresses with full item sweep; KEEP); review D378 (Egress canaries from agents to Kali ports that should be blocked; KEEP).
 
 **2. Status and code.**
 
@@ -5470,7 +5750,7 @@ States: `ok`; `degraded` when the scan is behind schedule, the clock feed is abs
 - Unit (built): `scan_test.go` (ordering, rate bucket, UDP replies, diff, cancel), `canary_test.go` (tag, ACK, dedup, rate, bounds), `verify_test.go` (all-must-pass, allowlist refusal, secret redaction), `core_test.go`, `checkrunner_test.go` (moves with the runner).
 - New: per-credlist verification targets; `dangerous_open` and scored-port-closed diffs; pre-window scan scheduling; Zerologon tester against a fake Netlogon server that reports vulnerable and patched; SMB and WinRM exposure parsing; V1-V4 rule fixtures.
 - Conformance: starts with no config (disabled), refuses a non-allowlisted target, stops cleanly, emits only declared kinds, respects its budget during a full-range fixture scan, survives link loss (scan results spool), survives reconfiguration.
-- Lab (v3 ids): T39 (Kali vantage: faithful checks against Quotient's results; a Palo rule that blocks the public path but not the LAN; a newly opened port; an egress leak: agreement 98% or more, V1 localises the fault, V2 and V3 fire), T35 (PCR transaction, shared with `creds`: verification via the Kali and the scorer's next login). New: a closed scored port raises V2; the Zerologon tester against an unpatched lab DC (a lab-build decision, v3 note) and the patched Server 2022 AD; the pre-window scan.
+- Lab (matrix ids): T39 (Kali vantage: faithful checks against Quotient's results; a Palo rule that blocks the public path but not the LAN; a newly opened port; an egress leak: agreement 98% or more, V1 localises the fault, V2 and V3 fire), T35 (PCR transaction, shared with `creds`: verification via the Kali and the scorer's next login). New: a closed scored port raises V2; the Zerologon tester against an unpatched lab DC (a lab-build decision, v3 note) and the patched Server 2022 AD; the pre-window scan.
 
 **12. Limits and open items.**
 
@@ -5481,7 +5761,7 @@ States: `ok`; `degraded` when the scan is behind schedule, the clock feed is abs
 - Open: the Zerologon tester needs a lab DC that is unpatched; a lab-build decision.
 - Open: the organizers' scan window (time and frequency) is unknown until observed; the pre-window times are entered at runtime.
 - Open: the Kali's sustained rate against a Palo with session limits is unmeasured.
-- Core change: the Kali's `check_runner` and `scanner` roles need the round-clock feed (see `checks`, Limits).
+- Resolved: the Kali's `check_runner` and `scanner` roles receive the round-clock feed through the signed `control: round_clock` message (Wire protocol: control types; see `checks`, Limits).
 - Cross-section: `net` owns the canary sender; the wire format `PHYLAX-CANARY/1` is the contract between the two modules and is fixed here. `checks` owns `Compare` and the `checks.compare` event that rule V1 reads.
 
 #### `creds`
@@ -5499,6 +5779,8 @@ Evidence that it matters for points:
 - Quotient limits: no shared passwords and none of 40 or more characters (Quotient issue #107) [[issues-dbaseqp-quotient#e9]]; quoting and trimming bugs (issues #13 and #14).
 - There is no clipboard between the consoles and the Quotient machine (review A7.Q5), so what a human carries out must be short and typeable. Peer evidence on stateless break-glass derivation: [WT §9.10].
 - A breach of the controller exposes every rotated password in the vault (Trust model), and red dumps every AD hash ("one DC's worth of plaintext"). Both argue for rotating few scored passwords (review A7.Q6, A7.Q8).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D420 (Credential inventory from accounts.yml plus discovered accounts, scored flag, credlist, rotation policy; CHANGE); review D421 ((see docs/impl/review.md)); review D422 ((see docs/impl/review.md)); review D423 ((see docs/impl/review.md)); review D427 (PCR transaction state machine per scored account; CHANGE); review D428 (PCR timing: host and PCR both land inside the quiet window; CHANGE); review D429 (Never use "Reset to Defaults"; rollback is a PCR with the old value; KEEP); review D431 (PCR submission stays a human portal step; CHANGE).
 
 **2. Status and code.**
 
@@ -5689,7 +5971,7 @@ This module can fail the most scored checks of any, so it is the most constraine
 - Unit (built): `creds_test.go` (generator classes, uniqueness, alphabet, break-glass known answers, record validation, rotation order), `pcr_test.go` and `csv_test.go` (state machine, windows, CSV parser round trip, rollback, race forgiveness).
 - New: the typeable class (length, complexity, safe set, determinism of the derived form); per-credlist rows; `reverted` and both resolutions; the caps; `late` and `race`; the armed plan released at a window; the transaction-id exception in the lint; secrets never in events or logs.
 - Conformance: starts locked (health `degraded`, vault gap), stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration (open transactions are in `pcr_txn`).
-- Lab (v3 ids): T35 (PCR transaction: normal, PCR mid-enqueue, wrong order, mismatched CSV, password with edge characters: at most one failed round per affected user; verification via Kali and the scorer's next login; rollback never uses "Reset to Defaults"). New: a host revert and both resolutions against real Quotient with two credlists; a wrong typed row with fix-forward; the Invitational PCR measurements S13 and the typing exercise O8.
+- Lab (matrix ids): T35 (PCR transaction: normal, PCR mid-enqueue, wrong order, mismatched CSV, password with edge characters: at most one failed round per affected user; verification via Kali and the scorer's next login; rollback never uses "Reset to Defaults"), T48 (the T+0 rehearsal that precedes any PCR), T51 (a host revert and both resolutions against real Quotient with two credlists), T66 (the pass-the-hash pack's scorer baseline); a wrong typed row with fix-forward; the Invitational PCR measurements S13 and the typing exercise O8.
 
 **12. Limits and open items.**
 
@@ -5699,8 +5981,8 @@ This module can fail the most scored checks of any, so it is the most constraine
 - Open (review A7.Q6): the scored-password policy against a full AD dump. The process is kept; research on how Quotient-region teams handle it found no public writeup. Until decided, the rule is selective rotation on evidence plus prevention.
 - Open: `max_accounts_per_txn` and `max_open_txns` are starting values; the typing exercise (O8) and the first real PCR (S13) set them.
 - Open: how many rows the typed list must hold depends on the scored user count (S5, S14).
-- Core change: a plan option that holds an approved plan until a `scorer.clock` window opens (`window: scorer_quiet`), and a `gate: manual` that records an operator's reply (the portal count and skipped) as step output.
-- Core change: the scoring guard exception keyed by transaction id, and a lint hook that reads `creds.state`.
+- Resolved: the plan options `window: scorer_quiet` (hold an approved plan until a `scorer.clock` window opens) and `gate: manual` (records an operator's typed reply, such as the portal count or skipped, as step output) are specified in the core (Execution engine: Plans, plan and node options).
+- Resolved: the scoring guard exception is keyed by transaction id and the lint reads `creds.state` through a registered lint rule (Execution engine: the two sanctioned exceptions, lint registration).
 - Cross-section: the Credentials role carries the list to the Quotient machine outside the environment (Operations, Roles). `vantage` executes `pcr.verify`; `scorer` provides the window, the learned accounts and the eviction cutoff; `detect` ships the pass-the-hash rule pack; `honeytokens` ships the honey AD accounts.
 
 ### Analysis
@@ -5719,6 +6001,8 @@ Evidence that it matters for points:
 - OpenCart backdoor admins were real (red-team report); app-level data changes (admin rows, database users, UDFs) need read-only pollers (review D286).
 - At the 2026 regional the red team ran custom Postfix and DNS binaries that forwarded to its own host (rule `DEP2` in `deps` exists for this case); the change and its writer must be found quickly.
 - Target metric: trace-back reaches the source IP for webshell-driven changes in 90% or more of lab campaigns (Success metrics).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D281 (Traffic labels scorer/us/other by behaviour; attack-like flag; red sources learned from decoy hits; KEEP); review D287 ((see docs/impl/review.md)); review D288 ((see docs/impl/review.md)); review D290 ((see docs/impl/review.md)); review D291 ((see docs/impl/review.md)); review D292 (Time-window correlation fallback; KEEP).
 
 **2. Status and code.**
 
@@ -5864,7 +6148,7 @@ Read-only against scored services except the application pollers: those run read
 - Unit (built): `trace_test.go` with `tbtest` scenarios: webshell write on ecom traced to the HTTP source; default-credential SSH, sudo, cron persistence and WinRM to the DC with a hidden Domain Admin; agent gap; bounds; time-window fallback; link confidence values.
 - New: label assignment from a fixture store (identical output twice); change classes per row of the table; tagged versus untagged baseline update; app-query diff; dedupe by trigger key; the analyser runs from fixture stores with a fixed `now`.
 - Conformance, analyser rules: identical output twice from the same fixture store and `now`; switchable alone; budget respected on a large fixture.
-- Lab (v3 ids): T03 (PHP webshell upload, command, file change: trace-back reaches the source IP and request), T31 (integrity changes appear as `class: binary`), the OpenCart admin-row case of T38. Quick webshell requests are the request-link stress test.
+- Lab (matrix ids): T03 (PHP webshell upload, command, file change: trace-back reaches the source IP and request), T31 (integrity changes appear as `class: binary`), the OpenCart admin-row case of T38. Quick webshell requests are the request-link stress test.
 
 **12. Limits and open items.**
 
@@ -5887,6 +6171,8 @@ Evidence that it matters for points:
 - A multi-topic IR scores only its best item, and duplicates and stock OS behaviour score negative [[xixsaucexix-century-2026#e6]]. Each IR covers one narrative or one persistence mechanism. This is why campaigns are a view and not the unit of an IR (review D304).
 - East-west movement on the flat LAN never crosses the Palo, so per-host agents stitched by Community ID are the only way to see it (core, Environment). Palo logs cover attackers who killed the agent.
 - Target metric: 100% of expected hops for purple-team campaigns 01 and 03 (Success metrics).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D293 ((see docs/impl/review.md)); review D294 ((see docs/impl/review.md)); review D295 ((see docs/impl/review.md)); review D296 ((see docs/impl/review.md)); review D297 ((see docs/impl/review.md)); review D298 ((see docs/impl/review.md)); review D299 ((see docs/impl/review.md)); review D300 ((see docs/impl/review.md)); review D301 ((see docs/impl/review.md)); review D302 ((see docs/impl/review.md)); review D303 ((see docs/impl/review.md)); review D305 (Remediation item per hop (open, applied, verified); KEEP).
 
 **2. Status and code.**
 
@@ -6030,7 +6316,7 @@ Read-only analysis. It never touches scored state. A remediation item that would
 
 - Unit (existing): `chains_test.go` over the synthetic streams from `tbtest`. Required rewrite as fixture tests (review D15): one fixture store per linking rule (login with source; merge of connection into login; Community ID stitch; swapped 5-tuple stitch with skew; known-host login; unmatched lateral port; within-host session join; same-account join; seed graft through trace-back; DCSync as change); bounds (window, `max_hops`, `Truncated`); confidence (agent gap x0.6, minimum over the chain); exclusions (tagged, scorer and us sources, sweep-only); `Group` keys; `Units` (narrative plus persistence); remediation (one action once, verification); persistence round trip; identical output twice for the same store and `now`.
 - Conformance: analyser rule (identical output, switchable alone, within budget on a 10k-event fixture).
-- Lab (v3 ids): T33 (attack chains for campaigns 01 and 03: 100% of expected hops present, each with a link method and confidence; a two-hop SSH chain stitched by 5-tuple; one campaign per attacker; remediation checklist items verify). The purple-team campaigns come from the lab repo.
+- Lab (matrix ids): T33 (attack chains for campaigns 01 and 03: 100% of expected hops present, each with a link method and confidence; a two-hop SSH chain stitched by 5-tuple; one campaign per attacker; remediation checklist items verify). The purple-team campaigns come from the lab repo.
 
 **12. Limits and open items.**
 
@@ -6054,6 +6340,8 @@ Evidence that it matters for points:
 - The 2026 regional red team ran custom Postfix and DNS binaries that forwarded to its own host (the case the rules `DEP2` and `DEP3` describe, from `rules/deps.yml`). A new or public dependency of a service is how that shows.
 - A service that stops reaching its upstream is down for the scorer even if its process is up; the vanished-dependency rule and the doctor's dependency probes (`checks`) use the graph.
 - No vault card cites dependency discovery directly; the evidence is the mechanism above and the built code. The module starts as core because the lint depends on it; the next review can cut it if the lint is not used in a lab run.
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D223 ((see docs/impl/review.md)); review D224 ((see docs/impl/review.md)); review D225 ((see docs/impl/review.md)); review D226 ((see docs/impl/review.md)); review D227 ((see docs/impl/review.md)); review D228 ((see docs/impl/review.md)); review D229 (Dependency rules D14, D14b, D14c in `rules/deps.yml` (same ids as device rule D14); CHANGE); review D230 ((see docs/impl/review.md)).
 
 **2. Status and code.**
 
@@ -6169,7 +6457,7 @@ The collector only reads events; the controller only reads and proposes. The lin
 - Unit (built): `deps_test.go` covers the collector (ancestor chain, orphan fallback, loopback ignored, strength, learning flag, gone), the graph (confidence arithmetic, resolution), `Propose` and `Diff`, and the lint.
 - New: the agent module fed from a recorded bus stream (no `net` import); `dns_query` naming; the graph analyser from a fixture store (identical output twice); `DEP1`-`DEP3` fixtures renamed, and the registry test that one rule id has one definition (the `D14` collision is a regression test).
 - Conformance: starts with no config, stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration (the learning window state is kept through `Keep`).
-- Lab: a mail service with an LDAP and Kerberos dependency survives default-deny egress rendered from accepted proposals; a planted forwarder to a public address fires `DEP2`; a stopped upstream fires `DEP3`. The lint rejects a plan that stops a service a scored service depends on.
+- Lab: T65 (the rule-id registry regression for the `D14` collision) and a mail service with an LDAP and Kerberos dependency survives default-deny egress rendered from accepted proposals; a planted forwarder to a public address fires `DEP2`; a stopped upstream fires `DEP3`. The lint rejects a plan that stops a service a scored service depends on.
 
 **12. Limits and open items.**
 
@@ -6178,7 +6466,7 @@ The collector only reads events; the controller only reads and proposes. The lin
 - `shortcut: a planted dependency inside the learning window is learned as normal; a baseline-only proposal mode and DEP2 limit the damage, no further control.`
 - `shortcut: no Windows collector; upgrade when a scored service on a Windows host needs egress allowances rendered from observation (the AD host's allowances come from the declared domain membership, so the gap is small for 2027).`
 - Open (`net` section): the `net` section's `conn` events carry `op`, `dir`, `service`, `duration_ms` and process fields; the collector needs the process fields to include pid and start ticks (for the ancestor chain with `process_start`) and `conn` closed events for connections that open and close within one poll. If `net` cannot provide that, the collector stays inside `net` as a documented exception to the no-sibling-import rule.
-- Core change: modules cannot import each other, so the lint rules `DEP001`-`DEP003` and `DEP101` need a core registration point (or a query-based rule form) to read `deps.graph`. Until then they stay as pure functions the core lint package calls; that is the one place a core package depends on a module and needs a decision.
+- Resolved: the lint is a registry (Execution engine: lint registration). `deps` registers `DEP001` to `DEP003` and `DEP101` from its package and reads `deps.graph` through the lint context's read-only `store.Query`; no core package depends on a module.
 - Open: the lint codes versus detection rule ids look alike (`DEP001` against `DEP1`). If the registry check flags the confusion, rename the lint codes `LDEP1`-`LDEP4`.
 - Cross-section: `inventory` emits the `domain_join` table rows; `capture` or `net` emits `dns_query`; `checks` consumes `deps.graph`; the manifest section's egress rendering reads accepted `depends_on`.
 
@@ -6299,7 +6587,7 @@ Read-only analysis over events and cached data. It never touches a host or the s
 - Unit: version comparison per scheme (semver, dpkg, rpm, Splunk, PAN-OS, Windows build); the verdict table (vulnerable, fixed, unknown for backports, no mapping ignored); KEV parsing against a pinned snapshot excerpt; the product map; kernel bands.
 - Fixture: a store with `inventory.snapshot` rows for the 2027 reference hosts and a KEV and advisory fixture produces the expected `vuln.finding` set, identical twice from the same store and `now`.
 - Conformance (analyser rules): identical output, switchable alone, within budget with the full KEV index loaded.
-- Lab: install a known-vulnerable Splunk and an old OpenCart on the lab hosts; the findings appear with the right CVEs and `fixed_in`; a patched build reports `fixed`; a distro package with a backport reports `unknown`.
+- Lab: T69 (a KEV fixture matches an installed version) and install a known-vulnerable Splunk and an old OpenCart on the lab hosts; the findings appear with the right CVEs and `fixed_in`; a patched build reports `fixed`; a distro package with a backport reports `unknown`.
 
 **12. Limits and open items.**
 
@@ -6330,6 +6618,8 @@ Evidence that it matters for points:
 - Red teams loot credentials and scan from inside the LAN after the first foothold [[how-to-win-ccdc-dealing-with-red-team]].
 - Peer evidence: none for a decoy shell in an open CCDC defence platform; the module is built from the v3 design. This is a point against, and the reason for opt-in per host and the cut of public exposure.
 - Isolation is what makes decoys safe (review D64, D82).
+
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D198 ((see docs/impl/review.md)); review D206 ((see docs/impl/review.md)); review D382 (SSH decoy on port 22 where real SSH is absent or unscored: fake shell, records, never executes; KEEP); review D387 ((see docs/impl/review.md)).
 
 **2. Status and code.**
 
@@ -6554,7 +6844,7 @@ Status: built for file, key, credential and AD tokens; the LSASS session and fou
 | Generator (`Generator.ForHost` over a `HostSpec`), registry with uniqueness checks (ID, secret, account, fingerprint, SPN, host+path), `Seeds()`, `Attribute()` | built | `internal/honeytokens/{generate,token}.go` |
 | Kinds: `ssh_key`, `db_cred`, `shell_history`, `passwords_file`, `browser_cred`, `aws_key`, `honey_file`, and AD `ad_spn`, `ad_asrep`, `ad_admin` | built | `token.go` |
 | Honey-file read watcher: fanotify (Linux); Windows via SACL and Security 4663 through `winevt` | Linux built; the Windows SACL is set by no action | `watch.go`, `fanotify_linux.go` |
-| `akiascan`: derives `aws_access_key_id` from AKIA-pattern key ids in `http_request`, `net.sinkhole_capture` and `dns_query` events | built; the hook, with `capture.http_request` now a producer | `akia.go` |
+| `akiascan`: derives `aws_access_key_id` from AKIA-pattern key ids in `capture.http_request`, `net.sinkhole_capture` and `dns_query` events | built; the hook, with `capture.http_request` now a producer | `akia.go` |
 | Controller: `GenerateHoneytokens` (secrets to the vault as `honeytoken/<id>/<name>`, metadata to the store), registry load, seeds, alert attribution, deploy plan | built | `internal/controller/deception_*.go` |
 | Actions `file.plant` (secret content, `only_if_absent`), `ad.honey_account` (kerberoast SPN, AS-REP roastable, admin lookalike) | built; the AD action is lab-untested | `internal/actions/deception_{plant,ad,ad_windows,secrets}.go`, `registry_deception.go` |
 | Rules `D15d`-`D15g` | built | `rules/deception.yml` |
@@ -6573,8 +6863,8 @@ module.Manifest{
 	OS:        nil,                      // fanotify on Linux; SACL and the LSASS session on Windows
 	Privilege: "root",                    // fanotify needs CAP_SYS_ADMIN; the LSASS session needs SYSTEM
 	Roles:     []string{"decoys"},        // tokens are declared in decoys.yml for hosts with the decoys role; AD tokens run on domain_controller
-	Consumes:  []string{"detect.alert", "http_request", "dns_query", "capture.http_request"},
-	Emits:     []event.Type{ /* honeytokens.read, honeytokens.sighting, honeytokens.generated, honeytokens.secrets_unavailable */ },
+	Consumes:  []string{"detect.alert", "dns_query", "capture.http_request"},
+	Emits:     []event.Type{ /* honeytokens.read, honeytokens.sighting, honeytokens.generated, honeytokens.secrets_unavailable, honeytokens.aws_key_seen */ },
 	Budget: module.Budget{CPUMillisPerSec: 3, HeldMB: 4, EventsPerSec: 5, Burst: 20,
 		BytesOutPerMin: 32768, DiskMB: 1},
 	Default:  false,                      // opt-in per host in decoys.yml
@@ -6623,7 +6913,7 @@ At retrofit these move to `modules.honeytokens` (see `decoys`, part 12), with an
 
 **5. Events.**
 
-Consumed: `detect.alert` (controller side: attribute an alert to a token), and `http_request` / `capture.http_request`, `dns_query` (agent side: the `akiascan` derivation; it watches the agent's own bus). `net.sinkhole_capture` is a consumed kind only if the sinkhole survives (see `egress`).
+Consumed: `detect.alert` (controller side: attribute an alert to a token), and `capture.http_request`, `dns_query` (agent side: the `akiascan` derivation; it watches the agent's own bus). A sinkhole capture kind would join this list only if a sinkhole catcher module is kept (see `egress`); no such kind is declared today.
 
 Emitted:
 
@@ -6633,7 +6923,7 @@ Emitted:
 | `honeytokens.sighting` | 1 | critical | controller side: `alert_id`, `rule`, `honeytoken`, `token_origin`, `token_kind`, `source`. Replaces rewriting the alert: stored events are hash-chained and are never rewritten |
 | `honeytokens.generated` | 1 | normal | `hosts[]`, `tokens` (ids and kinds only), `plan_id` |
 | `honeytokens.secrets_unavailable` | 1 | high | the vault was locked at start; decoys cannot recognise honey passwords until the secrets reload |
-| derived `aws_access_key_id` events | 1 | high | a copy of the source event with `aws_access_key_id` and `derived_from` set, which `D15g` matches against `honeytoken.aws_keys` |
+| `honeytokens.aws_key_seen` | 1 | high | the derived event the `akiascan` hook emits: a copy of the source event (`capture.http_request` or `dns_query`) with `aws_access_key_id` and `derived_from` set, which `D15g` matches against `honeytoken.aws_keys` |
 
 The existing code applies `Registry.Attribute` to incoming `detect.alert` events and adds `honeytoken`, `token_origin` and `token_kind` entities (`alerts.go`); the v4 contract emits `honeytokens.sighting` and lets the alert page join, so alerts are not mutated. Until the retrofit lands, the existing mutation of the alert's entities stays.
 
@@ -6658,9 +6948,9 @@ The existing code applies `Registry.Attribute` to incoming `detect.alert` events
 | v3 kind not yet built | Planted at | Sighted when | Needed |
 | --- | --- | --- | --- |
 | LSASS decoy credential | Windows servers | Failed authentication for that account on the DC (4625, 4771) | `win.lsass_decoy`; see below |
-| Honey OpenCart admin with a unique password | ecom database | That login attempted on the admin page | `mysql.exec` insert plus a login-attempt seed in `honeytoken.accounts` from the web admin log (`logs` module) |
+| Honey OpenCart admin with a unique password | ecom database | That login attempted on the admin page | `sql.query` insert plus a login-attempt seed in `honeytoken.accounts` from the web admin log (`logs` module) |
 | Honey DNS record that nothing uses | DNS zone | Any query for it | A DNS-zone record action (the `ad` module's DNS family) and a `honeytoken.names` seed for `dns_query` |
-| Honey SQL login and honey SMB file on the MSSQL host | MSSQL, the SOP share's neighbour directory | That login attempt; an open of the honey file (4663) | `mssql.exec` create login (login failure 18456 seeded) and a `honey_file` with a SACL |
+| Honey SQL login and honey SMB file on the MSSQL host | MSSQL, the SOP share's neighbour directory | That login attempt; an open of the honey file (4663) | `sql.query` create login (login failure 18456 seeded) and a `honey_file` with a SACL |
 
 *Honey AD accounts* (review D381, A7.Q7). `ad.honey_account` creates a plain user in a separate OU (`OU=Decoys,<domain DN>`), with no group memberships, a long random password (two generated passwords concatenated), `logon_rights: none`, created disabled and enabled after the password is set. Variants: one with an SPN (kerberoast), one with pre-auth disabled (AS-REP roastable), and one that looks like an admin (`pools/admin_names.txt`). They are bait for a full AD dump: every hash dumped includes theirs, and a pass-the-hash or Kerberos request for them is a critical alert with no cracking needed. Honey accounts are not privileged (no memberships), so the `ad` module's privileged-account allowlist must list them as expected via `list: honeytoken.accounts` to avoid a finding for an admin-looking name. Audit policy must log 4768, 4769, 4771 and 4776 on the DC (the `ad` and `hardening` modules set it).
 
@@ -6674,7 +6964,7 @@ The existing code applies `Registry.Attribute` to incoming `detect.alert` events
 
 *Detection feed.* `Registry.Seeds()` becomes `Detect.Seeds` (`honeytoken.accounts`, `.spns`, `.paths`, `.aws_keys`) in every host's signed config that has rules, so `D15d`-`D15g` fire wherever the event shows up; a registry change bumps the config version and agents re-seed. `Registry.Attribute` maps an alert's fields to the token and its origin host.
 
-*Canary AWS key ids.* The `akiascan` module (hosts with rules) watches the agent's own `http_request`, `net.sinkhole_capture` and `dns_query` events for AKIA-pattern key ids (case-insensitive so DNS labels match; bounded in depth, size and count) and emits a copy of the event with `aws_access_key_id` and `derived_from` set. It adds nothing to an event that already carries the field and never rescans its own output. Since `capture` now emits `capture.http_request`, a producer exists on hosts with the `capture` role (outbound requests to a cloud API with the canary key are seen on the wire in the clear only for HTTP; TLS requests are invisible, which the `akiascan` doc notes).
+*Canary AWS key ids.* The `akiascan` module (hosts with rules) watches the agent's own `capture.http_request`, `net.sinkhole_capture` and `dns_query` events for AKIA-pattern key ids (case-insensitive so DNS labels match; bounded in depth, size and count) and emits a copy of the event with `aws_access_key_id` and `derived_from` set. It adds nothing to an event that already carries the field and never rescans its own output. Since `capture` now emits `capture.http_request`, a producer exists on hosts with the `capture` role (outbound requests to a cloud API with the canary key are seen on the wire in the clear only for HTTP; TLS requests are invisible, which the `akiascan` doc notes).
 
 *Severity.* A honeytoken sighting is critical wherever it shows up: `D15c` (at a decoy), `D15d` (any logon or auth event naming a honey account or key id, success or failure), `D15e` (4769/4768/4771/4776 for a honey SPN or account), `D15f` (honey file read, `honeytokens.read` or 4663), `D15g` (canary AWS key id).
 
@@ -6750,6 +7040,8 @@ Evidence that the module matters for points:
 - **File-upload injects.** TOOL26T said "do not respond with a memo; upload the result files". Hence a file export mode with no memo wrapper.
 - **Traffic analysis injects.** EVAL08T, NETW05A, NETW06A, NETW14T, SOCS06T, CRYP15A; the concept appears in 14 events.
 
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D488 (Pure-Go PDF renderer (go-pdf/fpdf, embedded fonts), no host binary, no HTML; KEEP).
+
 ##### Status and code
 
 Status: **partial**.
@@ -6777,7 +7069,7 @@ Status: **partial**.
 | OS | both (it runs on the controller and reads facts about both) |
 | Privilege | none |
 | Roles | `controller` |
-| Consumes | `detect.alert`, `chains.chain`, `chains.remediation`, `hunt.finding`, `hunt.completed`, `integrity.verdict`, `capture.flow`, `capture.txn`, `capture.evidence`, `scorer.round`, `checks.result`, `vantage.scan`, `listener`, `net.egress_denied`, `net.canary_result`, `agent.step_result`, `backup.taken`, `devices.backup`, `devices.traffic`, `teamfeed.say`, `teamfeed.claim` |
+| Consumes | `detect.alert`, `chains.chain`, `chains.item`, `hunt.finding`, `hunt.run`, `integrity.verdict`, `capture.flow`, `capture.txn`, `capture.evidence`, `scorer.round`, `checks.result`, `vantage.scan`, `listener`, `net.egress_denied`, `net.canary_result`, `agent.step_result`, `backup.taken`, `devices.backup`, `devices.traffic`, `teamfeed.say`, `teamfeed.claim` |
 | Emits | `report.draft`, `report.validated`, `report.figure`, `report.export` |
 | Budget | CPU 200 ms/s (a PDF render is a burst of about a second), held 64 MB, 1 event/s, burst 10, bytes out 20 KB/min, disk 512 MB (figures, exports and rendered files under `<data_dir>/reports/`) |
 | Default | core |
@@ -6787,7 +7079,7 @@ Status: **partial**.
 | Pages | `/reports`, `/reports/{id}`, `/artifacts`, `/artifacts/{id}`, `/evidence`, `/queries` |
 | Evidence | the citations in the first part |
 
-The kinds named under Consumes are the kinds the owning modules declare. Where a sibling section has not fixed a name (`chains.*`, `hunt.*`, `backup.*`, `teamfeed.*`), the name above is binding on that section.
+The kinds named under Consumes are the kinds the owning modules declare; every name is in the event-kind table of the module contract (the old drafts' `chains.remediation` is `chains.item`, and `hunt.completed` is `hunt.run`).
 
 ##### Configuration
 
@@ -7071,11 +7363,13 @@ Evidence that it matters for points:
 
 Backups are pulled to the controller, so a restore never depends on a compromised host's own copy.
 
+**Review rows carried by this section** (traceability from the module brief; the row text and the answers are in `docs/impl/review.md`): review D481 ((see docs/impl/review.md)); review D482 ((see docs/impl/review.md)); review D483 ((see docs/impl/review.md)); review D484 ((see docs/impl/review.md)).
+
 ##### Status and code
 
-Status: **missing**. There is no `backup` package. Existing parts it builds on: `file.hash`, `dir.snapshot` and `file.restore` (`internal/actions/files.go`), the MySQL actions (`app_mysql.go`: `mysql.audit`, `mysql.lock`, `mysql.set_password`, `mysql.exec`), `mssql.exec` and the MSSQL helpers, `collect.files`, content-addressed `chunk` transfer, and the controller's own state snapshot (`internal/store/backup.go`, which backs up the controller, not services).
+Status: **missing**. There is no `backup` package. Existing parts it builds on: `file.hash` and `file.restore` (`internal/actions/files.go`; `dir.snapshot` is a new core Files action this module needs), the database actions (`app_mysql.go`, `mssql_*.go`: `sql.query`, `mysql.audit`, `mysql.lock`, `mssql.audit`, `mssql.lock`) and the MSSQL helpers, `collect.files`, content-addressed `chunk` transfer, and the controller's own state snapshot (`internal/store/backup.go`, which backs up the controller, not services).
 
-**Conflict with the core Databases row.** The core action-family table lists `mysql.dump` and `mysql.set_password` under Databases. The code has no `mysql.dump`. This module registers its own dump and restore actions (below); the core row's `mysql.dump` should be removed or renamed to `backup.sql`.
+**Resolved with the core Databases row.** The core action-family table has no `mysql.dump`: dumps and restores are this module's `backup.*` actions (below), and the Databases row carries only `sql.query`, `sql.set_password` and the audit and lock actions. The code has no `mysql.dump`.
 
 ##### Capability manifest
 
@@ -7086,7 +7380,7 @@ Status: **missing**. There is no `backup` package. Existing parts it builds on: 
 | OS | both |
 | Privilege | root (agent) |
 | Roles | any host that carries a service with backup scope; `domain_controller` for AD actions |
-| Consumes | `agent.step_result`, `scorer.round` (quiet windows), `checks.result`, `integrity.verdict`, `hunt.completed` (golden gate) |
+| Consumes | `agent.step_result`, `scorer.round` (quiet windows), `checks.result`, `integrity.verdict`, `hunt.run`, `hunt.finding` (golden gate) |
 | Emits | `backup.taken`, `backup.restored`, `backup.verified`, `backup.failed` |
 | Budget (agent) | CPU 300 ms/s averaged over a dump (it runs at nice 19 and idle I/O class), held 32 MB, 0.2 events/s, burst 5, bytes out 20 MB/min as bulk chunks (shaped by the link's token bucket), disk 512 MB staging, deleted after the controller acknowledges the pull |
 | Budget (controller) | CPU 100 ms/s, held 32 MB, disk quota from config (default 8192 MB) |
@@ -7133,7 +7427,7 @@ type Settings struct {
 
 ##### Events
 
-Consumed: `agent.step_result` (the result of a backup or restore node), `scorer.round` (burst times), `checks.result` (a service's health), `integrity.verdict` and `hunt.completed` (the host's ledger sweep and hunt are clean).
+Consumed: `agent.step_result` (the result of a backup or restore node), `scorer.round` (burst times), `checks.result` (a service's health), `integrity.verdict`, `hunt.run` and `hunt.finding` (the host's ledger sweep and hunt are clean).
 
 | Kind | Schema | Priority | Key fields |
 | --- | --- | --- | --- |
@@ -7156,7 +7450,7 @@ Consumed: `agent.step_result` (the result of a backup or restore node), `scorer.
 
 **Scope** is declared per service in `services.yml`: content roots, upload directories, data entries and configuration files, plus, by kind, the AD database objects, SQL databases, the SMB SOP share and the Splunk apps. A kind of service with no declared scope is reported as "no backup scope" on the grid and the Overview, not skipped silently.
 
-**Golden gate.** The controller tags a set golden only when it holds a passing `checks.result` for the service after the hardening plan's last node, an `integrity.verdict` sweep with no open finding for the host, and a `hunt.completed` with no unresolved High finding. Until then the set exists as `pending` and the grid cell stays amber. Taking the set is read-only, so it runs without a click; tagging it golden is the gate.
+**Golden gate.** The controller tags a set golden only when it holds a passing `checks.result` for the service after the hardening plan's last node, an `integrity.verdict` sweep with no open finding for the host, and a `hunt.run` for the host with no unresolved High `hunt.finding`. Until then the set exists as `pending` and the grid cell stays amber. Taking the set is read-only, so it runs without a click; tagging it golden is the gate.
 
 **Where sets live.** Each set is stored encrypted at rest (`age`, like evidence files) on the controller under its own directory, with a manifest of member hashes. The set's hash is also in the hash-chained `backup.taken` event, so a replaced set shows as a mismatch. With `golden_to_targets`, a golden set is also copied once to the manifest's backup targets (the same ones the controller state snapshot uses). The core spec says golden service backups are copied once to those targets; this module does that.
 
@@ -7172,7 +7466,7 @@ The services' own tools are used where they exist, as labelled actions, because 
 | Splunk | Go archive of `$SPLUNK_HOME/etc/apps`, `etc/system/local` and `etc/users` | Configuration and apps. Index data is not backed up unless a service entry asks for it. |
 | Mail | Go archive of Maildir or mbox spools, Postfix and Dovecot configuration, `/etc/aliases` | Counts mailboxes and messages. |
 | SMB SOP share | Go archive with SDDL, plus a file list with hashes | The scorer compares the SOP files, so hashes are recorded. |
-| AD (record level) | LDAP export of users, groups, OUs, computers, group memberships, ACLs on selected containers, SPNs, to JSON (`ad.dump_objects`) | No password hashes: LDAP cannot read them. See restore. |
+| AD (record level) | LDAP export of users, groups, OUs, computers, group memberships, ACLs on selected containers, SPNs, to JSON (the `backup.ad` action) | No password hashes: LDAP cannot read them. See restore. |
 | DNS | Go through the DNS server's WMI provider (`MicrosoftDNS_*`) to JSON, per zone; `dnscmd /ZoneExport` as a labelled fallback | Scored DNS records are exactly what this recovers. |
 | GPO | GPMC COM `BackupAll`; `Backup-GPO` through a labelled `host.exec` as fallback | Records the `gPLink` of each GPO and the SYSVOL contents. |
 | CA (if present) | `certutil -backup` as a pinned `host.exec` | Only when `services.yml` declares an `adcs` service. |
@@ -7260,8 +7554,8 @@ A dump reads scored state and can load a scored service. The controls: no table 
 - `shortcut: ADCS backup only when an adcs service is declared, there is no evidence a CA is scored`.
 - Open: generic DR onto another host is tentative (review A10.Q2); how the scored address follows the service is out of scope here.
 - Open: the 2027 container stack (`runtime: docker`) is unverified; Kubernetes manifest backup is designed only if a packet shows Kubernetes (UCI `linux-toolbox/k8solver.sh`@f2af5a1).
-- Naming dependency: `hunt.completed`, `integrity.verdict` and `checks.result` must carry a host (or service) field and a time the golden gate can compare with the hardening plan's last node.
-- Core change: remove `mysql.dump` from the core Databases row (see Status). Optionally, the grid column set in the UI shell lists "backed up" already; no other change.
+- Naming dependency: `hunt.run`, `integrity.verdict` and `checks.result` must carry a host (or service) field and a time the golden gate can compare with the hardening plan's last node.
+- Core change: none outstanding. `mysql.dump` is gone from the core Databases row (done), and the UI shell's grid already lists "backed up".
 - Complexity register line: `backup` | restore from our own copy, off the host, with counts | services' own tools, pinned by ledger hash; no new listener; staging deleted after the pull.
 
 #### `teamfeed`
@@ -7421,7 +7715,7 @@ No actions and no content files. Two core touches are required (see Limits): the
 
 - `shortcut: the local endpoint accepts any caller that can open it (root or Administrators), upgrade if a non-root shift user needs to post, by a signed token minted per user`.
 - `shortcut: windows are host-wide, not per session, upgrade if the lab shows the exposure matters (see above)`.
-- Core changes needed: (1) a signed `control: work_window{id, until}` message beside `safe_mode`, with the protocol minor version bumped; (2) the agent supervisor stamps the active window tag on events (an `Env` hook or a stamp in the emit path). Both are small and generic.
+- Resolved: the signed `control: work_window{id, tag, until, end}` message (protocol minor bumped) and the agent supervisor's stamp of the active window tag on emitted events are specified in the core (Wire protocol: control types; Tagging and adoption).
 - Open: whether windows should need a second person's confirmation on the controller screen for hosts holding scored services. Not built: it would make `claim` no longer a thin wrapper.
 - Complexity register line: `teamfeed` | explains hand changes and keeps our own responses off them | one local socket or pipe, root only, no network listener; windows capped at an hour.
 
@@ -7734,7 +8028,7 @@ Emitted:
 
 **Cache-through.** An in-event fetch for something the index does not have (an unknown package version) goes through the controller only: a `pkg.fetch_to_depot` step fetches it from a host in the `mirrors` allowlist, logs the request and stores the blob with its observed sha256 and provenance `cache-through` (not signed by the release key). It can be installed only by a plan node that names that sha256, which an operator approves. Agents never fetch from the internet.
 
-**Refresh at the event.** Only the index delta is fetched: new blobs since the last build, in priority order. If the internet is too slow, the previous complete set is already enough. After the repository freeze (the access week) nothing in the repository changes, so a refreshed index has to come from the release channel, not from a commit; see Limits for the case where it cannot.
+**Refresh at the event.** Only the index delta is fetched: new blobs since the last build, in priority order. If the internet is too slow, the previous complete set is already enough. The signed index refreshes whenever the internet is available, at the event or before it, from the release channel; a refresh never depends on a repository commit.
 
 **Delivery to hosts.** The controller moves a blob to an agent over the existing link as content-addressed 256 KiB chunks at bulk priority, resumable with `chunk_have` (Wire protocol: chunked transfers). The exact message flow (the controller pushing a staged blob before a step, or the agent requesting it with `fetch`) is the core wire's; this module needs two things from it: a blob lands in `StateDir/depot/stage/<sha256>` only after its digest verifies, and the staging area is bounded by `stage_mb`. Until the handler exists a step with a depot source fails in `check` with "blob not staged".
 
@@ -7801,7 +8095,7 @@ Built: manifest validation, signing and verification (unsigned, tampered, wrong 
 
 To build: index with `Kind`, `Priority`, `NeededBy` and priority-ordered sync (resume after kill, bandwidth cap, partial blob never visible), cache plan generation from a fixture manifest, cache-through record and the approval requirement, agent staging and verify loop, `pkg.reinstall`, `pkg.repair` against fixture broken states, install without a patch window, touches declaration from a package-to-service map, conformance (starts with no config; starts with default config on a fixture store; stops within 5 s; emits only declared kinds; budget; link-loss and reconfiguration; `go test -race`).
 
-Lab tests (v3 ids): T40 offline drill (cold start with the internet blocked, cache from a prior sync: plans, ledger lookups, restores and the Wazuh deploy work, and missing priorities show "waiting"), T-depot (build the tools, fill source hashes, pack and sign, run `depot verify` and `run` on each target OS image), and the Invitational questions E15 (internet from each host class: bandwidth, latency, TLS interception), O11 (does the offline state work in the real environment, how long does a sync take).
+Lab tests (matrix ids): T40 offline drill (cold start with the internet blocked, cache from a prior sync: plans, ledger lookups, restores and the Wazuh deploy work, and missing priorities show "waiting"), T-depot (build the tools, fill source hashes, pack and sign, run `depot verify` and `run` on each target OS image), and the Invitational questions E15 (internet from each host class: bandwidth, latency, TLS interception), O11 (does the offline state work in the real environment, how long does a sync take).
 
 ##### 12. Limits and open items
 
@@ -7811,9 +8105,9 @@ Lab tests (v3 ids): T40 offline drill (cold start with the internet blocked, cac
 - `shortcut: phylax tools ps, ss and lsof are Linux-only; add Windows versions only if a response needs them (Sysinternals covers it)`.
 - `shortcut: Windows package updates are cached MSU files installed with wusa, not Windows Update Agent COM; add WUA only if hotfix injects need it`.
 - Core task: the agent `fetch` handler and the blob push (D117). Nothing reaches an agent until it exists.
-- Core change request: `internal/depot` imports `internal/integrity` for `Signer` and `Verifier`, and `internal/depot/gotools` imports `internal/collect/net`. Both are sibling imports under the module contract. Move the release-key signing types to a small core or shared package, and take the socket reading from the shared stateless socket library proposed in the `inventory` section.
-- Open: after the repository freeze nothing in the repository can change, so a refreshed signed index must come from the release channel. If the release pipeline also counts as frozen, runtime additions (a vendor version found in the environment) need a different path: an operator-pinned entry (URL and sha256 typed in the UI, written to `overrides.yml`, verified by the entered hash, installable only after approval). Decide before the freeze.
-- Open: package-to-service map. `pkgScoredAliases` is a hard-coded list; it should come from `services.yml` (the service's package names). Needed by the scoring lint.
+- Resolved: the release-key signing types live in the shared stateless library `internal/signing` (used by `integrity`, `depot` and the core's own plan signing), and `internal/depot/gotools` reads sockets through `internal/sockets`. Neither is a sibling import any more; both libraries are on the module contract's list.
+- Runtime additions: a vendor version found in the environment that the index does not carry is added as an operator-pinned entry (URL and sha256 typed in the UI, written to `overrides.yml`, verified by the entered hash, installable only after approval). The signed index itself refreshes whenever the internet is available; nothing here depends on how the release is delivered.
+- Resolved: the package-to-service map comes from `services.yml` (the service's `packages` list, manifest Files table), not the code's hard-coded `pkgScoredAliases`; the scoring lint reads it.
 - Open: exact fixed versions for Roundcube, OpenCart and VyOS depend on the 2027 products (Roundcube is confirmed as the webmail; Splunk 10.0.10 is known).
 - Open: the previous-version blob policy for `pkg.reinstall` (how many versions to keep per package) and the disk cost of the dependency closures, to be measured at the Invitational (E14, E17).
 
@@ -8002,7 +8296,7 @@ Built: client tests against a fake API and indexer (auth and re-auth, version pa
 
 To build: the controller module (poll loop, health event on change, backoff), `wazuh.alert` conversion with the retrofit agent name, the uninstall plan, the memory-cap node, the kind declarations, conformance (starts with no config and with the integration disabled; default config against a fake API; stops within 5 s; emits only declared kinds; budget; link loss does not apply on the controller side, store errors do; reconfiguration; `go test -race`).
 
-Lab tests: T40 offline drill (the Wazuh deploy works from the cache with the internet blocked), the first real run on ccdc27 without a failed Quotient round (the "needs the lab" list: the real 4.14.9 bundle and its hashes in the depot, indexer and API field names on the real build, RAM headroom for manager placement, the Windows service name `WazuhSvc` and the `ossec.conf` path per version). Invitational question E14 (resource headroom, `ubuntu-wkst` first) decides placement.
+Lab tests: T41 (deploy to all hosts, kill the manager, kill an agent), T40 offline drill (the Wazuh deploy works from the cache with the internet blocked), the first real run on ccdc27 without a failed Quotient round (the "needs the lab" list: the real 4.14.9 bundle and its hashes in the depot, indexer and API field names on the real build, RAM headroom for manager placement, the Windows service name `WazuhSvc` and the `ossec.conf` path per version). Invitational question E14 (resource headroom, `ubuntu-wkst` first) decides placement.
 
 ##### 12. Limits and open items
 
@@ -8049,7 +8343,7 @@ module.Manifest{
 	OS:        nil,
 	Privilege: "none",
 	Roles:     []string{"controller"},
-	Consumes:  []string{"detect.alert", "auth_event", "winevt.sec_event", "process_start" /* opt-in */, "chains.*", "devices.*" /* see Configuration */},
+	Consumes:  []string{"detect.alert", "auth_event", "winevt.sec_event", "process_start" /* opt-in */, "chains.chain", "devices.config", "devices.change", "devices.deny"},
 	Emits: []event.Type{ /* splunk.forwarder_state v1 */ },
 	Budget: module.Budget{
 		CPUMillisPerSec: 30, HeldMB: 8, EventsPerSec: 1, Burst: 5,
@@ -8092,8 +8386,10 @@ forward:                                               # event kinds to forward;
   - detect.alert
   - auth_event
   - winevt.sec_event                                   # only the categories listed below
-  - chains.*
-  - devices.*                                          # Palo and VyOS deny and change logs (kind names as declared by `devices`)
+  - chains.chain                                       # the chain timeline
+  - devices.config                                     # Palo and VyOS change and login logs
+  - devices.change                                     # our own device commits
+  - devices.deny                                       # Palo outbound deny entries
   # - process_start                                    # off by default: volume; turn on for the process-tree view
 sec_event_categories: [group_change, account_change, service_install, scheduled_task, wfp_connection, log_cleared]
 queue: 1024
@@ -8124,7 +8420,7 @@ The defaults (queue 1024, batch 100 events or 512 KiB, flush every 2 s, 4 retrie
 
 ##### 5. Events
 
-Consumed: the kinds in `forward`. `process_start` is opt-in. `devices.*` and `chains.*` are patterns; the exact kind names are those the `devices` and `chains` sections declare (open item).
+Consumed: the kinds in `forward`. `process_start` is opt-in. The `forward` list takes exact kind names (a trailing `*` is allowed in the config for a kind family); the defaults name `chains.chain`, `devices.config`, `devices.change` and `devices.deny`, the kinds the `chains` and `devices` sections declare.
 
 Emitted:
 
@@ -8196,14 +8492,14 @@ Built: forwarder tests (batching by count, bytes and interval, retry on network 
 
 To build: the controller module (subscribe, convert, state events), `sec_event_categories` filtering, the dashboards install node, the scored-index refusal, the platform alert, conformance (starts disabled with no config; starts with a default config against a fake HEC; stops within 5 s and flushes; emits only declared kinds; budget; reconfiguration changes the forward list without losing the queue; `go test -race`).
 
-Lab tests: HEC token creation on the scored Splunk, and confirmation that the `phylax` index is unscored and that the views load without a restart. A real Quotient round must pass during the setup (the "needs the lab" list). Invitational question E19 (Splunk specifics: indexes, forwarders, inputs, HEC and REST enabled, local users, RAM and CPU use, management exposure, the scored search content).
+Lab tests (no matrix id of its own; the conformance suite T46 covers the contract): HEC token creation on the scored Splunk, and confirmation that the `phylax` index is unscored and that the views load without a restart. A real Quotient round must pass during the setup (the "needs the lab" list). Invitational question E19 (Splunk specifics: indexes, forwarders, inputs, HEC and REST enabled, local users, RAM and CPU use, management exposure, the scored search content).
 
 ##### 12. Limits and open items
 
 - `shortcut: the forwarder queue is in memory, so events are lost on a controller restart; the controller's store is the record, add a replay from the store only if Splunk evidence must survive restarts`.
 - `shortcut: no indexer acknowledgement; HEC acknowledgements are not used, delivery is best effort`.
-- Open: the exact `devices.*` and `chains.*` kind names that carry Palo logs and the chain timeline (declared in those sections). The list in `forward` must use them.
-- Open: the scored Splunk search's index (or indexes) must be declared in `services.yml` so `splunk.hec_setup` can refuse it. Today only built-in names are refused.
+- Resolved: the kinds that carry Palo logs and the chain timeline are `devices.config`, `devices.change`, `devices.deny` and `chains.chain` (event-kind table in the module contract); the `forward` defaults use them.
+- Resolved: the scored Splunk search's indexes are declared in `services.yml` as `scored_indexes` (manifest Files table), so `splunk.hec_setup` refuses them; built-in names stay refused as well.
 - Open: whether views need a splunkd restart; if they do, the install node is gated by a quiet window.
 - Open: `process_start` forwarding volume. The process-tree view needs it; turn it on only when the inject names the view, and watch the drop counter.
 - Core change request: `Host.Subscribe` already exists in the controller `Host`; no core change. The module relies on controller-origin events being stored under agent `controller`.
@@ -8358,7 +8654,7 @@ Built: the Community ID against the official vector, `ReadEVE` over a recorded `
 
 To build: the runner (a fake tool script writing known output; timeout kills; exit codes; run directory removal), `suricata.analyze_pcap` argument validation (pcap path inside the evidence area, size cap, tool allowlist), the idempotence of a repeated run, the flags (a test that asserts `-k none` and `-C` are passed), the retrofit kind aliases, conformance (starts disabled with no config; starts with a default config against fake tools; stops within 5 s and kills a running tool; emits only declared kinds; budget under a fixture pcap; reconfiguration; `go test -race`).
 
-Lab tests: real EVE and Zeek samples from a pulled pcap (the "needs the lab" list), the offloaded-NIC case (a capture with bad checksums must yield alerts and flows with the flags on and none with them off, to prove the flags matter), and the joined view for a purple-team campaign.
+Lab tests (matrix id T60 supplies the C2 pcaps; no id of its own otherwise): real EVE and Zeek samples from a pulled pcap (the "needs the lab" list), the offloaded-NIC case (a capture with bad checksums must yield alerts and flows with the flags on and none with them off, to prove the flags matter), and the joined view for a purple-team campaign.
 
 ##### 12. Limits and open items
 
@@ -8366,7 +8662,7 @@ Lab tests: real EVE and Zeek samples from a pulled pcap (the "needs the lab" lis
 - `shortcut: the ruleset is a cached ET Open snapshot, not refreshed during the event; refresh only through the cache index delta`.
 - `shortcut: Zeek events without a Community ID in the log are given one computed from the 5-tuple; flows with address translation between the capture point and the host will not join, because the 5-tuple differs on each side of the NAT`.
 - Core task: the agent `fetch` handler, so a frozen slice can be pulled to the controller.
-- Core change request: add Suricata and Zeek to the controller's pre-approved, hash-pinned `host.exec` tool list. The `host.exec` pre-approval list in the execution engine currently names the package managers, the Sysmon installer, YARA-X, the validators, the services' dump tools, and `nmap` and `xfreerdp` on the Kali.
+- Resolved: Suricata and Zeek are on the controller's pre-approved, hash-pinned `host.exec` tool list (Execution engine: `host.exec`).
 - Open: the exact Suricata and Zeek versions, the controller packages for them (priority 2 in the depot cache plan, generated when the integration is enabled) and the install path on the controller host.
 - Open: the Zeek script and the minimal Suricata configuration are not written; JSON output options differ by version.
 - Open: pcaps taken on the Palo may need Palo-specific handling (VLAN tags, NAT); decide when the Palo-side capture is used.
@@ -8376,6 +8672,10 @@ Lab tests: real EVE and Zeek samples from a pulled pcap (the "needs the lab" lis
 What the code must support on game day. Team runbooks (timelines, callouts, seat rotation) are procedures; they are kept here in outline because the platform's order of operations depends on them (cross-cutting idea 8).
 
 ### Game day order
+
+#### The order in one paragraph
+
+The order, without minute targets (decision 9): the T+0 console phase by hand on every host (Enrollment); `phylax init` and the UI; first contact and enrollment; session eviction for everything rotated at T+0; then, on each enrolled host, as-found backups, capture, round-clock estimation, check discovery, scorer-account learning, the `inventory` baseline, the ledger sweep and the prebake hunt start by themselves; hunt and ledger review; firewall plans in shadow mode, review, enforce; hardening packs with probes and golden backups as each passes; decoys and honeytokens; optional integrations; then steady state, in which scored-password changes happen only on evidence, inside quiet windows. The table that follows gives each step its owner and its done-when condition, and the host x step grid is the checklist for all of it.
 
 #### The order step by step
 
@@ -8416,9 +8716,7 @@ Day 2 start also includes: the Platform page for every agent's link, gaps and mo
 - **SOC seat rotation** every 90 minutes (review D505). The outgoing person presses "Hand over" on the Overview, which records the time and their name in the audit log and opens a free-text box for what the next person must know (injects due, anything pending that Phylax cannot see). The incoming person opens the **"since you left" digest**: everything since the last hand-over, listed newest first: plan completions and failures, drift adoptions, open work windows and feed entries, new and changed incidents, approvals waiting, safe-mode changes, modules or agents that degraded, and the outgoing person's notes. It is a read-only page built from the store; it adds nothing to the data model. `shortcut: one shared login, so hand-over is a button and a typed name, upgrade to per-person accounts only if the audit log is not enough`.
 - **Role gaps are visible.** An unstaffed role shows on the Overview, with its pending manual steps (Roles section).
 
-#### The order in one paragraph
-
-The order, without minute targets (decision 9): T+0 console phase (Enrollment); `phylax init` and the UI; first contact and enrollment; session eviction for everything rotated at T+0; as-found backups, capture, round-clock estimation, check discovery, scorer-account learning, ledger sweep and prebake hunt start on each enrolled host; hunt and ledger review; firewall plans in shadow mode, review, enforce; hardening packs with probes and golden backups as each passes; decoys and honeytokens; scored-password changes only on evidence, inside quiet windows.
+Review rows carried by the game-day order and human-factors parts above (traceability; the row text is in `docs/impl/review.md`): review D496 ((see docs/impl/review.md)); review D497 ((see docs/impl/review.md)); review D498 ((see docs/impl/review.md)); review D499 ((see docs/impl/review.md)); review D500 ((see docs/impl/review.md)); review D501 ((see docs/impl/review.md)).
 
 ### Roles
 
@@ -8492,6 +8790,8 @@ Three kinds of check exist, and each answers a different question:
 - **The lab** answers "does the capability work, under fault injection, against the real scorer and a real attacker". It is where a capability earns lab-proven.
 - **The Invitational** answers "what does the real environment look like". It is a data-collection event, not an acceptance step (see Operations and `docs/impl/invitational-data.md`).
 
+Review rows carried by this section (traceability; the row text is in `docs/impl/review.md`): review D509 ((see docs/impl/review.md)); review D510 ((see docs/impl/review.md)); review D517 (Testing cadence (weekly purple team, 24 h soak per release, monthly dry run, two timed dry runs); KEEP).
+
 ### The lab (ccdc27)
 
 The lab is the 2027-style replica built in `btap-infra` (branch `ccdc27-lab`, stack `ccdc27`), at team number 1 [LAB]. The 2026 replica stays stopped while it runs, because both share bridges.
@@ -8555,7 +8855,7 @@ Dropped from v3's set because the capability is cut or absent from 2027: the pro
 
 ### Test matrix
 
-The ids are stable. v3's ids T01 to T45 keep their numbers, because module sections and the review cite them; renumbering after the cuts would break those citations. Cut items retire their ids and the ids are never reused. New tests continue from T46. Latencies in the "pass when" column are **measured and reported**, not targets (decision 9); where v3 gave a time, the run records it and compares it with the last release. The design envelope for transport (10 s event-to-controller while the link is up; outages up to 60 s) is a sizing figure, not a goal.
+**This section owns the list of test ids.** Module sections, the risk table, the simulators and the CI section cite ids from this matrix and define none of their own. The ids are stable. v3's ids T01 to T45 keep their numbers, because module sections and the review cite them; renumbering after the cuts would break those citations (this overrides the review's D514 request to renumber, which would have cost every citation for no gain). Three ids are retired and never reused: T04 (ASPX webshell on IIS), T26 (Windows raw-socket capture) and T42 (Sigma import). New tests continue from T46 and run to T72, 27 tests. Every id from T01 to T72 is either in the two tables below or retired. Latencies in the "pass when" column are **measured and reported**, not targets (decision 9); where v3 gave a time, the run records it and compares it with the last release. The design envelope for transport (10 s event-to-controller while the link is up; outages up to 60 s) is a sizing figure, not a goal.
 
 **Carried over and revised**
 
@@ -8630,7 +8930,7 @@ The ids are stable. v3's ids T01 to T45 keep their numbers, because module secti
 | T62 | Sleep-masked Mythic and Cobalt Strike beacons (campaign 07) | Detected through denied egress and the per-executable allowlist, and by the scheduled memory scan; attributed to a process and hash; measured detection rate reported |
 | T63 | Docker-hosted ecom variant | Listener attribution through `docker-proxy`; process and ledger pins resolved inside the container; checks, backup and restore work; the content guard watches the volume |
 | T64 | Roundcube on the mail host | The webmail check and the Orange login flow pass; the Roundcube hardening and audit run; its database backs up and restores |
-| T65 | Known-bug regressions (Known bugs 1 to 9) | Each has a test that failed before the fix: `kernel.module_block` verify when built in; the rule-id registry (the D14 collision); the agent `fetch` handler; the real step executor is wired in `phylax agent`; ledger alerts reach D5d; `freeze_capture` is sent; a dead-man fire while connected is reconciled; the actions header |
+| T65 | Known-bug regressions (Known bugs 1 to 9, 12 to 14, 16, 19 and 20) | Each has a test that failed before the fix: `kernel.module_block` verify when built in; the rule-id registry (the D14 collision); the agent `fetch` handler; the real step executor is wired in `phylax agent`; ledger alerts reach D5d; `freeze_capture` is sent; a dead-man fire while connected is reconciled; the actions header; the nat redirect never pre-empts the deny log, and the sinkhole defaults off; the capture ring is inside the module's memory budget; a shadow would-drop never appears as `net.egress_denied`; the heartbeat carries the audit rules hash; the iputils ping pattern matches a 64-bit capture; a device commit inside its window is reverted by a red probe |
 | T66 | Pass-the-hash pack with the scorer's NTLM baseline (A7.Q7) | The scorer's NTLM and Kerberos logins raise nothing; the same account used from a non-scorer source raises the alert |
 | T67 | Per-executable egress allowlist (A1, A6.Q3) | Alert-only for a program outside the allowlist; the one-click "block this?" suggestion creates a plan; nothing blocks silently |
 | T68 | Opt-in `noexec` remount of temp directories | The pre-check refuses when a scored service execs from there; a live remount rolls back on failure |
@@ -8670,7 +8970,7 @@ This is a cadence, not a deadline.
 
 ## Complexity register
 
-One line per module, plus the core items. Each line says why the complexity earns its place and what bounds it. Any new listener, daemon, host-binary dependency in a default path, runtime discovery mechanism or new kind of state needs a line before it is built.
+One line per module (all 34), plus the core items. Each line says why the complexity earns its place and what bounds it. Any new listener, daemon, host-binary dependency in a default path, runtime discovery mechanism or new kind of state needs a line before it is built.
 
 | Item | Why it is worth it | How it is bounded |
 | --- | --- | --- |
@@ -8680,12 +8980,49 @@ One line per module, plus the core items. Each line says why the complexity earn
 | Kali inbound path (one port, one source, static NAT) | The only way for an outside vantage point to report | One Palo rule, one host rule, Kali source only, pinned keys |
 | Module contract (registry, typed events, conformance suite) | Makes the platform's size and isolation checkable | One small package; CI enforces it |
 | Dead-man with OS timers | Risky changes roll back even if the agent dies | Journal plus one transient timer per armed node |
+| Shared stateless libraries (`internal/checks/probe`, `internal/sockets`, `internal/signing` and others) | Several modules need one probe, socket reader or signer without importing each other | A closed list checked in CI; a library that grows state, events or goroutines becomes a module |
+| Plan expiry (`expires_after`) | Time-boxed allowances end even if the controller dies | The dead-man's armed record and one-shot timer with the confirm step turned off; no new daemon |
+| Lint registry | Modules add scoring-safety rules (`DEP001`, the PCR transaction rule) without a core package depending on a module | One id namespace, a registry test, inline tests per rule |
+| Signed `control` types (`work_window`, `round_clock`) | Tagged windows and the quiet-window gate reach agents with the link as the only channel | Small signed messages, unknown types refused and counted |
 | Go-native Windows actions through COM and WMI | Avoids trusting host binaries | `host.exec` fallback per action, recorded here |
 | Field-level encryption of captured credentials | No plaintext passwords on the controller's disk | Parsers mark credential fields |
 | Defender exclusion | The agent may be flagged | Exactly one path |
 | `validate` hook validators as host tools | Catch a broken config before it is live | Services' own binaries, hash-pinned, ledger-judged |
 | Obscurity measures | Raise the cost of scripted kill lists | Names and paths only; no mutated binaries |
-| `audit` … `suricata` | <!-- one line per module, written with each module section --> | |
+| `audit` | The only source of argv, parent and user in one record, and it keeps recording when the agent is killed | Fixed rule set rendered from config, a guard that repairs only its own `phylax`-keyed rules, a throttled hash sweep, every loss reported as a `telemetry_gap`; no eBPF sensor |
+| `winevt` | The Windows process, auth and persistence facts all come from one subscription layer; Sysmon is the only per-process network and DNS source | Bookmarked `EvtSubscribe` channels from a fixed list, the Sysmon config embedded and hash-checked, 4688 as the fallback |
+| `net` | Owning process for listeners and denied egress is what turns a firewall log into a C2 lead | A 2 s poll, a bounded connection table, canary dials only to destinations policy blocks, Linux only until the Windows half is built |
+| `logs` | The only source of Linux authentication facts, and the scorer-versus-attacker line depends on them | Parsers are YAML with inline tests, per-file rate limits and offsets, no log is read that a parser does not name |
+| `inventory` | Drift, the hunt's reference diff and the version matcher share one collection instead of three | Epoch plus diff, at most 500 rows per event, read-only probes, off unless enabled |
+| `detect` | One rule engine on the host keeps detection alive with the link down | A declarative language with no expressions, 10 ms/s of CPU, a global alert-only override, rules without a test fail CI |
+| `respond` | Tier-0 restores of the firewall, Defender and audit within seconds are the lab's success metric | Recipes allowlisted per host, `act_enabled` off by default, a circuit breaker and loop detection, safe mode stops it |
+| `content_guard` | Scored content tampering is the most-scored class and a golden copy is the fastest fix | Opt-in per service, six constraints, alert-only first, a second restore within 10 minutes stops it |
+| `integrity` | A replaced binary is invisible to every behavioural rule | Alert only, never restores by itself, ledger from off-host sources, throttled sweeps, a pinned YARA-X |
+| `hunt` | Prebaked implants are not changes, so no change detector sees them | Read-only collectors, a 10-minute interval, a review queue, findings end in disable and quarantine, never delete |
+| `hardening` | Repeatable, probed hardening without new Go | Plan content over core actions, every pack passes the scoring lint, one new action (`mount.remount`), reboot-survival preflight |
+| `ad` | The DC is the worst case to lose and the hardest to harden by hand | Agent only on the DC, one `ADBackend` interface with a fake, `report_only` options, `krbtgt` reset needs `confirm` |
+| `firewall` | Default-deny egress and drift restore need a manager that can prove a policy before enforcing it | Shadow before enforce, dead-man on policy changes, scored ports never narrowed, foreign tables reported not touched |
+| `egress` | The first denied outbound connection from a server is the primary C2 signal | A pure analyser, no actions of its own, suggestions are one-click proposals, the sinkhole stays deferred |
+| `capture` | Frozen packet evidence and the scorer's request features exist nowhere else | Linux only, ring and hold in the heap under a configured budget, parsers isolated and fuzzed, drops before slowing the host |
+| `devices` | Palo and VyOS tamper detection and safe change from the console-free side | Device-side revert (commit confirm, soft-revert), read-only pollers, additive management edits, controller-side only |
+| `checks` | The only way to see the scorer's view of a service before the scorer does | The scorer's own client libraries, a login-rate bound, a target allowlist, quiet-window gating |
+| `scorer` | Quotient is unreachable from inside, so its clock and accounts must be learned | Estimates carry confidence, hand-entered notes are advisory, no portal polling |
+| `vantage` | Only a Kali outside the Palo sees the public path the scorer uses | One inbound path, an allowlist of targets, a connect scan at a bounded rate, memory-only credentials |
+| `creds` | A scored-password change without a plan breaks scoring or leaks the list | A typed PCR list a human enters, revert re-sync, no submit, the lint exception keyed by transaction id |
+| `traceback` | Every IR needs a cause and a source address | An analyser over stored events, no live state, labels are events |
+| `chains` | Half of the IR rubric is remediation of the attack path | Rows and linking rules, no graph engine, per-hop confidence and link method |
+| `deps` | Default-deny egress needs the dependencies a service really has | A learning window, proposals not applied, Linux collector first, lint rules registered not hard-wired |
+| `vuln` | The CVE table inject and version-driven mitigation | Offline KEV cache, `unknown` for backports, opt-in |
+| `decoys` | A cheap early signal from the first thing red touches | LAN only, never on a scored port, unprivileged process, hostile-input parsers fuzzed |
+| `honeytokens` | High-confidence critical signals from credentials and files red takes | A registry of generated values, planted only where declared, never on scored content paths |
+| `report` | IR and inject artifacts are scored work | Generators render facts, no prewritten responses, pure-Go PDF, files secondary to the screen |
+| `backup` | A restore after destruction is the only recovery from razing | Tool hashes pinned, counts before and after, a loss gate with a named approval, a golden gate |
+| `teamfeed` | Hand work needs a tagged window or it alarms the whole team | Text only, a root-only local endpoint, short visible windows |
+| `notify` | One screen needs an attention channel | Webhook carries only title, severity and host, a blocked webhook never delays the alarm |
+| `depot` | Offline-first installs and tools | One signed index with a priority field, hash-verified blobs, no automatic package rollback |
+| `wazuh` | Optional OSS sensor the team may run alongside | Pinned fixed version, active response off, a kill-and-skip option |
+| `splunk` | Optional forwarding to the scored Splunk's own tooling | In-memory queue, best effort, never touches an existing index, token, search or role |
+| `suricata` | Optional offline signature context on frozen pcaps | Runs unprivileged on a copy of the pcap, one pcap at a time, flags asserted by a test |
 
 ### Watch list
 
@@ -8779,7 +9116,7 @@ Open questions that are genuinely open (not decided anywhere):
 
 ## Known bugs to fix
 
-From the 2026-10-31 review; each is fixed in the owning module or core section's implementation.
+Items 1 to 11 are from the 2026-10-31 review; items 12 to 23 were found while the module sections were written and reconciled with the core. Each is fixed in the owning module or core section's implementation, and T65 holds the regression tests.
 
 1. **`kernel.module_block` Verify passes when the module is built in** (`internal/actions/linux_kmod.go:111-120`). It only compares the modprobe.d file. If `algif_aead` is compiled in, `linux.local_root_bundle` reports Copy Fail mitigated while it is not [[cert-cc-vulnerability-note-vu-260001#e6]]. Fix: probe `socket(AF_ALG)` bind to `aead`; if built in, use `initcall_blacklist=algif_aead_init` behind a reboot gate. Core (kernel family) and `hardening`.
 2. **Rule id collision `D14`.** `rules/deps.yml:15,54,84` define `D14.new-dependency`, `D14b`, `D14c`, while D14 is network device tampering. Rename to `DEP1`-`DEP3`; add the rule-id registry check. `deps`.
@@ -8792,6 +9129,18 @@ From the 2026-10-31 review; each is fixed in the owning module or core section's
 9. **`plans/actions.yaml` header** still says "Each is a TODO" although the file has no stubs. Core.
 10. **Reference `services.yml` lacks DNS and FTP**, both scored [[2027-mw-invitational-packet#e22]]. Core (manifest; the examples above add them).
 11. **No `shortcut:` comments** anywhere although 70 `t.Skip` calls exist; known limits are not recorded. All modules.
+12. **Sinkhole enabled in the reference `policy.yml` with no catcher, and the nat redirect bypasses the NFLOG deny log.** The 2027 reference has `sinkhole: { enabled: true, port: 7480 }`, but no catcher listener exists and nothing emits `net.sinkhole_capture`. In the current rendering the nat redirect at priority -100 sends denied TCP to loopback before the filter chain's deny-log rule sees it, so enabling it hides the denial from NFLOG and from `net.egress_denied`, the primary C2 signal (`internal/manifest/render/nft.go`, `internal/firewall/translate_linux.go`). Fix: the v4 `modules/egress.yml` block sets the sinkhole `false`; the redirect is reordered after the log or removed before anything turns it on, which the C2 fingerprinting lab (T60) decides. `egress`, `firewall`.
+13. **Capture ring and freeze hold live in the Go heap against an 80 MB RSS footprint.** The code's ring (256 MiB) and hold (256 MiB) count against `debug.SetMemoryLimit` and `MemoryMax`; the core Footprint excluded "the packet ring". `policy.yml` still carries `packet_ring_max_bytes` and `packet_ring_free_pct`, which the code ignores. Fix: the Footprint now budgets the module's `ring_mb` and `hold_mb` on top of the 80 MB base; delete the dead policy fields. `capture`, core.
+14. **Shadow would-drop rules share the deny NFLOG group.** A shadow-mode output policy logs would-drops to the same group as the enforced deny rule, so a would-drop also appears as `net.egress_denied`. Fix: a separate `shadow_log_group` and a `net.shadow_drop` kind. `firewall`, `net`.
+15. **Sibling imports in the code.** `net` calls `deps.Collector` and emits `deps.edge` and `deps.peer` from its tracker; `internal/depot` imports `internal/integrity` for `Signer` and `Verifier`; `internal/depot/gotools` imports `internal/collect/net`. Fix: `deps` subscribes to `conn` and `listener`; `internal/signing` and `internal/sockets` become shared stateless libraries. `net`, `deps`, `depot`.
+16. **The heartbeat does not carry the audit rules hash.** `Status` holds `RulesHash` and the verify loop emits `audit.rules_changed`, but nothing reads `Status()` into the heartbeat. Fix: `HealthReporter` and `Health.Info`. `audit`, core.
+17. **Controller-origin module events are stored under the wrong agent, and some kinds are undeclared.** `wazuh` sets `Agent: "wazuh"`, `suricata` sets `"suricata"` or `"zeek"`; they must be agent `controller`. `net_connect` and `audit.rules_changed` are not declared with `event.Declare`; the old kind names are still used by rules and `internal/traceback/obs.go`. Fix: the retrofit and the alias table. `wazuh`, `suricata`, `audit`, all modules.
+18. **Honeytoken attribution rewrites stored alerts.** `Registry.Attribute` adds entities to incoming `detect.alert` events (`alerts.go`); stored events are hash-chained and are not rewritten. Fix: emit `honeytokens.sighting`. `honeytokens`.
+19. **`icmp.iputils_pattern` is wrong for 64-bit iputils** (the pattern starts at byte 16, not 8, for a 16-byte timeval), so 56-byte pings report false (`docs/capture.md`). `capture`.
+20. **The device health hook runs no scorer-mimic probe.** The adapters' health hook takes an `extra` function and every caller passes `nil`, so a Palo or VyOS commit is never probed inside its revert window. Fix: the executor's `Env.Probe` callback. `devices`, core.
+21. **`depot` package actions need a patch window and a proxy, and declare no touches.** `pkg.install` and `pkg.upgrade` require the patch-window mode and an HTTP proxy, and `pkgScoredAliases` is a hard-coded list, so the scoring lint cannot see which service a package restarts. Fix: the `packages` list in `services.yml`. `depot`.
+22. **The `ir_template` rule key survives in the loader and the corpus** although IR drafts come from the drafter by narrative (review D354). Delete it. `detect`.
+23. **The reference `hosts.yml` gave the Windows hosts the `capture` role** although Windows capture is cut, so their health read `degraded` forever. Fixed in the reference manifest example of this design. Core (manifest).
 
 ## Appendices
 
@@ -8911,9 +9260,12 @@ phylax/                          # public product repo
     ui/                          # core: UI shell, registrar, templates, vendored htmx
     svcinstall/  atomicfile/     # core helpers: service install; atomic writes
     parsers/                     # shared protocol parsers, one package each (incl. smb2, winrm, tds, ssh)
+    sockets/  signing/           # shared stateless libraries: sock_diag and inode join; release-key Signer and Verifier
     # one package per module (agent side, controller side or both):
     audit/  winevt/  net/  logs/  inventory/
-    # (internal/checks also holds the shared protocol clients: ntlm, smb, winrm, ssh, mssql, ldap, web)
+    # shared stateless library subpackages inside module trees (the closed list is in the module contract):
+    #   checks/probe (the probe library and protocol clients: ntlm, smb, winrm, ssh, mssql, ldap, web),
+    #   integrity/format (ledger and package-database readers), inventory/fold (snapshot plus rows to rows)
     detect/  respond/  content_guard/
     integrity/  hunt/  hardening/  ad/
     firewall/  egress/  capture/  devices/  devices/palo/  devices/vyos/
@@ -8959,7 +9311,7 @@ ccdc-lab/                        # private, never declared or published
 #### What changed from v3
 
 - **Module packages replace topic packages.** Each module is one package under `internal/`, named for the module. Today's `internal/collect/{audit,net,winevt}` become `internal/audit`, `internal/net` and `internal/winevt` in the retrofit; `internal/integrations` splits into `internal/wazuh`, `internal/splunk` and `internal/suricata`; the scorer's round clock, discovery, fingerprints, SLA and PCR code split between `scorer` and `creds`.
-- **New core packages:** `internal/module` (the manifest, health and host interfaces) and `internal/module/conformance`.
+- **New core packages:** `internal/module` (the manifest, health and host interfaces) and `internal/module/conformance`, plus the shared stateless libraries `internal/sockets` and `internal/signing` and the library subpackages `checks/probe`, `integrity/format` and `inventory/fold`.
 - **Content directories per module.** Today's flat `rules/*.yml` and `plans/*.yaml` move under their owning module's directory (`rules/detect/`, `plans/hardening/`) as that module is retrofitted. A content file names its module and loads only when the module is enabled on the target.
 - **`internal/cache` is gone.** The depot module holds the content-addressed cache and its sync client; `phylax cache` and `phylax depot` are its commands.
 - **No Typst.** `inject-kit/` holds one memo shell; the policies, plans, risk register, framework templates and pre-written drafts are cut and live outside Phylax (decision 6). PDFs come from the pure-Go renderer in `internal/report`.
@@ -8967,6 +9319,8 @@ ccdc-lab/                        # private, never declared or published
 - **No `phylax doctor`.** The `hello` capabilities block and the Platform page replace it; `phylax modules` lists the manifests.
 - **`manifest/modules/`** replaces v3's catch-all `policy.yml`.
 - **`reports/`** is new: the generators, saved queries, evidence recipes and lint data of the `report` module are content, not Go.
+
+Review rows carried by the appendices (traceability; the row text is in `docs/impl/review.md`): review D518 (Appendix A: Windows event reference; KEEP); review D519 ((see docs/impl/review.md)); review D520 ((see docs/impl/review.md)); review D522 (Appendix G: scorer fingerprint table per layer; KEEP); review D533 (Rule backlog P01-P81, each becomes a tested file when producer and fixture exist; KEEP).
 
 ### E. Glossary
 
