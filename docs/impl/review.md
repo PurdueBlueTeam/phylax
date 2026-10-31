@@ -656,3 +656,10 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - D76/D222 sinkhole: decision deferred to a C2 fingerprinting lab: stand up the common C2 frameworks, capture their traffic (first bytes, TLS/JA4, HTTP shape, timing, Windows pipes), and turn the results into rules. If first-bytes fingerprints discriminate, keep the sinkhole; otherwise cut it. Code stays until then.
 - Other cuts (D235, D241 Splunk REST, D242) accepted.
 - A6.Q4: yes to the C2 list (Mythic Apollo/Poseidon + Gaia redirector, Sliver, Havoc, Metasploit, Empire, Realm imix, chisel/ligolo-ng/frp/ngrok; Cobalt Strike via public malleable profiles and pcaps only).
+
+### Area 7 (2026-10-31)
+- Lint correction: "never block UDP 69/123" applies only when TFTP/NTP is a scored service in the manifest; otherwise default-deny blocks it as usual. Generally: never-block lint rules derive from the manifest's scored services, never hard-coded ports.
+- A7.Q1: yes, delete the account-guessing inference. Quotient access from inside the environment is uncertain, so both inputs are first-class: read Quotient's API when reachable, or paste the credlist/user list (and Up/Down table) into the UI. Auth-log learning maps usernames to services and flags unknown scorer logins.
+- A7.Q2: open; David will ask organizers whether automated PCR submission is OK. Build `pcr.generate`/`pcr.verify` now; `pcr.submit` (Quotient JSON API `POST /api/pcrs/submit`, one-click confirm, check updated/skipped) is conditional on that answer. Never call the reset endpoint.
+- A7.Q3: Orange customer flows are not a separate module: they are multi-step flow checks on scored services inside `checks` (N7.2 merged into the checks module; run from Kali and LAN like other checks).
+- All other area-7 calls accepted? (pending confirmation)
