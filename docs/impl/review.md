@@ -695,3 +695,6 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A11.Q5: yes, with the inject-board removal above: the host x step grid (N11.4+N11.6) and one Platform page stay.
 - Pending clarification: which "q1" David dislikes (multi-viewer UI D494?).
 - New: the Invitational is largely for instrumenting the environment and collecting data; list of open questions it can answer is in docs/impl/invitational-data.md (in progress).
+- Clarified: N11.1 team feed = yes. A11.Q1 multi-viewer UI = NO (no SSH tunnel); D494 stays one controller screen.
+- A10.Q4: generators prioritise on-screen views that screenshot well from outside; files are secondary, moved out via the team Nextcloud (which should be writable from inside the environment). D489's Nextcloud fallback becomes the file-export path (manual upload; no integration unless trivial).
+- Invitational collection kit need not be minimal.
