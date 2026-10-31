@@ -655,3 +655,4 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - D244 Palo-side pcap: KEEP (David finds it interesting), gated on the licence/capability flag; D409 keeps `Capture` in the adapter interface.
 - D76/D222 sinkhole: decision deferred to a C2 fingerprinting lab: stand up the common C2 frameworks, capture their traffic (first bytes, TLS/JA4, HTTP shape, timing, Windows pipes), and turn the results into rules. If first-bytes fingerprints discriminate, keep the sinkhole; otherwise cut it. Code stays until then.
 - Other cuts (D235, D241 Splunk REST, D242) accepted.
+- A6.Q4: yes to the C2 list (Mythic Apollo/Poseidon + Gaia redirector, Sliver, Havoc, Metasploit, Empire, Realm imix, chisel/ligolo-ng/frp/ngrok; Cobalt Strike via public malleable profiles and pcaps only).
