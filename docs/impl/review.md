@@ -678,3 +678,11 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A7.Q5: assume no clipboard between consoles and the Quotient machine.
 - A7.Q6: David likes the PCR process (selective, timed commit in the quiet window, verify, revert re-apply), but the policy is open: red dumps every AD hash (MW Discord 2026-10-26, "one DC's worth of plaintext"), and a Phylax breach would expose every rotated password. Research on how Western-region (Quotient) teams handle this is running.
 - Environment facts (MW Discord 2026-10-26, inbox): webmail is Roundcube, so D400's Roundcube audit is built; organizers seed AD with "temp admins" and comments on users (prebaked admins, possible secrets in descriptions: D401 and the credential hunts). An inject-like task: ~500 duplicate AD groups across 10 departments to consolidate without breaking access.
+- A7.Q7: yes. Policy: prevent the dump (T+0 Zerologon, DCSync rule), ADD a pass-the-hash rule pack (NTLM 4624 type 3/9 and Kerberos anomalies by scored users from non-scorer sources; content, S), honey AD accounts, selective rotation on evidence; never mass-rotate, never restrict NTLM or use Protected Users on scored users. Research found no public team writeup on PCR vs full dumps; Quotient issue #107: no shared or 40+ char passwords.
+- A7.Q8: yes. The few rotated scored passwords live in the existing age vault; no split-key or delete-after-use mechanism.
+
+### Area 10 (2026-10-31)
+- A10.Q1: yes. Prewritten inject material is a separate set of prewrites outside Phylax; Phylax ships generators only.
+- A10.Q2: yes (tentative): generic restore of a service's golden backup onto a different declared host, no hot-site plans; the backup tooling (area 11) should make the hot-site injects much easier.
+- A10.Q3: yes, evidence run and inject queries fold into `probe.run`.
+- All other area-10 calls accepted.
