@@ -627,3 +627,8 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A3.Q1: a failed scored check is unacceptable. Proposed rule pending confirmation: on scored accounts evict only sessions that (a) began before the rotation, (b) are older than Quotient's check timeout, (c) are not scorer-labeled; anything unclassifiable is flagged, never killed.
 - Quotient fact (dbaseqp/Quotient@a845408): team API `GET /api/credlists` (`engine/credentials.go:158`, needs `EasyPCR`) returns each credlist's name, path, all usernames and format. The service-to-credlist mapping (`CredLists` per check) is admin-only (`/api/admin/checks`, `/api/admin/teamchecks`). Phylax reads usernames from Quotient and infers service-to-credlist from observed auth events (area 7).
 - A3.Q1 (final): automatic eviction on scored accounts only for sessions that began before the rotation, outlived the **measured round delay** (Quotient enforces Timeout < Delay − Jitter, `engine/config/config.go:356`; default Timeout = Delay/2) and aren't scorer-labeled; flag-only until a round delay is measured; unclassifiable sessions are flagged. Admin/service accounts: plain eviction.
+
+### Area 4 (2026-10-31)
+- David: simplicity is key throughout; less to break. Apply it to every call.
+- A4.Q1: content guard (N4.1) yes, implemented safely (constraints pending confirmation below).
+- A4.Q2: yes, cut the Sigma importer; hand-port.
