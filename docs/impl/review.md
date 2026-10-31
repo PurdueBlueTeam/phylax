@@ -634,3 +634,17 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A4.Q2: yes, cut the Sigma importer; hand-port.
 - A4.Q3: yes. Content guard constraints: (1) only files listed by path in services.yml; (2) restore only from the plan-tagged golden copy; (3) ignore changes under a plan tag or while a plan holds the service lock; (4) scorer-mimic probe after each restore, roll back our restore and alert on failure; (5) second restore of the same file within 10 min stops and alerts; (6) starts alert-only per service until switched to act. Simplicity trims: rule format keeps `lists`, `exceptions`, per-rule `rate:`; drop `macros`, `maturity:`, `requires:`; suppression records are exceptions with reason/owner/expiry written from the UI (one mechanism); cut N3.5 offline bundle; cut the D85 typed-params change.
 - A3.Q2: yes, rest of area 3 accepted; delete the unused `modules.disable_loading` action (D157).
+
+### Area 5 (2026-10-31)
+- No real competition images exist for CCDC. D356/D392: reference ledgers come from stock images of the announced OS versions plus vendor mirrors and Winbindex; the image's extra files show up as "unknown" at the first sweep and go to the prebake hunt's triage queue (not alerts).
+- D401: keep the "who can reach DA" path query as well as the privileged-account allowlist.
+- A5.Q1: YARA keeps memory scanning (scheduled, low priority, inside the module's CPU budget) as well as file-mode scans; corpus includes the 17 MIT UCF rules.
+- A5.Q2: yes, KEV plus the vault's vendor advisories; no hand-maintained advisory file.
+- A5.Q3: yes to the simplicity cuts and merges (cut N5.10 exec gate, N5.11 ModSecurity, D531 Dropbear change; merge N5.6 into the content guard, N5.9 as a recipe, D524 KEV into N5.1; Roundcube check only once the 2027 webmail product is known).
+
+## What David prefers (learned during the review; apply to the remaining areas)
+- Detection depth is valued: don't cut detection or hunting capability for simplicity alone (kept D401 path query, YARA memory scan). Cut detection only when there's no evidence it matters.
+- Simplicity means fewer mechanisms and fewer moving parts: merge duplicates, reuse existing actions and content, no new components on the scored path.
+- Anything that can touch a scored service must be provably safe: zero failed checks, alert-only first, scorer probe after, bounded retries.
+- No AI/MCP, no prewritten inject responses, no event profiles, no competition-rule reasoning, no mass credential rotation.
+- Automatic actions beyond tier 0 are offered as one-click suggestions, never silent.
