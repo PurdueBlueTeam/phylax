@@ -1,9 +1,51 @@
 # phylax: repo notes for contributors (human and AI)
 
-This branch (`v3`) is a **from-scratch rewrite** to the v3 design in
-[phylax_design.md](phylax_design.md). Don't copy code from the `main` or
-`qwen-wip` branches; their review is in ccdc-private `strategy/phylax-code-review.md`,
-and its findings are design requirements.
+This branch is a **from-scratch rewrite** to the v4 design in
+[phylax_design.md](phylax_design.md) (version 4, which supersedes v3). Don't copy
+code from the `main` or `qwen-wip` branches; their review is in ccdc-private
+`strategy/phylax-code-review.md`, and its findings are design requirements.
+
+## The design and the module contract
+- phylax_design.md is authoritative for the target. Where a module section says it
+  "follows the code", that choice is already the design. Existing paths (for example
+  `internal/collect/*`, `internal/integrations`) are where today's code lives; each
+  package moves to `internal/<module>` in that module's retrofit task and the old path
+  is deleted. Nothing has ever been deployed, so there are no compatibility shims,
+  aliases or dual formats: rename kinds, fields and paths in one go (the rename map is
+  in the design, for the migration only).
+- **Small core, everything else a module.** The core is the link, spool, execution
+  engine, event store, manifest and UI shell (plus `internal/enroll`). Every other
+  capability is a module that meets the contract in the design ("The module
+  contract"):
+  - one Go package `internal/<name>` (agent side, controller side, or both), with its
+    agent registration in `internal/agent/mods/<name>*.go`;
+  - one config block (`modules/<name>.yml`, a typed struct, unknown fields are an
+    error) that carries the generic `enabled` and `act_enabled` fields; the YAML maps
+    1:1 onto the struct; new capabilities are off unless the manifest enables them;
+  - a capability manifest (sides, OS, privilege, roles, `Consumes`, `Emits`, budget,
+    tables, content, actions, pages), typed events declared with `event.Declare` and
+    listed in the event-kind table, and a health report;
+  - **no sibling imports**: a module imports only core packages and the closed list
+    of shared stateless libraries (`internal/checks/probe`, `internal/sockets`,
+    `internal/signing`, `internal/atomicfile`, `internal/parsers/*`,
+    `internal/integrity/format`, `internal/inventory/fold`). Modules talk through
+    typed events, `Host.Propose`, `Host.RunReadOnly`, `Host.RunStanding` and
+    `Host.Control` (a signed `control: fact` to agents), never through each other;
+  - analysers are pure functions over store queries; a module with tables has one
+    writer goroutine that fills them from its own events;
+  - rules, plans and checks are YAML content under `rules/<module>/`,
+    `plans/<module>/`, `checks/`; write content, not Go, where content can do it;
+  - common kinds (`conn`, `process_start`, `process_exit`, `file_change`,
+    `auth_event`, `listener`) use only the canonical field names in the design
+    (`dir: inbound|outbound`, `laddr`, `raddr`, `lport`, `rport`, `exe`, `user` ...);
+    producers translate to them and rules read only them;
+  - it passes the shared conformance suite (`internal/module/conformance`).
+- Keep the design's tables in step with the code: the event-kind table (emitters,
+  consumers, alert flag), the action table and the test list (T01 to T76) are single
+  sources, and CI compares them with the registries.
+- A package is done when CI is green (build for both OSes, vet, test, `-race`) and it
+  has unit, fixture and conformance tests. Lab tests are a separate gate run by a
+  stronger agent or by David.
 
 ## Rules
 - Go 1.27.2 (mise). `CGO_ENABLED=0`; linux/amd64 and windows/amd64 must both build
