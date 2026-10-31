@@ -621,3 +621,8 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A2.Q1: yes, build `inventory` (D81) as one module, installed software versions included.
 - A2.Q2: yes, eBPF stays cut (D92); a kernel rootkit blinds audit and eBPF alike. Reopen only if T43 fails.
 - A2.Q3: no `kernel.modules_disabled` lock (one-way, does nothing against prebaked LKMs, risks breaking later module loads). Instead ADD an audit syscall rule on `init_module`/`finit_module` so any module load alerts regardless of tool (existing rules key on `insmod`/`modprobe` comm only, `rules/linux_exec.yml:219`).
+
+### Area 3 (2026-10-31, partial)
+- Lint rule (D172) refined: blocking known red-team IPs/CIDRs on scored ports is allowed; narrowing a scored port to a source allowlist is not. CIDR blocks get a warning (red rotates scanner addresses).
+- A3.Q1: a failed scored check is unacceptable. Proposed rule pending confirmation: on scored accounts evict only sessions that (a) began before the rotation, (b) are older than Quotient's check timeout, (c) are not scorer-labeled; anything unclassifiable is flagged, never killed.
+- Quotient fact (dbaseqp/Quotient@a845408): team API `GET /api/credlists` (`engine/credentials.go:158`, needs `EasyPCR`) returns each credlist's name, path, all usernames and format. The service-to-credlist mapping (`CredLists` per check) is admin-only (`/api/admin/checks`, `/api/admin/teamchecks`). Phylax reads usernames from Quotient and infers service-to-credlist from observed auth events (area 7).
