@@ -12,27 +12,30 @@
 
 ## Design gaps and decisions (Task 1 writes each into `phylax_design.md` in the same commit)
 
-1. **Table names must start with the module name.** W1's `ModuleDB.Migrate` refuses a table that does not start with `<module>_`. Renames: `checks` to `checks_check`, `check_results` to `checks_result`; `credentials` to `creds_account`, `cred_credlist` to `creds_credlist`, `pcr_txn` to `creds_txn`, `pcr_row` to `creds_row`. `scorer_*` and `vantage_*` keep the design's names. The core migrations drop `checks`, `check_results` and `credentials` (Task 36); nothing is deployed, so there is no data migration.
-2. **Plan node options `window: scorer_quiet`, `gate: manual` and `txn:` are specified in the core but built by nobody.** W1 builds approval classes, not these options; the agent never sets `actions.Request.PCR`, so the scoring guard's PCR exception is unreachable. W7 builds them (Tasks 2 and 3). `hardening` (W5) and `backup` (W10) also use `window:`; they depend on Task 2.
-3. **A controller module cannot see an agent-run step's outcome or output.** W1's `agent.step_result` is emitted for controller-side actions only. The doctor needs collected output and `creds` needs to know a host change finished. Task 4 emits `agent.step_result` for every step result and adds optional `output` and `reply` fields to `event.AgentStepResult`.
-4. **No secret write path for modules, and `stepSecrets` serves honeytokens only.** `creds` must store a pending password and ship it to `user.set_password` and `pcr.verify`. Task 5 adds `vault.Writer` and widens `stepSecrets` to plans with `Module == "creds"` and a node `txn`, for the vault prefix `pcr/` only. `shortcut: write access is granted to the module named creds in moduleHost.Secrets, upgrade to a manifest field when a second module writes secrets.`
-5. **"Sealed to the host's enrolled key" has no implementation.** Agents have a P-256 identity (`internal/link/identity.go`) and the controller stores it in `agents.pubkey`. Task 6 adds `plan.SealSecret` and `plan.OpenSecret` (ECIES: P-256 ECDH, HKDF-SHA256, AES-256-GCM, the agent id as associated data) and `agent.Env.OpenSealed`.
+1. **Table names must start with the module name.** W1's `ModuleDB.Migrate` refuses a table that does not start with `<module>_`. Renames: `checks` to `checks_check`, `check_results` to `checks_result`; `credentials` to `creds_account`, `cred_credlist` to `creds_credlist`, `pcr_txn` to `creds_txn`, `pcr_row` to `creds_row`. `scorer_*` and `vantage_*` keep the design's names. The core migrations drop `checks`, `check_results` and `credentials` (Task 30); nothing is deployed, so there is no data migration.
+2. **Plan node options `window: scorer_quiet`, `gate: manual` and `txn:` are specified in the core but built by nobody.** W1 builds approval classes, not these options; the agent never sets `actions.Request.PCR`, so the scoring guard's PCR exception is unreachable. W7 builds them (Tasks 3 and 4). `hardening` (W5) and `backup` (W10) also use `window:`; they depend on Task 2.
+3. **A controller module cannot see an agent-run step's outcome or output.** W1's `agent.step_result` is emitted for controller-side actions only. The doctor needs collected output and `creds` needs to know a host change finished. Task 5 emits `agent.step_result` for every step result and adds optional `output` and `reply` fields to `event.AgentStepResult`.
+4. **No secret write path for modules, and `stepSecrets` serves honeytokens only.** `creds` must store a pending password and ship it to `user.set_password` and `pcr.verify`. Task 6 adds `vault.Writer` and widens `stepSecrets` to plans with `Module == "creds"` and a node `txn`, for the vault prefix `pcr/` only. `shortcut: write access is granted to the module named creds in moduleHost.Secrets, upgrade to a manifest field when a second module writes secrets.`
+5. **"Sealed to the host's enrolled key" has no implementation.** Agents have a P-256 identity (`internal/link/identity.go`) and the controller stores it in `agents.pubkey`. Task 7 adds `link.SealSecret` and `(*link.Identity).OpenSecret` (ECIES: P-256 ECDH, HKDF-SHA256, AES-256-GCM, the agent id as associated data) and `agent.Env.OpenSealed`; the controller seals with the public key it stores in `agents.pubkey`.
 6. **`internal/parsers/txn` imports `internal/scorer`** (`Txn.Features`), a shared library depending on a module. Task 1 deletes `Txn.Features` and adds `scorer.FeaturesFromTxn`; parser tests that classify fixtures keep importing `scorer` (test-only edge, `shortcut:` comment).
 7. **`pcr.generate` is not an action.** Generation is a module step (a UI action of `creds`) and needs no plan node. The `creds` manifest lists `pcr.verify` only; the design text is corrected.
 8. **`Env.Probe` runs on the controller.** The design says the controller process runs no scheduled probes; the executor's probe is on demand and uses the library from the controller host, the in-LAN reference vantage. Agent-side `Env.Probe` is not supplied (agents hold no vault credentials; W1 Task 27 probes controller-side).
-9. **Scored-account eviction needs inputs the agent does not have** (the measured round delay, the scorer-labelled sources). `session.terminate_predating` (W2) gains the params `scored` (bool), `cutoff_ms` and `exempt_sources` (comma-separated); the module fills them from `scorer.clock` and `scorer.round`. The policy is a pure function (`actions.EvictionPolicy`, Task 47).
+9. **Scored-account eviction needs inputs the agent does not have** (the measured round delay, the scorer-labelled sources). `session.terminate_predating` (W2) gains the params `scored` (bool), `cutoff_ms` and `exempt_sources` (comma-separated); the module fills them from `scorer.clock` and `scorer.round`. The policy is a pure function (`actions.EvictionPolicy`, Task 40).
 10. **Fact data shapes are not defined.** Task 1 adds `plan.RoundClock`, `plan.CredsTxnFact` and `plan.ProbeResultFact` and the extrapolation `RoundClock.Window`.
 11. **Check and flow content has no loader path.** `checks/{checks,flows,doctor}/` are root-level content directories (Appendix D); the controller module reads them from `Config.ContentDir` (default `checks`), the way plans are read from `plans/`. Added to `modules/checks.yml`.
 12. **Agent settings carry integers, not durations,** matching the built settings (`IntervalSec`, `MaxDeferSec`); the design's `time.Duration` sketch is corrected.
-13. **Inputs from workstreams that have not merged** (`detect.alert` W4, `traceback.change` W8, `deps.graph` W8, `honeytokens.sighting` W9, `chains.item` W8, `hunt.finding` W5) cannot be in a manifest's `Consumes` until declared (`Manifest.Validate` and conformance check 12). Every handler takes a plain Go struct; Task 52 adds the thin adapters and the `Consumes` entries once the kinds exist.
+13. **Inputs from workstreams that have not merged** (`detect.alert` W4, `traceback.change` W8, `deps.graph` W8, `honeytokens.sighting` W9, `chains.item` W8, `hunt.finding` W5) cannot be in a manifest's `Consumes` until declared (`Manifest.Validate` and conformance check 12). Every handler takes a plain Go struct; Task 47 adds the thin adapters and the `Consumes` entries once the kinds exist.
 14. **Lint id namespace `CR###`** is added for the `creds` transaction rule (`CR001`), next to `SS`, `FW`, `DEP`.
+15. **The design orders Kali verification two ways.** `vantage` says it runs before the human submits; `creds` (the A7.Q6 builder check, authoritative) says the window covers the host change and the submit and verification runs after the window. The plan follows `creds`; a failed verify then holds a revert to the next quiet window (Task 43). The `vantage` text is corrected.
+16. **`max_accounts_per_txn` contradicts "one transaction covers one account".** Read as the size of one typed-list batch (`Engine.Prepare`); `max_open_txns` caps open transactions. The design text says so.
+17. **The design's typeable example `Plum-river-tent-82` is 18 characters, below its own 20 to 25.** The generator redraws until the length fits; the word list is BIP-39 (2,048 words, 3 to 8 letters). The example is replaced (Task 38).
 
 ## Global Constraints
 
 - Go 1.27.2 via mise; `CGO_ENABLED=0`; `make build build-windows vet test race` passes at every commit (linux/amd64 and windows/amd64 both build and vet). `-race` needs `CGO_ENABLED=1`.
 - Every package ships tests; tests exercise the real code (no mock of the code under test; fakes only at the edge the package does not own: a fake SSH, SMB, TFTP, NTP, Netlogon or web server, a recorded capture fixture, a fake executor result). A test that needs privileges, Windows or containers calls `t.Skip` with a reason string.
 - Commits are small, one logical change, message `area: summary` (for example `probe: tftp check type`). No attribution lines of any kind.
-- No shelling out in the default path; the one exception here is the Kali-only `xfreerdp /auth-only` wrapper, a pre-approved host tool (Task 10). Bounded queues, buffers, decoded sizes, timeouts; every probe socket has a hard deadline. Atomic writes through `internal/atomicfile` for state files (`overrides.yml`, pending-credential records).
+- No shelling out in the default path; the one exception here is the Kali-only `xfreerdp /auth-only` wrapper, a pre-approved host tool (Task 33). Bounded queues, buffers, decoded sizes, timeouts; every probe socket has a hard deadline. Atomic writes through `internal/atomicfile` for state files (`overrides.yml`, pending-credential records).
 - No compatibility shims, aliases or dual formats: a renamed kind, table or path is renamed everywhere in the same commit. `vantage.check` becomes `checks.result`, `vantage.check_deferred` becomes `checks.deferred`; the check-runner's `vantage.refused` becomes `checks.refused`.
 - A module imports only the core packages and the shared libraries (W1 Global Constraints). `checks`, `scorer`, `vantage` and `creds` import none of each other; `vantage` and `checks` import `internal/checks/probe` only; `internal/creds/pcr` imports nothing from the repo except `internal/vault`.
 - Times stored in UTC. Passwords never appear in an event, a table, a log, a plan's JSON, an `Err` string or a config file in clear: they pass through `vault.RedactString`, travel as `vault.Secret`, in step secrets, or sealed.
@@ -44,11 +47,11 @@
 
 ## Review Focus
 
-1. **A stale or absent round clock read as "safe".** The fact's TTL passes, the controller link is down, or `scorer.clock` is provisional. Expected: a runner or a PCR gate treats it as unknown (probes follow the jittered fallback, a transaction is refused), never as an open window; a held node fails at `max_hold` rather than applying late (Task 7 `TestRoundClockExpiredIsUnknown`, Task 2 `TestHoldFailsAtMaxHold`, Task 13 `TestStaleFactFallsBack`).
-2. **A scored password in a place it must not be.** Event fields, module tables, the plan's stored JSON, logs, error strings, UI HTML, the agent's persisted config. Expected: none; the agent holds it only in memory and the config carries it sealed (Task 14 `TestNoSecretInEventsOrConfigOnDisk`, Task 48 `TestNoSecretAnywhere`).
-3. **Controller restart in the middle of a transaction.** Host changed, human not yet submitted. Expected: the transaction resumes from `creds_txn` at the same state, the host change is never re-run, the `creds_txn` fact is re-sent with a fresh TTL (Task 48 `TestRestartResumesAtHostChanged`).
+1. **A stale or absent round clock read as "safe".** The fact's TTL passes, the controller link is down, or `scorer.clock` is provisional. Expected: a runner or a PCR gate treats it as unknown (probes follow the jittered fallback, a transaction is refused), never as an open window; a held node fails at `max_hold` rather than applying late (Task 2 `TestRoundClockExpiredIsUnknown`, Task 3 `TestHoldFailsAtMaxHold`, Task 13 `TestStaleFactFallsBack`).
+2. **A scored password in a place it must not be.** Event fields, module tables, the plan's stored JSON, logs, error strings, UI HTML, the agent's persisted config. Expected: none; the agent holds it only in memory and the config carries it sealed (Task 14 `TestNoSecretInEventsOrConfigOnDisk`, Task 42 `TestNoSecretAnywhere`).
+3. **Controller restart in the middle of a transaction.** Host changed, human not yet submitted. Expected: the transaction resumes from `creds_txn` at the same state, the host change is never re-run, the `creds_txn` fact is re-sent with a fresh TTL (Task 42 `TestRestartResumesAtHostChanged`).
 4. **Target allowlist bypass forms.** A hostname, an IPv4-mapped IPv6 address, a decimal or octal IP, a trailing dot, `0.0.0.0`, an address one bit outside the prefix. Expected: refused with `checks.refused` or `vantage.refused`, nothing dialled (Task 12 `TestAllowlistBypassForms`).
-5. **A user who lost their scored status on the list, or a reply that disagrees.** The portal reply `count` differs from the rows, or `skipped` is not empty. Expected: the transaction is treated as possibly applied, a rollback also enters the old value, skipped rows fail with no PCR rollback (Task 49 `TestReplyMismatchTreatedAsApplied`).
+5. **A user who lost their scored status on the list, or a reply that disagrees.** The portal reply `count` differs from the rows, or `skipped` is not empty. Expected: the transaction is treated as possibly applied, a rollback also enters the old value, skipped rows fail with no PCR rollback (Task 43 `TestReplyMismatchTreatedAsApplied`).
 
 ---
 
@@ -57,22 +60,22 @@
 | Path | Responsibility | Task |
 | --- | --- | --- |
 | `internal/checks/probe/` | the stateless probe library (moved from `internal/checks`): 18 check types, `Run`, `Faithful`, `Sweep`, `AuthOnly` | 1, 8-10 |
-| `internal/checks/{kinds,module,config,tables,derive,compare,proposals,records,mimic,doctor,flow,ui}.go` | the `checks` module, controller side | 1, 11, 15-25 |
+| `internal/checks/{kinds,module,config,tables,derive,compare,proposals,records,mimic,doctor,flow,ui}.go` | the `checks` module, controller side | 1, 11, 15-22 |
 | `internal/checks/{runner,gate,creds}.go` | the `checks` agent module (moved from `internal/vantage/checkrunner.go`) | 12-14 |
-| `checks/checks/*.yml`, `checks/flows/*.yml`, `checks/doctor/*.yml` | content | 11, 22, 24 |
-| `internal/agent/mods/checks.go`, `vantage.go` | factories | 12, 37 |
-| `internal/scorer/{kinds,module,config,feed,tables,accounts,groups,sla_feed,risk,facts,ui}.go` | the `scorer` module around the built estimator, classifier, discovery and tracker | 1, 27-35 |
-| `rules/scorer/fingerprints.json` | the fingerprint table as data (Appendix G) | 27 |
-| `internal/vantage/{kinds,module,controller,exposure,verify,zerologon,smbwinrm,rdpauth,ui}.go` | the `vantage` module | 1, 37-41 |
-| `rules/vantage/{vantage.yml,dangerous_ports.yml}` | V1 to V4 and the dangerous-port list | 38, 41 |
-| `internal/creds/{kinds,module,config,tables,words,txn,proposal,lint,sheet,ui}.go` | the `creds` module around the built generator, records and break-glass | 1, 42-52 |
-| `internal/creds/pcr/{engine,csv}.go` | the PCR engine (moved from `internal/scorer`) | 42 |
-| `rules/creds/words.txt`, `plans/creds/{scored-change,resync,unscored-rotation}.yml` | content | 43, 47 |
-| `internal/plan/{seal,fact,plan,step}.go`, `internal/controller/{window,plans,facts_step,deception_plan,genconfig_checks}.go` | core additions (window hold, manual gate, txn, seal, step results) | 1-7, 19 |
-| `internal/vault/writer.go` | `Writer` | 5 |
-| `internal/actions/{health_check,session_evict}.go` | `health.check`, the eviction policy | 20, 47 |
+| `checks/checks/*.yml`, `checks/flows/*.yml`, `checks/doctor/*.yml` | content | 11, 20, 21 |
+| `internal/agent/mods/checks.go`, `vantage.go` | factories | 12, 31 |
+| `internal/scorer/{kinds,module,config,feed,tables,accounts,groups,sla_feed,risk,facts,ui}.go` | the `scorer` module around the built estimator, classifier, discovery and tracker | 1, 23-29 |
+| `rules/scorer/fingerprints.json` | the fingerprint table as data (Appendix G) | 23 |
+| `internal/vantage/{kinds,module,controller,exposure,verify,zerologon,smbwinrm,rdpauth,ui}.go` | the `vantage` module | 1, 31-36 |
+| `rules/vantage/{vantage.yml,dangerous_ports.yml}` | V1 to V4 and the dangerous-port list | 32, 36 |
+| `internal/creds/{kinds,module,config,tables,words,txn,proposal,lint,sheet,ui}.go` | the `creds` module around the built generator, records and break-glass | 1, 38-46 |
+| `internal/creds/pcr/{engine,csv}.go` | the PCR engine (moved from `internal/scorer`) | 37 |
+| `rules/creds/words.txt`, `plans/creds/{scored-change,resync,unscored-rotation}.yml` | content | 38, 41 |
+| `internal/plan/{fact,plan,step}.go`, `internal/controller/{window,plans,facts_step,deception_plan,genconfig_checks}.go` | core additions (window hold, manual gate, txn, step results, genconfig) | 1-7, 18 |
+| `internal/vault/writer.go`, `internal/link/seal.go` | `Writer`, sealing | 6, 7 |
+| `internal/actions/{health_check,session_evict}.go` | `health.check`, the eviction policy | 19, 40 |
 | `manifest/2027/modules/{checks,scorer,vantage,creds}.yml`, `manifest/schema/modules/*.schema.json` | reference blocks | with each module's conformance task |
-| `docs/impl/lab/w7-scoring-creds.md` | lab record | 53 |
+| `docs/impl/lab/w7-scoring-creds.md` | lab record | 48 |
 
 ---
 
@@ -82,9 +85,9 @@ Done by a stronger model. Extracts the probe library, moves the PCR engine, decl
 
 **Files:**
 - Move (`git mv`, fix package clauses and every importer in the same commit): every non-test and test file of `internal/checks/*.go` to `internal/checks/probe/` (package `probe`; `checks.go` keeps its name); `internal/vantage/compare.go` to `internal/checks/compare.go` (package `checks`); `internal/vantage/checkrunner.go` and `checkrunner_test.go` to `internal/checks/runner.go` and `runner_test.go` (package `checks`); `internal/scorer/pcr.go`, `pcr_test.go`, `csv.go`, `csv_test.go` to `internal/creds/pcr/engine.go`, `engine_test.go`, `csv.go`, `csv_test.go` (package `pcr`).
-- Create: `internal/checks/{kinds,module,config,tables}.go`, `internal/scorer/{kinds,module,config}.go`, `internal/vantage/{kinds,module,config}.go`, `internal/creds/{kinds,module,config,tables}.go`, `internal/plan/seal.go`, `internal/vault/writer.go`, `internal/controller/window.go`, `internal/agent/mods/{checks,vantage}.go`
-- Modify: `internal/plan/{agentconfig,fact,plan,step}.go`, `internal/event/core.go`, `internal/parsers/txn/txn.go` (delete `Features`), `internal/scorer/fingerprint.go` (`FeaturesFromTxn`), `internal/controller/{checks_hub,webops,dir_devices}.go`, `internal/vantage/{vantage,verify}.go`, `internal/manifest/types.go`, `internal/module/all/all.go`, `internal/module/conformance/allowed.go` (`PreContract` gains `checks`, `scorer`, `vantage`, `creds`; `ModulePackages` entries), `phylax_design.md` (the 14 gaps; table names; `pcr.generate`; Appendix D)
-- Create: every test file named in Tasks 2 to 52 with each test body as given in its Step 1 and `t.Skip("unimplemented: W7 Task N")` as the first statement; helpers they share
+- Create: `internal/checks/{kinds,module,config,tables}.go`, `internal/scorer/{kinds,module,config}.go`, `internal/vantage/{kinds,module,config}.go`, `internal/creds/{kinds,module,config,tables}.go`, `internal/link/seal.go`, `internal/vault/writer.go`, `internal/controller/window.go`, `internal/agent/mods/{checks,vantage}.go`
+- Modify: `internal/plan/{agentconfig,fact,plan,step}.go`, `internal/event/core.go`, `internal/parsers/txn/txn.go` (delete `Features`), `internal/scorer/fingerprint.go` (`FeaturesFromTxn`), `internal/controller/{checks_hub,webops,dir_devices}.go`, `internal/vantage/{vantage,verify}.go`, `internal/manifest/types.go`, `internal/module/all/all.go`, `internal/module/conformance/allowed.go` (`PreContract` gains `checks`, `scorer`, `vantage`, `creds`; `ModulePackages` entries), `phylax_design.md` (the 17 gaps; table names; `pcr.generate`; Appendix D)
+- Create: every test file named in Tasks 2 to 47 with each test body as given in its Step 1 and `t.Skip("unimplemented: W7 Task N")` as the first statement; helpers they share
 
 **Interfaces:**
 - Consumes: W1 Tasks 1 to 5 names (`event.Declare`, `event.New`, `event.Type`, `module.Manifest`, `module.Common`, `module.Health`, `module.ControllerModule`, `module.Host`, `agent.Factory`, `plan.ModuleLimits`, `conformance.PreContract`); W3 `actions.RegisterExtra`; W6 seams' `capture.flow` and `capture.txn` kind names.
@@ -154,7 +157,7 @@ type CheckSpec struct { // a probe.Spec in JSON form; credentials by reference i
 type CheckCred struct {
 	Service, Host, Account, Credlist string
 	Version int
-	Sealed []byte `json:"sealed"` // plan.SealSecret output; opened in memory only
+	Sealed []byte `json:"sealed"` // link.SealSecret output; opened in memory only
 }
 type VantageSettings struct {
 	ModuleLimits
@@ -178,9 +181,9 @@ func (r RoundClock) Window(now time.Time, need time.Duration) (safe bool, until 
 type CredsTxnFact struct{ Txn, Account, Host, Credlist string; Open bool }
 type ProbeResultFact struct{ Service, Host, Source string; OK bool; Round int } // source: lan | external
 
-// ---- internal/plan/seal.go ----
+// ---- internal/link/seal.go ----
 func SealSecret(to *ecdsa.PublicKey, aad string, plain []byte) ([]byte, error)
-func OpenSecret(priv *ecdsa.PrivateKey, aad string, sealed []byte) ([]byte, error)
+func (id *Identity) OpenSecret(aad string, sealed []byte) ([]byte, error)
 // agent.Env gains: func (e Env) OpenSealed(aad string, sealed []byte) ([]byte, error)
 
 // ---- internal/vault/writer.go ----
@@ -278,19 +281,17 @@ type Config struct { module.Common `yaml:",inline"`; Generation GenConfig; PCR P
 
 ```go
 func TestProbeHasNoSchedulerOrGlobals(t *testing.T) {
-	// go/parser over every non-test file of this package: no `go` statement outside a function literal passed to a
-	// sync/errgroup helper? simpler rule asserted here: no file declares a package-level var of kind sync.Mutex,
-	// time.Ticker, time.Timer or chan; no `go ` statement appears in exported functions Run, Faithful, Sweep, AuthOnly
-	// (Sweep may not start goroutines: it is sequential with a gap).
+	// go/parser over every non-test file of this package: no package-level var of type sync.Mutex, sync.Map,
+	// time.Ticker, time.Timer or chan; no `go` statement anywhere (Sweep is sequential with a gap between probes)
 }
 func TestTypesListsEighteen(t *testing.T) { if n := len(Types()); n != 18 { t.Fatalf("%d", n) } }
 ```
 
 - [ ] **Step 3 (1A): Verify and commit.** Run: `make build build-windows vet test race`. Expected: PASS (the moved tests pass unchanged). `git commit -am "probe: extract internal/checks/probe as the shared stateless library"`. Open pull request 1A, merge after review.
-- [ ] **Step 4 (1B): Move the runner, `Compare` and the PCR engine** as listed, with only package clause and import fixes, and delete `Engine.PlanForRecord`, `SyncRecord`, `CredsState`, `Generate` from `pcr` (Task 42 re-homes them; leave them commented-out in a `// moved to creds in Task 42` block is NOT allowed, delete them and the tests that call them go into Task 42's skipped files).
+- [ ] **Step 4 (1B): Move the runner, `Compare` and the PCR engine** as listed, with only package clause and import fixes. Delete `Engine.PlanForRecord`, `SyncRecord`, `CredsState` and `Generate` from `pcr`; Task 37 and Task 39 re-home their logic in `creds`, and the tests that called them move into those tasks' skipped files.
 - [ ] **Step 5 (1B): Write the stubs.** Types and constants exactly as above; `init` in each `kinds.go` with the `event.Declare` calls (`Fields` is the zero payload struct); module `Manifest()` per the design's capability tables (name, sides, OS, privilege, roles, budget, tables with the renamed names, content, actions, pages; `Consumes` only kinds declared today: `capture.flow`, `capture.txn`, `auth_event`, `inventory.probe_result`, `net.canary_result`, `devices.deny`, `devices.traffic`, `agent.enrolled`, `agent.reenrolled`, `agent.step_result`, plus the four modules' own kinds); `Start` returns `module.ErrNoConfig` when the block is absent and otherwise reports `unavailable` with the gap `unimplemented: W7`; agent factories in `internal/agent/mods/{checks,vantage}.go` whose `Section` returns `false` until their tasks. Function bodies `panic("unimplemented: W7 Task N")` except where a test of this task needs them. Add the new fields to existing structs (zero-value safe, `omitempty`), delete `parsers/txn.Txn.Features`, add `scorer.FeaturesFromTxn`, and change the parser tests that call `.Features()`.
 - [ ] **Step 6 (1B): Write the skipped tests and shared helpers** (`internal/checks/helpers_test.go` fake-store builder `newChecksHost`, `internal/scorer/feed_helpers_test.go` capture-fixture builders `txnEvent(proto, port, user, ok)` and `burst(at, n)`, `internal/creds/txn_helpers_test.go` a fake plan runner `fakeRunner` that records started templates and lets a test deliver `agent.step_result` events, `internal/controller/modtest_w7_test.go`). Task 1's own tests, not skipped: `TestKindsDeclared` in each of the four packages (every constant is `event.Lookup`-able, schema 1, priority and alert flag as listed) and `TestManifestsValid` (`Manifest.Validate()` nil for the four).
-- [ ] **Step 7 (1B): Apply the 14 gaps to `phylax_design.md`** (one bullet each under the module sections they touch, plus the corrected table names, the removal of `pcr.generate` from the `creds` Actions row, the `CR` lint namespace, the `ContentDir` key in `modules/checks.yml`, and Appendix D lines for `internal/checks/probe`, `internal/creds/pcr`, `rules/creds`, `plans/creds`, `rules/scorer`, `rules/vantage`, `checks/`).
+- [ ] **Step 7 (1B): Apply the 17 gaps to `phylax_design.md`** (one bullet each under the module sections they touch, plus the corrected table names, the removal of `pcr.generate` from the `creds` Actions row, the `CR` lint namespace, the `ContentDir` key in `modules/checks.yml`, and Appendix D lines for `internal/checks/probe`, `internal/creds/pcr`, `rules/creds`, `plans/creds`, `rules/scorer`, `rules/vantage`, `checks/`).
 - [ ] **Step 8 (1B): Verify and commit.** Run: `make build build-windows vet test race`, then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W7 Task'`. Expected: all pass; the count equals the number of skipped tests written. `git commit -am "scoring-creds: W7 seams (kinds, stubs, settings, core hooks, skipped tests, design gaps)"`. Open pull request 1B, merge after review.
 
 ---
@@ -550,7 +551,7 @@ func TestStepSecretsPCRNeedsCredsPlanAndTxn(t *testing.T) {
 
 **Interfaces:**
 - Consumes: built `link.Identity` (P-256 key), `agents.pubkey` (DER PKIX of the enrolled key).
-- Produces: `func SealSecret(to *ecdsa.PublicKey, aad string, plain []byte) ([]byte, error)` (ephemeral P-256 key, `crypto/ecdh` shared secret, `crypto/hkdf` SHA-256 with info `phylax-seal-v1`, AES-256-GCM, output `epk(65) || nonce(12) || ciphertext`); `func (id *Identity) OpenSecret(aad string, sealed []byte) ([]byte, error)`; `agent.Env.OpenSealed(aad, sealed)`. Plaintext over 64 KiB is refused. This replaces the Task 1 `plan.SealSecret` sketch (Task 1 declares these in `link`).
+- Produces: `func SealSecret(to *ecdsa.PublicKey, aad string, plain []byte) ([]byte, error)` (ephemeral P-256 key, `crypto/ecdh` shared secret, `crypto/hkdf` SHA-256 with info `phylax-seal-v1`, AES-256-GCM, output `epk(65) || nonce(12) || ciphertext`); `func (id *Identity) OpenSecret(aad string, sealed []byte) ([]byte, error)`; `agent.Env.OpenSealed(aad, sealed)`. Plaintext over 64 KiB is refused. Task 1 declares these names.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1097,7 +1098,7 @@ func TestControllerWiresProbe(t *testing.T) { /* cmd wiring: controller built by
 - Test: `internal/checks/doctor_test.go`
 
 **Interfaces:**
-- Consumes: `Host.RunReadOnly`, `agent.step_result` (Task 5, `Output`), `Deriver` first-failure signal, `deps.graph` is not consumed yet (Task 46).
+- Consumes: `Host.RunReadOnly`, `agent.step_result` (Task 5, `Output`), `Deriver` first-failure signal, `deps.graph` is not consumed yet (Task 47).
 - Produces:
 
 ```go
@@ -1908,14 +1909,14 @@ func TestEvictionPolicyTable(t *testing.T) { // T49 CI half
 		{"old-from-scorer-src", "alice", "198.51.100.7", before.Add(-2 * time.Hour)}, // older than cutoff but scorer-labelled: flagged
 		{"unclassifiable", "alice", "", before.Add(-2 * time.Hour)},              // no source: flagged
 		{"zero-start", "alice", "203.0.113.6", time.Time{}},                      // flagged
-		{"before-but-young", "alice", "203.0.113.8", before.Add(-30 * time.Second)}, // began before Before but younger than the cutoff: not killed, not flagged? flagged
+		{"before-but-young", "alice", "203.0.113.8", before.Add(-30 * time.Second)}, // began before Before but younger than the cutoff: flagged
 	}
 	kill, flag := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: true, CutoffMS: 120000, ExemptSources: []string{"198.51.100.7"}})
 	// kill == [old-red]; flag == [old-from-scorer-src, unclassifiable, zero-start, before-but-young]; young-scorer in neither
 	k2, f2 := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: true, CutoffMS: 0, ExemptSources: nil})
 	// flag-only: len(k2) == 0; every session older than Before is flagged
 	k3, _ := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: false})
-	// plain eviction: kills old-red, old-from-scorer-src, unclassifiable, zero-start? (only those with Start < Before and non-zero Start), before-but-young
+	// plain eviction: kills every session with a non-zero Start before Before: old-red, old-from-scorer-src, unclassifiable, before-but-young
 }
 func TestTerminateActionParams(t *testing.T) { /* negative cutoff_ms rejected; scored true without cutoff_ms defaults to flag-only; the action output lists killed and flagged ids */ }
 ```
@@ -2083,7 +2084,7 @@ func TestOldValueWrittenBackOnRollback(t *testing.T) { /* after rolled_back the 
 ### Task 44: `creds`: revert detection and automatic re-apply (T51 CI form)
 
 **Files:**
-- Create: `internal/creds/revert.go`, `plans/creds/pcr-back.md` is NOT created (PCR back reuses the engine, no plan)
+- Create: `internal/creds/revert.go` (PCR back reuses the engine and the typed list; it has no plan template)
 - Modify: `internal/creds/txn.go`, `internal/creds/module.go`
 - Test: `internal/creds/revert_test.go`
 
