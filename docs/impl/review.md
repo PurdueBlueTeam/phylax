@@ -648,3 +648,10 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - Anything that can touch a scored service must be provably safe: zero failed checks, alert-only first, scorer probe after, bounded retries.
 - No AI/MCP, no prewritten inject responses, no event profiles, no competition-rule reasoning, no mass credential rotation.
 - Automatic actions beyond tier 0 are offered as one-click suggestions, never silent.
+
+### Area 6 (2026-10-31)
+- All other area-6 calls accepted.
+- A6.Q1: yes, Cisco FTD read-only config export only, no adapter.
+- D244 Palo-side pcap: KEEP (David finds it interesting), gated on the licence/capability flag; D409 keeps `Capture` in the adapter interface.
+- D76/D222 sinkhole: decision deferred to a C2 fingerprinting lab: stand up the common C2 frameworks, capture their traffic (first bytes, TLS/JA4, HTTP shape, timing, Windows pipes), and turn the results into rules. If first-bytes fingerprints discriminate, keep the sinkhole; otherwise cut it. Code stays until then.
+- Other cuts (D235, D241 Splunk REST, D242) accepted.
