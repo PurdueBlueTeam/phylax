@@ -1,0 +1,16 @@
+# Cross-workstream items to fold into README after all plans
+- W3 adds to W1 seams: common-struct extension fields, Event.WithExtra (x_ prefix), actions.RegisterExtra, internal/sockets (Community ID, proto consts), Logs/Inventory settings, BackscanHours. -> README: W3 seams depends on W1; W1 owner should consider pulling these into W1.
+- detect json.Number fix in W3 Task 2 (W4 inherits).
+- deps.edge/peer stop between W3 Task 17 and W8 (deps as subscriber) -> README: note gap or order W8 deps-subscriber task before W3 T17 merges (or keep shim).
+- sysmon.install/sysmon.config/eventlog.size/analytic channel enable: unowned -> assign W5 (hardening). Tell W5 writer? (W5 already running) -> add to W5 after.
+- rules_hash controller-side comparison -> W4 (detect rule on agent.health).
+- net.shadow_drop / net.ingress_denied declared in W3, emitted by W6.
+- logs/inventory content embedded under internal/<module>/ (Appendix D gap) -> update design Appendix D.
+- W5 adds to W1 seams: exported actions.Register/RegisterUndo (W3 calls it actions.RegisterExtra! -> reconcile to one name), plans root pkg in CoreImports, LoadModuleTemplateFor(host resolver).
+- W5 gaps: registry.set/delete code names (design says reg.*) -> design fix; ad.recycle_restored missing in ad Emits; sshsig namespace `phylax-release`; ledger accept / hunt decision handled by module writer goroutine via UI (no kind); W5 T16 waits on W3 internal/sockets; W5 T20 needs network.
+- W5 did NOT include sysmon.install/config, eventlog.size, analytic channel enable (W3 suggested W5) -> add tasks to W5 in the fix-up pass.
+- W6 adds: actions.RegisterFamily / RegisterUndo / Unsupported (3rd name variant vs W3 RegisterExtra, W5 Register -> ONE name in W1), Env.Now, Env.Ext, module.Host.Manifest(), Host.Control freeze_capture, storetest.New, devices types -> internal/devices/adapter.
+- Unowned core features -> assign to W1 in fix pass: plan option `expires_after`; `gate: auto` gate kind; overrides writer for modules (learned_listeners) e.g. Host.ProposeOverride / overrides API; Host.Secrets per-device vault keys.
+- device Directory stays in controller until W11 splits Splunk half.
+- capture_ingest.go controller-scope evaluator + D4c rule -> W4.
+- UI pages for firewall/egress/capture/devices -> W10 (Traffic, Platform pages) — confirm W10 owns all module pages or each module workstream owns its pages (contract: modules register pages) -> decide: each module's workstream owns its own pages; W10 owns shell pages only. W6 must add page tasks in fix pass.
