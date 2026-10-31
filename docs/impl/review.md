@@ -698,3 +698,9 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - Clarified: N11.1 team feed = yes. A11.Q1 multi-viewer UI = NO (no SSH tunnel); D494 stays one controller screen.
 - A10.Q4: generators prioritise on-screen views that screenshot well from outside; files are secondary, moved out via the team Nextcloud (which should be writable from inside the environment). D489's Nextcloud fallback becomes the file-export path (manual upload; no integration unless trivial).
 - Invitational collection kit need not be minimal.
+
+### Areas 12-13 and Invitational (2026-10-31)
+- Areas 12 and 13 accepted with the corrections (D440 no Defender Toolkit coexistence; D514 keeps decoy and sinkhole tests).
+- I1: Invitational = Phylax in observe mode (modules alert-only, safe mode on) plus standalone collector scripts as a fallback.
+- I2: battle-test Tier A everywhere (external checks, hunts, ledger, YARA, decoys, honeytokens, firewall shadow mode, alert-only content guard/doctor/eviction, scorer learning); Tier B on non-scored accounts and one canary host (T+0 admin rotation + eviction, tier-0 on non-scored targets, hardening packs with dead-man, red-IP blocks on non-scored ports); Tier C only one deliberate PCR rotation of a single scored user and hardening on one scored server, in the second half.
+- Fact: before quals we get about a week of access to the CCDC environment, but after the GitHub repo deadline, so no code (or anything in the repo) can change then. Implication: everything event-specific must be learnable or enterable at runtime, not committed.
