@@ -17,7 +17,7 @@ Status as of 2026-10-31. Branch `v3-redesign` (local only, not pushed). No produ
 Three Sonnet agents were writing these; check whether each file is complete (ends with a self-review and a lab task) before trusting it:
 - [04-detection-response.md](04-detection-response.md) W4
 - [07-scoring-creds.md](07-scoring-creds.md) W7
-- [11-integrations-depot.md](11-integrations-depot.md) W11
+- [11-integrations-depot.md](11-integrations-depot.md) W11 (finished; committed)
 
 If a file is missing or truncated, rerun it with: "Follow docs/impl/PLAN-BRIEF.md exactly. Your workstream: W<n> <name> (see the README row). Write docs/impl/<nn>-<name>.md." Use Sonnet, at most three at a time (David's preference).
 
