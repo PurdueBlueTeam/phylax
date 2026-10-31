@@ -1,0 +1,3034 @@
+# W1: Module Contract Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Turn the design's module contract into code: typed events, `internal/module`, the agent and controller module registries, the controller `Host`, approval classes and the controller executor, `control: fact`, the lint registry, the UI registrar, the conformance suite and the CI gates, with `health` and `suricata` as the first two modules on the contract.
+
+**Architecture:** `internal/module` is a leaf package of data types and interfaces (it imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui` and the standard library), so `internal/plan`, `internal/link`, `internal/agent` and `internal/controller` can all import it. The agent side extends the built factory registry and supervisor; the controller side gets a module runner, a `Host` implementation, a controller-origin event chain and the plan-starting paths (`auto_readonly`, `standing`, `auto`, proposals). The conformance suite is a test-support package every module's own `conformance_test.go` calls; static checks (imports, kind table, presence) run once over the registry.
+
+**Tech Stack:** Go 1.27.2 (mise), standard library, existing deps only (`modernc.org/sqlite`, `gopkg.in/yaml.v3`, `golang.org/x/sys`). No new modules in `go.mod`.
+
+**Spec:** `phylax_design.md` (v4): "The module contract" (all subsections), "Event kinds", "Core components: Agent runtime (heartbeat)", "Wire protocol and spool (control types, fact subtypes)", "Execution engine (action contract, controller executor and approval classes, scoring-safety lint: lint registration)", "Manifest (files)", "Event store and vault (query API)", "UI shell (module registration, Platform)", "Testing and lab (T45, T46, T65 bug 11 and 17, T73, T74, T75, CI)". Master plan: `docs/impl/README.md`.
+
+## Deviations from the design (applied by Task 1 to `phylax_design.md` in the same commit)
+
+1. **`Host` plan methods take a template, not a `plan.Plan`.** `plan.ModuleLimits` embeds `module.Common`, so `internal/plan` imports `internal/module`; `internal/module` therefore cannot import `internal/plan`. `RunReadOnly(template, params)`, `RunStanding(approvalID, template, params)` and `RunAuto(template, params)` take a plan template under `plans/<module>/` plus string parameters, matching "content before code" and the standing approval's `Template` scope. `Proposal` carries a template too.
+2. **`store.Reader`** is the read-only query interface the design calls `store.Query`; the name `store.Query` is the existing event filter struct (9 call sites). `Query` gains `Fields map[string]string`.
+3. **`Host.Tables()`** is added: a module that declares `Tables` needs a write path for its one writer goroutine; the design's `Host` has none.
+4. **`Analyzer.Run` takes a `context.Context`** so the analysis worker can stop a run over its deadline ("a run over budget is stopped").
+5. **`module.Common` gains `Auto []string` (`auto:`)**, the module's `auto` template allowlist; the design names the allowlist but not its home.
+6. **`event.Type` gains `Alert bool`**, the per-kind alert flag of the kind table; `event.Type.Fields` is not serialised.
+7. **`Event.Schema` is `json:"schema,omitempty"`**, so an event sealed before this change (schema 0, no tag) keeps its hash. Declared kinds always carry a schema of 1 or more.
+8. **`process_start` parent fields** are one object `parent: {exe, comm, cmdline, service}`; the flat `pexe`, `pcomm`, `pcmdline` names are dropped (rules read `parent.exe`). **`dns_query`** and **`telemetry_gap`** get canonical structs (the design lists none): `dns_query {query, query_results, pid, exe, user, source}` (today's winevt Sysmon 22 names), `telemetry_gap {source, reason, count, from, to, detail}` (today's emitters).
+9. **`hosts.yml` `modules:`** is a map `{<module>: true|false}`; **`labels:`** is a list of strings. The design names both but not their shape.
+10. **Controller modules register with `module.Register`** from their package `init`, and `internal/module/all` blank-imports every module package so the binary and the CI checks see one list.
+11. **`Env.Subscribe(buf int, kinds ...string)`** keeps the buffer argument the built code has.
+12. **`RunAuto`'s triggering event** is passed as the reserved parameter `trigger` (`<agent>:<seq>`), recorded in the plan's `Approver` and never substituted into the template.
+13. **Core kind count is 29, not 28**: the design's table has 29 core rows (listed in Task 5) while its summary sentence says 28 (and so 167 kinds in all would be 168); Task 1 fixes the sentence.
+14. **`act_enabled` is per module block, fleet-wide.** The design's tiers flip it "for named hosts"; a per-host form is not designed. `shortcut: act_enabled per module only, upgrade when hosts.yml gets a per-host act entry` in `RunAuto`.
+
+## Global Constraints
+
+- Go 1.27.2 via mise; `CGO_ENABLED=0`; `make build build-windows vet test race` passes at every commit (linux/amd64 and windows/amd64 both build and vet).
+- Every package ships tests; tests exercise the real code (no mocking of the code under test, no tautological asserts). A test that needs privileges or containers calls `t.Skip` with a reason string.
+- Commits are small, one logical change, message `area: summary` (e.g. `event: typed kind registry`). No attribution lines.
+- No shelling out in the default path (tests may run `go list`).
+- Bounded everything: queues, buffers, decoded sizes, timeouts. Atomic writes through `internal/atomicfile` for state files.
+- No compatibility shims, aliases or dual formats; renamed things are renamed everywhere in the same commit.
+- `internal/module` imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui` and the standard library.
+- A module imports only the core packages (`internal/event`, `internal/module`, `internal/agent`, `internal/link`, `internal/plan`, `internal/actions`, `internal/store`, `internal/manifest`, `internal/manifest/render`, `internal/deadman`, `internal/ui`, `internal/vault`) and the shared libraries (`internal/atomicfile`, `internal/parsers/...`, `internal/checks/probe`, `internal/sockets`, `internal/signing`, `internal/integrity/format`, `internal/inventory/fold`). `internal/enroll` is never importable by a module.
+- Times stored in UTC. Secrets never appear in events, logs or config files.
+- The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
+- Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
+
+## Review Focus
+
+1. **Events sealed before the envelope change.** A spool or store written by the old code holds events without `schema` and `tag`. Expected: they still verify after the upgrade (Task 2 `TestPreSchemaEventStillVerifies`).
+2. **In-process consumers of converted emitters.** `event.New` stores numbers as `json.Number`, as the store already does on read; a bus consumer that type-asserts `uint64` or `float64` on a converted kind's field would silently stop matching. Expected: `New`'s fields equal a store round trip (Task 3 `TestNewMatchesStoreRoundTrip`), and Task 6 fixes every such assertion it finds.
+3. **Controller restart mid-chain.** The controller-origin chain must continue from the stored head, never restart at seq 1 (which the store refuses as a replay). Task 16 `TestEmitControllerAfterRestart`.
+4. **`RunAuto` with an unknown state.** No heartbeat yet for a target, the agent offline, no probe callback, or safe mode unknown: expected a click proposal, never an apply. Task 26 `TestRunAutoUnknownSafeModeProposes`.
+5. **Fact TTL against agent clock skew.** The controller's `ts` and the agent's clock disagree; expected: a fact's TTL counts from the agent's receipt time. Task 31 `TestFactTTLFromReceipt`.
+
+---
+
+## File structure
+
+| Path | Responsibility | Task |
+| --- | --- | --- |
+| `internal/event/event.go` | envelope (`Schema`, `Tag`) | 2 |
+| `internal/event/types.go` | `Type`, `Declare`, `Lookup`, `Declared`, `New`, `Decode`, `Validate` | 1, 3 |
+| `internal/event/kinds.go` | common kinds and canonical structs | 1, 4 |
+| `internal/event/core.go` | core kinds and payload structs | 1, 5 |
+| `internal/module/module.go` | `Side`, `Budget`, `Manifest`, `Common`, `State`, `Gap`, `Usage`, `Health`, `Effective` | 1, 7 |
+| `internal/module/host.go` | `Host`, `ControlMsg`, `Proposal`, `EventRef`, `ControllerModule`, `Analyzer`, `AnalyzerProvider`, `Configurable`, errors | 1 |
+| `internal/module/registry.go` | `Register`, `Registered`, `Lookup` | 1, 7 |
+| `internal/module/schema.go` | JSON Schema of a config block | 1, 33 |
+| `internal/module/all/all.go` | blank imports of every module package | 1, 38, 39 |
+| `internal/module/conformance/` | the suite (`agent.go`, `controller.go`, `leak.go`, `static_test.go`, `allowed.go`) | 1, 34-37 |
+| `internal/store/reader.go` | `Reader`, `ModuleDB`, `(*Store).ModuleDB` | 1, 8 |
+| `internal/store/standing.go`, `proposals.go` | core tables for standing approvals and proposals | 24, 25 |
+| `internal/vault/reader.go` | `Reader`, `Source`, `Scoped`, `ErrNotAllowed` | 1, 9 |
+| `internal/ui/registrar.go` | `Registrar`, `Cell`, `Discard`, `(*Server).Registrar`, views | 1, 10 |
+| `internal/manifest/modules.go`, `labels.go` | module blocks, host `modules:`/`labels:`, label expressions | 1, 11 |
+| `internal/plan/agentconfig.go` | `ModuleLimits` embeds `module.Common`; strict parse; `BlockFor` | 12 |
+| `internal/plan/approval.go` | `ApprovalClass`, `StandingApproval` | 1, 22 |
+| `internal/plan/template.go` | `ExpandTemplate` | 1, 22 |
+| `internal/plan/fact.go` | `ControlFact`, `FactSender`, limits | 1, 30 |
+| `internal/plan/lint/lint.go`, `ss000.go` | lint registry and `SS000` | 1, 21 |
+| `internal/agent/registry.go`, `module.go` | `Factory.Manifest`, `HealthReporter`, `Supervisor.Health`, `Subscribe` kinds | 13 |
+| `internal/agent/harness.go` | `Harness` for the conformance suite | 1, 15 |
+| `internal/agent/facts.go`, `window.go` | facts and the `work_window` effect | 31, 32 |
+| `internal/link/message.go` | heartbeat `Health` | 14 |
+| `internal/controller/chain.go` | controller-origin event chain | 16 |
+| `internal/controller/host.go`, `modules.go`, `analysis.go` | `Host` implementation, module runner, analysis worker | 1, 17-20 |
+| `internal/controller/approvals.go`, `auto.go`, `proposals.go`, `exec.go`, `facts.go` | approval classes, auto conditions, breaker, proposals, executor, facts | 23-30 |
+| `internal/suricata/` | `suricata` moved from `internal/integrations/suricata` | 39 |
+| `cmd/phylax/modules.go` | `phylax modules` | 40 |
+| `.github/workflows/ci.yml`, `Makefile` | CI gates | 41 |
+| `docs/impl/lab/w1-module-contract.md` | lab record | 42 |
+
+---
+
+### Task 1: Seams (Sonnet or Opus)
+
+Done by a stronger model. Writes every exported type, interface and function signature below with stub bodies, the new fields on existing structs, the skipped test files for later tasks with their helpers, and the design-text deviations. Later tasks implement against exactly these names.
+
+**Files:**
+- Create: `internal/event/types.go`, `internal/event/kinds.go`, `internal/event/core.go`
+- Create: `internal/module/module.go`, `internal/module/host.go`, `internal/module/registry.go`, `internal/module/schema.go`, `internal/module/all/all.go`
+- Create: `internal/module/conformance/doc.go`, `agent.go`, `controller.go`, `allowed.go`
+- Create: `internal/store/reader.go`, `internal/vault/reader.go`, `internal/ui/registrar.go`
+- Create: `internal/manifest/modules.go`, `internal/manifest/labels.go`
+- Create: `internal/plan/approval.go`, `internal/plan/template.go`, `internal/plan/fact.go`, `internal/plan/lint/lint.go`
+- Create: `internal/agent/harness.go`
+- Create: `internal/controller/host.go`, `internal/controller/modules.go`
+- Create: every test file named in Tasks 2 to 40 except Task 12's, each test body as given in that task's Step 1, with `t.Skip("unimplemented: W1 Task N")` as its first line (Task 2's `internal/event/envelope_test.go` unskipped), and the test helpers listed in Step 2
+- Modify (zero-value-safe field additions only): `internal/event/event.go`, `internal/store/query.go`, `internal/manifest/types.go`, `internal/agent/registry.go`, `internal/link/message.go`, `internal/plan/plan.go`, `internal/plan/step.go`, `internal/actions/env.go`, `internal/controller/controller.go`
+- Modify: `phylax_design.md` (the sketches in "The module contract" and "Lint registration" to the signatures below; the 14 deviations above; "28 core kinds" to 29)
+
+**Interfaces:**
+- Consumes: the built `internal/event.Event`, `internal/store.Store`/`Query`, `internal/vault.Vault`/`Secret`, `internal/ui.Server`, `internal/manifest.Manifest`/`Host`, `internal/plan.Plan`/`Node`/`AgentConfig`, `internal/agent.Factory`/`Env`/`ModuleSpec`/`Supervisor`, `internal/actions.Registry`/`Spec`/`Env`.
+- Produces (exact; every later task and every other workstream plan uses these):
+
+```go
+// ---- internal/event/types.go ----
+package event
+
+type Type struct {
+	Kind     string   `json:"kind"`
+	Schema   int      `json:"schema"`
+	Priority Priority `json:"prio"`
+	Alert    bool     `json:"alert,omitempty"`
+	Fields   any      `json:"-"` // zero value of the payload struct
+}
+
+var (
+	ErrUndeclared   = errors.New("event: kind not declared")
+	ErrKindMismatch = errors.New("event: kind or payload type mismatch")
+	ErrSchema       = errors.New("event: schema version not understood")
+)
+
+func Declare(t Type)                                // from init; panics on duplicate kind, Schema < 1, nil Fields or empty Kind
+func Lookup(kind string) (Type, bool)
+func Declared() []Type                              // sorted by Kind
+func New[T any](kind string, v T) (Event, error)    // Kind, Schema, Priority, Fields set; Fields hold json.Number for numbers
+func Decode[T any](e Event, kind string) (T, error) // strict; keys with prefix "x_" are ignored
+func Validate(e Event) error                        // strict decode of e against its declared kind
+
+// ---- internal/event/kinds.go ---- (types are data: written in full by Task 1; Declare calls added by Task 4)
+const (
+	KindProcessStart = "process_start"
+	KindProcessExit  = "process_exit"
+	KindFileChange   = "file_change"
+	KindConn         = "conn"
+	KindListener     = "listener"
+	KindAuthEvent    = "auth_event"
+	KindDNSQuery     = "dns_query"
+	KindTelemetryGap = "telemetry_gap"
+)
+
+type ProcessParent struct {
+	Exe     string `json:"exe,omitempty"`
+	Comm    string `json:"comm,omitempty"`
+	Cmdline string `json:"cmdline,omitempty"`
+	Service string `json:"service,omitempty"`
+}
+type ProcessStart struct {
+	PID     int            `json:"pid"`
+	PPID    int            `json:"ppid,omitempty"`
+	Exe     string         `json:"exe"`
+	Comm    string         `json:"comm,omitempty"`
+	Cmdline string         `json:"cmdline,omitempty"`
+	CWD     string         `json:"cwd,omitempty"`
+	User    string         `json:"user,omitempty"`
+	UID     *int           `json:"uid,omitempty"`
+	SHA256  string         `json:"sha256,omitempty"`
+	Parent  *ProcessParent `json:"parent,omitempty"`
+	Source  string         `json:"source"` // audit | winevt
+}
+type ProcessExit struct {
+	ProcessStart
+	ExitCode int `json:"exit_code"`
+}
+type FileChange struct {
+	Op             string `json:"op"` // create | delete | modify | attr | rename
+	Path           string `json:"path"`
+	OldPath        string `json:"old_path,omitempty"`
+	Exe            string `json:"exe,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	User           string `json:"user,omitempty"`
+	SHA256         string `json:"sha256,omitempty"`
+	OldSHA256      string `json:"old_sha256,omitempty"`
+	ContentChanged *bool  `json:"content_changed,omitempty"`
+	IsDir          bool   `json:"is_dir,omitempty"`
+	Source         string `json:"source"` // audit | sweep | winevt
+}
+type Conn struct {
+	Op          string `json:"op"`  // opened | closed
+	Dir         string `json:"dir"` // inbound | outbound
+	Proto       string `json:"proto"`
+	LAddr       string `json:"laddr,omitempty"`
+	LPort       uint16 `json:"lport,omitempty"`
+	RAddr       string `json:"raddr,omitempty"`
+	RPort       uint16 `json:"rport,omitempty"`
+	PID         int    `json:"pid,omitempty"`
+	Exe         string `json:"exe,omitempty"`
+	Comm        string `json:"comm,omitempty"`
+	User        string `json:"user,omitempty"`
+	State       string `json:"state,omitempty"`
+	Service     string `json:"service,omitempty"`
+	CommunityID string `json:"community_id,omitempty"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
+	BytesOut    uint64 `json:"bytes_out,omitempty"`
+	BytesIn     uint64 `json:"bytes_in,omitempty"`
+	Source      string `json:"source"` // net | audit | winevt | capture
+	Baseline    bool   `json:"baseline,omitempty"`
+}
+type Listener struct {
+	Op       string `json:"op"` // added | removed
+	Proto    string `json:"proto"`
+	LAddr    string `json:"laddr,omitempty"`
+	LPort    uint16 `json:"lport"`
+	PID      int    `json:"pid,omitempty"`
+	Exe      string `json:"exe,omitempty"`
+	Comm     string `json:"comm,omitempty"`
+	User     string `json:"user,omitempty"`
+	Service  string `json:"service,omitempty"`
+	Baseline bool   `json:"baseline,omitempty"`
+	Source   string `json:"source"`
+}
+type AuthEvent struct {
+	Result      string `json:"result"` // success | fail
+	Account     string `json:"account"`
+	Domain      string `json:"domain,omitempty"`
+	Source      string `json:"source,omitempty"` // client address
+	SourcePort  uint16 `json:"source_port,omitempty"`
+	Service     string `json:"service"`
+	Method      string `json:"method,omitempty"`
+	LogonType   int    `json:"logon_type,omitempty"`
+	InvalidUser bool   `json:"invalid_user,omitempty"`
+	Host        string `json:"host,omitempty"`
+}
+type DNSQuery struct {
+	Query        string `json:"query"`
+	QueryResults string `json:"query_results,omitempty"`
+	PID          int    `json:"pid,omitempty"`
+	Exe          string `json:"exe,omitempty"`
+	User         string `json:"user,omitempty"`
+	Source       string `json:"source"`
+}
+type TelemetryGap struct {
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+	Count  uint64 `json:"count"`
+	From   string `json:"from,omitempty"` // RFC 3339, UTC
+	To     string `json:"to,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ---- internal/event/core.go ---- (types written by Task 1; Declare calls by Task 5)
+type ControllerFact struct {
+	ID   string         `json:"id"`
+	Fact string         `json:"fact"` // subtype
+	TS   time.Time      `json:"ts"`   // controller clock, display only
+	TTL  time.Duration  `json:"ttl"`  // counted from the agent's receipt
+	Data map[string]any `json:"data,omitempty"`
+}
+// plus one struct per core kind as listed in Task 5 (AgentStart ... PlanAutoHalted)
+
+// ---- internal/module/module.go ----
+package module
+
+type Side string
+
+const (
+	SideAgent      Side = "agent"
+	SideController Side = "controller"
+)
+
+type Budget struct {
+	CPUMillisPerSec int     `json:"cpu_ms_per_sec"`
+	HeldMB          int     `json:"held_mb"`
+	EventsPerSec    float64 `json:"events_per_sec"`
+	Burst           int     `json:"burst"`
+	BytesOutPerMin  int     `json:"bytes_out_per_min"`
+	DiskMB          int     `json:"disk_mb"`
+}
+
+type Manifest struct {
+	Name      string       `json:"name"`
+	Sides     []Side       `json:"sides"`
+	OS        []string     `json:"os,omitempty"`
+	Privilege string       `json:"privilege"` // root | user | none
+	Roles     []string     `json:"roles,omitempty"`
+	Consumes  []string     `json:"consumes,omitempty"`
+	Emits     []event.Type `json:"emits,omitempty"`
+	Budget    Budget       `json:"budget"`
+	Default   bool         `json:"default"`
+	Tables    []string     `json:"tables,omitempty"`
+	Content   []string     `json:"content,omitempty"`
+	Actions   []string     `json:"actions,omitempty"`
+	Pages     []string     `json:"pages,omitempty"`
+	Evidence  []string     `json:"evidence,omitempty"`
+}
+
+func (m Manifest) Validate() error
+
+type Common struct {
+	Enabled    bool     `json:"enabled" yaml:"enabled"`
+	ActEnabled bool     `json:"act_enabled" yaml:"act_enabled"`
+	Auto       []string `json:"auto,omitempty" yaml:"auto,omitempty"` // templates under plans/<module>/ that RunAuto may start
+}
+
+type State string
+
+const (
+	StateOK          State = "ok"
+	StateDegraded    State = "degraded"
+	StateUnavailable State = "unavailable"
+	StateDisabled    State = "disabled"
+	StateOverBudget  State = "over_budget"
+	StateRestarting  State = "restarting"
+	StateError       State = "error"
+)
+
+type Gap struct {
+	What string `json:"what"`
+	Why  string `json:"why"`
+}
+type Usage struct {
+	CPUMillis uint64 `json:"cpu_ms"`
+	HeldBytes uint64 `json:"held_bytes"`
+	Events    uint64 `json:"events"`
+	BytesOut  uint64 `json:"bytes_out"`
+	Dropped   uint64 `json:"dropped"`
+}
+type Health struct {
+	State  State             `json:"state"`
+	Detail string            `json:"detail,omitempty"`
+	Gaps   []Gap             `json:"gaps,omitempty"`
+	Usage  Usage             `json:"usage"`
+	Info   map[string]string `json:"info,omitempty"`
+}
+
+// Effective is the enablement rule: the host's modules: entry, else the block's enabled, else the default.
+func Effective(host, block *bool, def bool) bool
+
+// ---- internal/module/host.go ----
+var (
+	ErrNoConfig   = errors.New("module: no config block")
+	ErrNotInScope = errors.New("module: not in the module's manifest")
+	ErrProposed   = errors.New("module: plan not started; a click proposal was created")
+)
+
+type Host interface {
+	Config(v any) error                                                    // strict decode of modules/<name>.yml; ErrNoConfig when absent
+	Query() store.Reader                                                   // read-only event queries
+	Tables() (store.ModuleDB, error)                                       // the module's own tables; error unless Manifest.Tables is non-empty
+	Emit(e event.Event) error                                              // stored under agent "controller"; kind must be in Manifest.Emits
+	Subscribe(kinds []string, buf int) (<-chan event.Event, func())        // committed events; kinds must be in Manifest.Consumes
+	Propose(p Proposal) error                                              // a one-click suggestion; never applies
+	RunReadOnly(template string, params map[string]string) (planID string, err error)
+	RunStanding(approvalID, template string, params map[string]string) (planID string, err error) // ErrProposed when out of scope
+	RunAuto(template string, params map[string]string) (planID string, err error)                 // ErrProposed when an auto condition fails
+	Control(m ControlMsg) error                                            // a signed control: fact to agents
+	Secrets(names ...string) (vault.Reader, error)                         // names must appear in the module's config block
+	UI() ui.Registrar
+	Logger() *slog.Logger
+}
+
+type ControlMsg struct {
+	Type  string         // "fact"
+	Hosts []string       // agent names, or label expressions (manifest.ParseLabels)
+	Fact  string         // subtype: work_window | round_clock | gpo_finding | scorer_probe_result | creds_txn
+	ID    string         // a later fact with the same ID replaces the earlier one
+	Data  map[string]any // typed by the subtype; at most plan.MaxFactData bytes encoded
+	TTL   time.Duration  // > 0 and <= plan.MaxFactTTL
+}
+
+type EventRef struct {
+	Agent string `json:"agent"`
+	Seq   uint64 `json:"seq"`
+}
+
+type Proposal struct {
+	Module   string            // set by the Host
+	Title    string            // one line, shown on the button
+	Template string            // plan template under plans/<module>/
+	Params   map[string]string
+	Evidence []EventRef
+	Reason   string            // why a click is needed (the failed auto condition, or "tier 1")
+}
+
+type ControllerModule interface {
+	Manifest() Manifest
+	Start(ctx context.Context, h Host) error // runs until ctx ends; ErrNoConfig means unavailable
+	Health() Health
+}
+
+type Analyzer struct {
+	Name   string
+	Inputs []string      // kinds it reads; also the trigger set
+	Every  time.Duration // 0: on trigger only
+	Run    func(ctx context.Context, q store.Reader, now time.Time) ([]event.Event, error)
+}
+
+type AnalyzerProvider interface{ Analyzers() []Analyzer } // optional on a ControllerModule
+type Configurable interface{ ConfigBlock() any }          // optional: zero value of the config struct (schema, conformance)
+
+// ---- internal/module/registry.go ----
+func Register(m ControllerModule) // from init; panics on duplicate name or invalid manifest
+func Registered() []ControllerModule
+func Lookup(name string) (ControllerModule, bool)
+
+// ---- internal/module/schema.go ----
+func Schema(v any) ([]byte, error) // JSON Schema (2020-12) of a config struct, additionalProperties false
+
+// ---- internal/store/reader.go ----
+package store
+
+type Reader interface {
+	Events(ctx context.Context, q Query) ([]event.Event, error)
+	Event(ctx context.Context, agent string, seq uint64) (event.Event, error)
+	Latest(ctx context.Context, agent, kind string) (event.Event, error)
+}
+type ModuleDB interface {
+	Migrate(ctx context.Context, migrations []string) error // ordered; applied once; may only create or alter tables named <module>_*
+	Exec(ctx context.Context, query string, args ...any) (sql.Result, error) // writes only to <module>_* tables
+	Query(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+func (s *Store) ModuleDB(module string) ModuleDB
+// Query gains: Fields map[string]string // top-level field equality, compared as text
+
+// ---- internal/vault/reader.go ----
+package vault
+
+type Reader interface{ Get(name string) (Secret, error) }
+type Source interface{ Get(name string) (Secret, string, error) } // *Vault satisfies it
+var ErrNotAllowed = errors.New("vault: secret not in scope")
+func Scoped(src Source, names []string) Reader
+
+// ---- internal/ui/registrar.go ----
+package ui
+
+type Registrar interface {
+	Page(route, title string, h http.Handler)                                  // GET /m/<module>/<route>
+	Tile(name string, render func(ctx context.Context) (template.HTML, error))
+	GridColumn(step string, cell func(ctx context.Context, host string) Cell)
+	Action(name string, h http.Handler)                                        // POST /m/<module>/action/<name>
+}
+type Cell struct {
+	State  string // verified | pending | failed | drifted | n/a | manual
+	Detail string
+	Link   string
+}
+var Discard Registrar // registers nothing (UI off)
+type TileView struct {
+	Module, Name string
+	HTML         template.HTML
+	Err          string
+}
+type GridColumnView struct {
+	Module, Step string
+	Cell         func(ctx context.Context, host string) Cell
+}
+type PageLink struct{ Module, Route, Title string }
+type ModuleRow struct { // one module's health on the Platform page (ui does not import module)
+	Agent, Module, State, Detail string
+	Gaps                         []string
+	PreContract                  bool
+}
+func (s *Server) Registrar(module string, enabled func() bool) Registrar
+func (s *Server) Tiles(ctx context.Context) []TileView
+func (s *Server) GridColumns() []GridColumnView
+func (s *Server) ModulePages() []PageLink
+
+// ---- internal/manifest/modules.go, labels.go ----
+package manifest
+
+type ModuleBlock struct {
+	Raw        []byte   // YAML of modules/<name>.yml after template expansion
+	Enabled    *bool    // nil when the block omits enabled
+	ActEnabled bool
+	Auto       []string
+}
+func (b ModuleBlock) Decode(v any) error // strict
+// Manifest gains: Modules map[string]ModuleBlock
+// Host gains: Modules map[string]bool `yaml:"modules,omitempty" json:"modules,omitempty"`; Labels []string `yaml:"labels,omitempty" json:"labels,omitempty"`
+func (m *Manifest) ModuleEnabled(host, module string, def bool) bool
+type LabelExpr struct{ /* parsed tree; unexported fields */ }
+func ParseLabels(expr string) (LabelExpr, error)
+func (e LabelExpr) Match(labels []string) bool
+func (m *Manifest) HostsMatching(e LabelExpr) []string // sorted host names
+
+// ---- internal/plan ----
+package plan
+
+type ApprovalClass string
+
+const (
+	ClassClick        ApprovalClass = "click"
+	ClassAutoReadOnly ApprovalClass = "auto_readonly"
+	ClassStanding     ApprovalClass = "standing"
+	ClassAuto         ApprovalClass = "auto"
+)
+type StandingApproval struct {
+	ID       string    `json:"id"`
+	Module   string    `json:"module"`
+	Template string    `json:"template"`
+	Targets  string    `json:"targets"` // label expression
+	Actions  []string  `json:"actions"`
+	Expires  time.Time `json:"expires"`
+	Approver string    `json:"approver"`
+	Created  string    `json:"created"` // operator login
+	Revoked  bool      `json:"revoked,omitempty"`
+}
+// Plan gains: Class ApprovalClass `json:"class,omitempty"`; Module, Template, Approver string (json and yaml tags of the same names)
+// StepBody gains: Class ApprovalClass `json:"class,omitempty"` (covered by the step signature)
+// ModuleLimits becomes: struct { module.Common; RatePerSec float64 `json:"rate_per_sec,omitempty"`; Burst int `json:"burst,omitempty"` }
+func ExpandTemplate(p Plan, params map[string]string) (Plan, error)
+func BlockFor(cfg *AgentConfig, name string) (block any, ok bool)
+
+const (
+	ControlFact = "fact"
+	MaxFactData = 16 << 10
+	MaxFactTTL  = 24 * time.Hour
+)
+func FactSender(fact string) (module string, ok bool)
+
+// ---- internal/plan/lint ----
+package lint
+
+type Finding struct{ Rule, Node, Message string }
+type Ctx struct {
+	Manifest *manifest.Manifest
+	Query    store.Reader
+	Class    plan.ApprovalClass
+	Actions  *actions.Registry
+}
+type Rule struct {
+	ID    string // ^[A-Z]{2,4}[0-9]{3}$
+	Doc   string
+	Check func(n plan.Node, c Ctx) []Finding
+}
+func Register(r Rule) // from init; panics on a bad or duplicate id
+func Rules() []Rule  // sorted by ID
+func Run(p plan.Plan, c Ctx) []Finding
+
+// ---- internal/agent ----
+package agent
+
+// Factory gains: Manifest module.Manifest (zero for a pre-contract module)
+type HealthReporter interface{ Health() module.Health }
+func (s *Supervisor) Health(name string) (module.Health, bool)
+func Registered() []Factory // the process-wide factory registry, sorted by name
+// Env.Subscribe becomes: func (e Env) Subscribe(buf int, kinds ...string) (<-chan event.Event, func())
+func (e Env) Fact(id string) (event.ControllerFact, bool) // false when never received or expired
+
+type HarnessOptions struct {
+	Host      string
+	StateDir  string
+	Factories []Factory
+	PlanKey   ed25519.PublicKey
+	EmitErr   func() error // nil: every emit succeeds
+}
+type Harness struct{ /* unexported */ }
+func NewHarness(o HarnessOptions) (*Harness, error)
+func (h *Harness) Apply(cfg *plan.AgentConfig)
+func (h *Harness) Run(ctx context.Context)
+func (h *Harness) Publish(e event.Event)
+func (h *Harness) Emitted() []event.Event
+func (h *Harness) Health(name string) (module.Health, bool)
+func (h *Harness) Kept(key string) any
+func (h *Harness) Fact(f event.ControllerFact)
+
+// ---- internal/actions ----
+// Env gains: Probe func(ctx context.Context, service string) error // nil: the probe cannot run
+
+// ---- internal/controller ----
+func (c *Controller) EmitController(ctx context.Context, e event.Event) (event.Event, error)
+func (c *Controller) RunModules(ctx context.Context, mods []module.ControllerModule) error
+func (c *Controller) ModuleHealth() map[string]module.Health
+func (c *Controller) AgentHealth(host string) map[string]module.Health
+func (c *Controller) RunReadOnly(ctx context.Context, mod, template string, params map[string]string) (string, error)
+func (c *Controller) CreateStanding(ctx context.Context, sa plan.StandingApproval) error
+func (c *Controller) RevokeStanding(ctx context.Context, id, by string) error
+func (c *Controller) RunStanding(ctx context.Context, mod, approvalID, template string, params map[string]string) (string, error)
+func (c *Controller) Propose(ctx context.Context, p module.Proposal) (int64, error)
+func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (string, error)
+func (c *Controller) DismissProposal(ctx context.Context, id int64, by string) error
+func (c *Controller) RunAuto(ctx context.Context, mod, template string, params map[string]string) (string, error)
+func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by string) error
+func (c *Controller) SendFact(ctx context.Context, mod string, m module.ControlMsg) error
+// Options gains: Probe func(ctx context.Context, service string) error
+
+// ---- internal/module/conformance ----
+package conformance
+
+type AgentCase struct {
+	Factory  agent.Factory
+	Default  *plan.AgentConfig // the module's default block on a fixture host
+	Reconfig *plan.AgentConfig // a changed block (check 8)
+	KeepKey  string            // key the module stores with Env.Keep; "" when it keeps nothing
+	Load     []event.Event     // consumed events fed on the bus (checks 6 and 7)
+	Block    any               // pointer to a zero settings struct (check 9); nil: plan.BlockFor(Default, Factory.Name)
+}
+func Agent(t *testing.T, c AgentCase)
+
+type ControllerCase struct {
+	Module module.ControllerModule
+	Config string        // YAML of modules/<name>.yml with the default settings
+	Seed   []event.Event // fixture store contents for analysers (check 11)
+	Now    time.Time
+}
+func Controller(t *testing.T, c ControllerCase)
+
+// The exported functions are thin wrappers: each check is a named function
+// returning an error, so the suite's own tests can assert that a check fails.
+func runAgentChecks(c AgentCase) map[string]error           // unexported; key = subtest name
+func runControllerChecks(c ControllerCase) map[string]error // unexported
+
+var PreContract []string             // registered module names not yet on the contract; only ever shrinks
+var AllowedLibraries []string        // the closed list of shared stateless libraries
+var CoreImports []string             // the core packages a module may import
+var ModulePackages map[string]string // module name -> package path (34 catalogue modules plus health)
+var LinkLoss = 60 * time.Second      // check 7 duration; 2 s under testing.Short()
+```
+
+- [ ] **Step 1: Write the stubs.** Types, constants and interfaces exactly as above. Function bodies: `panic("unimplemented: W1 Task N")` naming the implementing task (`Declare` → 3, common `Declare` calls → 4, ...), except `Effective`, which is one line and written now, and `agent.Registered()` (the sorted process-wide factory list, one line over the existing `registered(nil)`). Add the new fields to existing structs now, all zero-value safe (`omitempty` where JSON-encoded): `event.Event.Schema` and `Tag` (in the order of Task 2), `store.Query.Fields`, `manifest.Manifest.Modules`, `manifest.Host.Modules` and `Labels`, `agent.Factory.Manifest`, `link.Heartbeat.Health`, `plan.Plan.Class`, `Module`, `Template`, `Approver`, `plan.StepBody.Class`, `actions.Env.Probe`, `controller.Options.Probe`. Do not change `plan.ModuleLimits` (Task 12 does, with its callers). `Env.Subscribe` becomes variadic in kinds (the filter itself is Task 13). `var _ Reader = (*Store)(nil)` compiles against the built `Store` methods. `PreContract` lists every factory registered today: `audit`, `capture`, `deception`, `detect`, `health`, `integrity`, `net`, `winevt`. `AllowedLibraries` and `CoreImports` hold the module paths of the two lists in Global Constraints. `internal/module/all/all.go` blank-imports `internal/agent/mods`.
+- [ ] **Step 2: Write the skipped tests and their helpers.** For each of Tasks 3 to 40 except Task 12 (which writes its own, because its tests need the `ModuleLimits` change), create the test file the task names with the test functions of its Step 1, the first statement of each being `t.Skip("unimplemented: W1 Task N")`. Prose comments inside a test body become the code they describe. Write, for real, the helpers those tests call: in `internal/controller` (`modtest_helpers_test.go`): `newTestController`, `newTestControllerAt`, `newTestControllerWithManifest(t, files map[string]string)` (manifest dir with a minimal topology naming controller host `ctl`, hosts `h1` (labels `linux`, `server`, scored service `web`) and `db1`, plus `files`), `newTestControllerWithPlans`, `newTestControllerWithRegistry`, `newStandingController`, `newAutoController`, `setHeartbeat`, `mustNew`, `testMod`, `ctlMod`, `ctx`; in `internal/module/conformance` (`helpers_test.go`): the fixture factories and modules each test names, `cfgWith`, `cfgWith2`, `someLoad`, `looseSettings`; in `internal/agent`: `harnessFactory`, `subscriberFactory`, `emitterFactory`, `emitOnce`. A helper that needs behaviour a later task builds may call the stub (the test is skipped until then).
+- [ ] **Step 2b: Envelope tests, not skipped.** The four `internal/event/envelope_test.go` tests of Task 2 pass as soon as the fields exist; commit them unskipped here (Step 0 of Task 2 records the old hash before the fields are added: do that first).
+- [ ] **Step 3: Apply the deviations to `phylax_design.md`.** Edit the Go sketches under "The capability manifest", "Agent modules", "Controller modules and analysers", "Health and budgets", "Configuration", "UI shell: Module registration" and "Lint registration" to the signatures above, and add the 14 deviations as one bullet each under "The module contract" with their reasons.
+- [ ] **Step 4: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W1 Task'`. Expected: a count equal to the number of skipped tests written in Step 2 (no stub panics, only skips).
+- [ ] **Step 5: Commit.**
+
+```bash
+git add internal docs phylax_design.md
+git commit -m "module: W1 seams (contract types, stubs, skipped tests, design deviations)"
+```
+
+Open this as its own pull request into `v3-redesign` and merge after review; W3 and W5 start from it.
+
+---
+
+### Task 2: Envelope `Schema` and `Tag` in the store and on the wire
+
+The fields themselves and the four event tests below land in Task 1 (Step 2b); Step 0 is done by Task 1's implementer before adding the fields. This task makes the store keep them.
+
+**Files:**
+- Modify: `internal/store/migrations.go` (append migration), `internal/store/query.go` (`eventCols`, `scanEvent`), `internal/store/ingest.go` (`insertEvent`)
+- Modify: `internal/link/message.go` (`ProtoMinor` 1 → 2)
+- Test: `internal/event/envelope_test.go` (Task 1), `internal/store/envelope_test.go`
+
+**Interfaces:**
+- Consumes: `Event` with fields in this order: `Agent, Seq, Time, Kind, Schema int "json:\"schema,omitempty\"", Priority, Tag string "json:\"tag,omitempty\"", Fields, PrevHash, Hash` (Task 1); `(*store.Store).Ingest`, `Events`.
+- Produces: the store persists and returns `Schema` and `Tag`; protocol minor 2.
+
+- [ ] **Step 0 (done in Task 1, before the fields are added): record the old hash.** Run in `internal/event` a scratch test that prints `ComputeHash()` of `Event{Agent: "a", Seq: 1, Time: time.Unix(0, 0).UTC(), Kind: "k", Priority: PriorityNormal, Fields: map[string]any{"x": "y"}}` (PrevHash ""). Paste the value as `oldHash` below. Delete the scratch test.
+- [ ] **Step 1: Remove the skip** in `TestStoreRoundTripsSchemaAndTag` (the event tests are already live from Task 1):
+
+```go
+// internal/event/envelope_test.go
+func TestCanonicalOmitsZeroSchemaAndTag(t *testing.T) {
+	c, _ := Event{Agent: "a", Kind: "k"}.Canonical()
+	if bytes.Contains(c, []byte(`"schema"`)) || bytes.Contains(c, []byte(`"tag"`)) {
+		t.Fatalf("zero schema/tag must be omitted: %s", c)
+	}
+}
+func TestCanonicalCarriesSchemaAndTag(t *testing.T) {
+	c, _ := Event{Agent: "a", Kind: "k", Schema: 1, Tag: "plan:p1"}.Canonical()
+	for _, want := range []string{`"schema":1`, `"tag":"plan:p1"`} {
+		if !bytes.Contains(c, []byte(want)) {
+			t.Fatalf("missing %s in %s", want, c)
+		}
+	}
+}
+func TestTagCoveredByHash(t *testing.T) {
+	e := Event{Agent: "a", Kind: "k", Schema: 1, Tag: "w:1", Time: time.Unix(1, 0)}
+	if err := e.Seal(0, GenesisHash); err != nil {
+		t.Fatal(err)
+	}
+	e.Tag = "w:2"
+	if err := e.Verify(0, GenesisHash); !errors.Is(err, ErrChain) {
+		t.Fatalf("tag change not detected: %v", err)
+	}
+}
+func TestPreSchemaEventStillVerifies(t *testing.T) {
+	const oldHash = "<paste from Step 0>"
+	e := Event{Agent: "a", Seq: 1, Time: time.Unix(0, 0).UTC(), Kind: "k", Priority: PriorityNormal, Fields: map[string]any{"x": "y"}, Hash: oldHash}
+	if err := e.Verify(0, GenesisHash); err != nil {
+		t.Fatalf("old event no longer verifies: %v", err)
+	}
+}
+
+// internal/store/envelope_test.go
+func TestStoreRoundTripsSchemaAndTag(t *testing.T) {
+	// open a store in t.TempDir() and register agent "h1" the way store_test.go does
+	e := event.Event{Agent: "h1", Time: time.Unix(5, 0).UTC(), Kind: "k", Schema: 1, Tag: "plan:p9", Priority: event.PriorityHigh}
+	if err := e.Seal(0, event.GenesisHash); err != nil {
+		t.Fatal(err)
+	}
+	// Ingest(ctx, "h1", []event.Event{e}); then Events(ctx, Query{Agent: "h1"})
+	// want: one event, got.Schema == 1, got.Tag == "plan:p9", got.Verify(0, event.GenesisHash) == nil
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/ -run SchemaAndTag -v`. Expected: FAIL (`got.Schema == 0`: the store drops the field, and `Verify` fails on the read-back event).
+- [ ] **Step 3: Implement.** Append migration `ALTER TABLE events ADD COLUMN schema INTEGER NOT NULL DEFAULT 0; ALTER TABLE events ADD COLUMN tag TEXT NOT NULL DEFAULT '';` and read/write both columns. Set `ProtoMinor = 2` with a comment that minor 2 added `schema` and `tag` to the envelope.
+- [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS (all packages; no fixture hash changed because both fields are omitted when zero).
+- [ ] **Step 5: Commit.** `git commit -am "store: persist envelope schema and tag; protocol minor 2"`
+
+---
+
+### Task 3: Typed kind registry
+
+**Files:**
+- Modify: `internal/event/types.go`
+- Test: `internal/event/types_test.go`
+
+**Interfaces:**
+- Consumes: `Event` (Task 2).
+- Produces: `Declare`, `Lookup`, `Declared`, `New[T]`, `Decode[T]`, `Validate`, `ErrUndeclared`, `ErrKindMismatch`, `ErrSchema` (Task 1 signatures).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+type tPayload struct {
+	A string `json:"a"`
+	N int    `json:"n,omitempty"`
+}
+
+func init() {
+	Declare(Type{Kind: "ttest.one", Schema: 2, Priority: PriorityHigh, Fields: tPayload{}})
+	Declare(Type{Kind: "ttest.two", Schema: 1, Priority: PriorityNormal, Alert: true, Fields: tPayload{}})
+}
+
+func TestNewSetsTypeDefaults(t *testing.T) {
+	e, err := New("ttest.one", tPayload{A: "x", N: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Kind != "ttest.one" || e.Schema != 2 || e.Priority != PriorityHigh {
+		t.Fatalf("header %+v", e)
+	}
+	if e.Fields["a"] != "x" || e.Fields["n"] != json.Number("3") {
+		t.Fatalf("fields %#v", e.Fields)
+	}
+}
+func TestNewUndeclared(t *testing.T) {
+	if _, err := New("ttest.none", tPayload{}); !errors.Is(err, ErrUndeclared) {
+		t.Fatalf("want ErrUndeclared, got %v", err)
+	}
+}
+func TestNewWrongPayloadType(t *testing.T) {
+	if _, err := New("ttest.two", struct{ B int }{1}); !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("want ErrKindMismatch, got %v", err)
+	}
+}
+func TestDecodeStrict(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x", N: 3})
+	got, err := Decode[tPayload](e, "ttest.one")
+	if err != nil || got != (tPayload{A: "x", N: 3}) {
+		t.Fatalf("decode %+v %v", got, err)
+	}
+	if _, err := Decode[tPayload](e, "ttest.two"); !errors.Is(err, ErrKindMismatch) {
+		t.Fatalf("kind mismatch: %v", err)
+	}
+	bad := e
+	bad.Fields = map[string]any{"a": "x", "zz": 1}
+	if _, err := Decode[tPayload](bad, "ttest.one"); err == nil {
+		t.Fatal("unknown field accepted")
+	}
+	old := e
+	old.Schema = 1
+	if _, err := Decode[tPayload](old, "ttest.one"); !errors.Is(err, ErrSchema) {
+		t.Fatalf("schema: %v", err)
+	}
+}
+func TestDecodeIgnoresXPrefix(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x"})
+	e.Fields["x_serial"] = "7"
+	if _, err := Decode[tPayload](e, "ttest.one"); err != nil {
+		t.Fatalf("x_ field rejected: %v", err)
+	}
+}
+func TestDeclareDuplicatePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("no panic")
+		}
+	}()
+	Declare(Type{Kind: "ttest.one", Schema: 1, Fields: tPayload{}})
+}
+func TestDeclaredSortedAndLookup(t *testing.T) {
+	ts := Declared()
+	if !sort.SliceIsSorted(ts, func(i, j int) bool { return ts[i].Kind < ts[j].Kind }) {
+		t.Fatal("not sorted")
+	}
+	if ty, ok := Lookup("ttest.two"); !ok || !ty.Alert {
+		t.Fatalf("lookup %+v %v", ty, ok)
+	}
+}
+func TestValidate(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x"})
+	if err := Validate(e); err != nil {
+		t.Fatal(err)
+	}
+	e.Fields["zz"] = true
+	if Validate(e) == nil {
+		t.Fatal("unknown field accepted")
+	}
+	if err := Validate(Event{Kind: "ttest.none"}); !errors.Is(err, ErrUndeclared) {
+		t.Fatalf("undeclared: %v", err)
+	}
+}
+func TestNewMatchesStoreRoundTrip(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x", N: 3})
+	raw, _ := json.Marshal(e.Fields)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var back map[string]any
+	_ = dec.Decode(&back)
+	if !reflect.DeepEqual(back, e.Fields) {
+		t.Fatalf("bus form %#v != store form %#v", e.Fields, back)
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run 'New|Decode|Declare|Validate' -v`. Expected: FAIL with `panic: unimplemented: W1 Task 3`.
+- [ ] **Step 3: Implement** in `internal/event/types.go`: a `sync.RWMutex`-guarded map `kind → Type` plus the `reflect.Type` of `Fields`. `New` checks `reflect.TypeOf(v)` against the declared type, marshals `v` and decodes into `map[string]any` with `UseNumber`. `Decode` and `Validate` drop `x_`-prefixed keys, marshal the rest and decode with `DisallowUnknownFields` into a new value of the declared type; `Validate` uses `reflect.New`. Schema must equal the declared schema.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: typed kind registry (Declare, New, Decode, Validate)"`
+
+---
+
+### Task 4: Common kinds
+
+**Files:**
+- Modify: `internal/event/kinds.go` (add `init` with the eight `Declare` calls)
+- Test: `internal/event/kinds_test.go`
+
+**Interfaces:**
+- Consumes: `Declare` (Task 3); the structs of Task 1.
+- Produces: the eight common kinds declared at schema 1, `Alert: false`, default priorities `process_start` High, `process_exit` Normal, `file_change` High, `conn` Normal, `listener` High, `auth_event` High, `dns_query` Bulk, `telemetry_gap` High (today's emitters' priorities).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestCommonKindsDeclared(t *testing.T) {
+	want := map[string]any{KindProcessStart: ProcessStart{}, KindProcessExit: ProcessExit{}, KindFileChange: FileChange{},
+		KindConn: Conn{}, KindListener: Listener{}, KindAuthEvent: AuthEvent{}, KindDNSQuery: DNSQuery{}, KindTelemetryGap: TelemetryGap{}}
+	for k, f := range want {
+		ty, ok := Lookup(k)
+		if !ok || ty.Schema != 1 || ty.Alert || reflect.TypeOf(ty.Fields) != reflect.TypeOf(f) {
+			t.Errorf("%s: %+v %v", k, ty, ok)
+		}
+	}
+}
+func TestConnCanonicalNames(t *testing.T) {
+	e, err := New(KindConn, Conn{Op: "opened", Dir: "inbound", Proto: "tcp", LAddr: "10.0.0.1", LPort: 80, RAddr: "10.0.0.9", RPort: 5555, Source: "net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := slices.Sorted(maps.Keys(e.Fields))
+	if !slices.Equal(keys, []string{"dir", "laddr", "lport", "op", "proto", "raddr", "rport", "source"}) {
+		t.Fatalf("keys %v", keys)
+	}
+}
+func TestLegacyFieldNamesRejected(t *testing.T) {
+	for _, f := range []map[string]any{
+		{"op": "opened", "dir": "out", "proto": "tcp", "source": "net", "src_ip": "1.2.3.4"},
+		{"op": "opened", "dir": "inbound", "proto": "tcp", "source": "net", "dst_port": 22},
+	} {
+		if Validate(Event{Kind: KindConn, Schema: 1, Fields: f}) == nil {
+			t.Errorf("accepted %v", f)
+		}
+	}
+	if Validate(Event{Kind: KindProcessStart, Schema: 1, Fields: map[string]any{"pid": 1, "exe": "/x", "source": "audit", "image": "/x"}}) == nil {
+		t.Error("image accepted")
+	}
+}
+func TestProcessStartParentObject(t *testing.T) {
+	e, _ := New(KindProcessStart, ProcessStart{PID: 2, Exe: "/bin/sh", Source: "audit", Parent: &ProcessParent{Exe: "/usr/sbin/httpd", Service: "ecom-http"}})
+	p, ok := e.Fields["parent"].(map[string]any)
+	if !ok || p["exe"] != "/usr/sbin/httpd" || p["service"] != "ecom-http" {
+		t.Fatalf("parent %#v", e.Fields["parent"])
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run 'Common|Canonical|Legacy|Parent' -v`. Expected: FAIL (`TestCommonKindsDeclared: process_start: {...} false`).
+- [ ] **Step 3: Implement** the `init` in `kinds.go` with the priorities above.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: declare the eight common kinds with canonical fields"`
+
+---
+
+### Task 5: Core kinds
+
+**Files:**
+- Modify: `internal/event/core.go`
+- Test: `internal/event/core_test.go`
+
+**Interfaces:**
+- Consumes: `Declare` (Task 3).
+- Produces: 29 core kinds at schema 1 with these payload structs (all json tags snake_case of the field name; `omitempty` on every field except those marked `*`). For kinds with a built emitter, the fields are exactly the keys that emitter writes today (open the file and copy them); the "Fields" column is authoritative only where there is no emitter.
+
+| Kind | Struct | Alert | Priority | Emitter today | Fields |
+| --- | --- | --- | --- | --- | --- |
+| `agent.start` | `AgentStart` | - | High | `internal/agent/agent.go` | copy |
+| `agent.health` | `AgentHealth` | - | Normal | `internal/agent/health.go` | `spool`, `modules`, `link` as `map[string]any` (`shortcut: nested objects untyped at schema 1, type them when a consumer reads them`) |
+| `agent.step` | `AgentStep` | - | High | `internal/agent/exec.go` | copy |
+| `agent.step_result` | `AgentStepResult` | - | High | none | `plan*`, `node*`, `host*`, `phase*`, `outcome*`, `error`, `class` |
+| `agent.step_refused` | `AgentStepRefused` | - | High | `internal/agent/exec.go` | copy |
+| `evidence.blob` | `EvidenceBlob` | - | High | none | `alert*` (alert id), `sha256*`, `size*` (int64), `name`, `chunks` (int) |
+| `agent.config_applied` | `AgentConfigApplied` | - | High | `internal/agent/config.go` | copy (`modules` is `map[string]string`) |
+| `agent.config_rejected` | `AgentConfigRejected` | - | High | `internal/agent/config.go` | copy |
+| `agent.control_refused` | `AgentControlRefused` | - | High | `internal/agent/handlers.go` | `kind*`, `reason*`, `epoch`, `seq` (uint64) |
+| `agent.module_crash` | `AgentModuleCrash` | - | High | `internal/agent/module.go` | `module*`, `error*`, `restart_in_ms` (int64) |
+| `controller.fact` | `ControllerFact` | - | High | none (Task 31) | as in Task 1 |
+| `agent.deadman_fired` | `AgentDeadmanFired` | yes | Critical | `internal/agent/handlers.go` | copy |
+| `agent.deadman_recovered` | `AgentDeadmanRecovered` | - | High | `internal/agent/agent.go` | copy |
+| `agent.deadman_recovery_error` | `AgentDeadmanRecoveryError` | - | High | `internal/agent/agent.go` | copy |
+| `agent.enrolled`, `agent.reenrolled` | `AgentEnrolled`, `AgentReenrolled` | - | High | none (W12) | `host*`, `key_hash*`, `manifest*` |
+| `agent.silent`, `agent.resumed` | `AgentSilent`, `AgentResumed` | silent: yes | High | `internal/controller/agent.go` (`c.alert`) | `host*`, `detail` |
+| `spool.gap` | `SpoolGap` | - | High | `internal/spool/spool.go` | `from*`, `to*`, `count*` (uint64), `class*` |
+| `enroll.refused`, `enroll.key_mismatch`, `enroll.key_reuse` | `EnrollRefused`, `EnrollKeyMismatch`, `EnrollKeyReuse` | mismatch, reuse: yes | High | `internal/controller/agent.go` (`c.alert`) | `host*`, `detail` |
+| `plan.step_timeout`, `plan.bad_result`, `plan.deadman_fired`, `plan.rollback_failed`, `plan.restore_failed`, `plan.confirm_failed` | `PlanStepTimeout`, `PlanBadResult`, `PlanDeadmanFired`, `PlanRollbackFailed`, `PlanRestoreFailed`, `PlanConfirmFailed` | all but the first two: yes | High (the alert ones Critical) | `internal/controller/plans.go`, `restore.go` (`c.alert`) | `host*`, `detail` |
+| `plan.auto_halted` | `PlanAutoHalted` | yes | Critical | none (Task 28) | `module*`, `template*`, `host*`, `rollbacks*` (int) |
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+var coreAlert = map[string]bool{"agent.deadman_fired": true, "agent.silent": true, "enroll.key_mismatch": true,
+	"enroll.key_reuse": true, "plan.deadman_fired": true, "plan.rollback_failed": true, "plan.restore_failed": true,
+	"plan.confirm_failed": true, "plan.auto_halted": true}
+
+func TestCoreKindsDeclared(t *testing.T) {
+	kinds := []string{"agent.start", "agent.health", "agent.step", "agent.step_result", "agent.step_refused", "evidence.blob",
+		"agent.config_applied", "agent.config_rejected", "agent.control_refused", "agent.module_crash", "controller.fact",
+		"agent.deadman_fired", "agent.deadman_recovered", "agent.deadman_recovery_error", "agent.enrolled", "agent.reenrolled",
+		"agent.silent", "agent.resumed", "spool.gap", "enroll.refused", "enroll.key_mismatch", "enroll.key_reuse",
+		"plan.step_timeout", "plan.bad_result", "plan.deadman_fired", "plan.rollback_failed", "plan.restore_failed",
+		"plan.confirm_failed", "plan.auto_halted"}
+	if len(kinds) != 29 {
+		t.Fatal("table has 29 core kinds")
+	}
+	for _, k := range kinds {
+		ty, ok := Lookup(k)
+		if !ok || ty.Schema != 1 || ty.Alert != coreAlert[k] {
+			t.Errorf("%s: %+v %v", k, ty, ok)
+		}
+	}
+}
+func TestSpoolGapShapeValidates(t *testing.T) {
+	// the spool builds gap records as a map; it must decode against SpoolGap
+	e := Event{Kind: "spool.gap", Schema: 1, Fields: map[string]any{"from": uint64(3), "to": uint64(9), "count": uint64(7), "class": "bulk"}}
+	if err := Validate(e); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run 'Core|SpoolGap' -v`. Expected: FAIL (`agent.start: {...} false`).
+- [ ] **Step 3: Implement** the structs and the `init` with the 29 `Declare` calls.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: declare the 29 core kinds"`
+
+---
+
+### Task 6: Agent core emitters through `event.New`
+
+**Files:**
+- Modify: `internal/agent/agent.go`, `exec.go`, `config.go`, `handlers.go`, `module.go`, `health.go`; `internal/spool/spool.go` (set `Schema: 1` on gap records)
+- Test: `internal/agent/core_events_test.go`
+
+**Interfaces:**
+- Consumes: `event.New`, `event.Validate`, the core structs (Task 5), `event.TelemetryGap` (Task 4).
+- Produces: every agent-side core event and `telemetry_gap` from `health` is built with `event.New` and validates.
+
+- [ ] **Step 1: Remove the skip:**
+
+```go
+func TestAgentCoreEventsValidate(t *testing.T) {
+	// Use the in-package test agent and controller of testutil_test.go: start the agent,
+	// apply a config, send one control the agent refuses (unsigned), make a test module
+	// crash once, wait for one health report.
+	// Then read every event the agent spooled and every event its bus published.
+	// want: for each event e of a declared kind, event.Validate(e) == nil;
+	// and at least one each of agent.start, agent.config_applied, agent.control_refused,
+	// agent.module_crash, agent.health was seen.
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run TestAgentCoreEventsValidate -v`. Expected: FAIL with `event: schema version not understood` (events carry schema 0).
+- [ ] **Step 3: Implement.** Replace each `event.Event{Kind: "agent.…", Fields: map…}` literal with `event.New(kind, Struct{…})`, keeping the priority the code sets today when it differs from the default. Then `grep -rn 'Fields\["' internal/ | grep -E '\.\((u?int|float)64\)'` for consumers of these kinds and switch each to the numeric helper its package already uses (for example `store.fieldUint`); `json.Number` is what the store hands out already.
+- [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: build core events with event.New"`
+
+---
+
+### Task 7: Module manifest validation and controller registry
+
+**Files:**
+- Modify: `internal/module/module.go` (`Validate`), `internal/module/registry.go`
+- Test: `internal/module/module_test.go`
+
+**Interfaces:**
+- Consumes: Task 1 types.
+- Produces: `(Manifest).Validate`, `Register`, `Registered`, `Lookup`, `Effective`.
+
+Validation rules: `Name` matches `^[a-z][a-z0-9_]{1,31}$`; `Sides` non-empty, each `agent` or `controller`, no duplicate; `OS` ⊆ {`linux`, `windows`}; `Privilege` ∈ {`root`, `user`, `none`}, and `none` only when `Sides` is exactly `[controller]`; each `Emits[i].Kind` is a common kind (`event.Kind*` constants), or starts with `Name + "."`, or is `agent.*`/`telemetry_gap` when `Name` is `health` or `exec` (the core modules); no `Consumes` entry is empty or contains `*`; every `Budget` field ≥ 0. Declaredness of `Emits` is not checked here (init order); the conformance suite checks it.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func good() Manifest {
+	return Manifest{Name: "demo", Sides: []Side{SideController}, Privilege: "none",
+		Emits: []event.Type{{Kind: "demo.found", Schema: 1}}, Consumes: []string{"conn"}}
+}
+func TestManifestValidate(t *testing.T) {
+	if err := good().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	bad := []func(*Manifest){
+		func(m *Manifest) { m.Name = "Demo" },
+		func(m *Manifest) { m.Sides = nil },
+		func(m *Manifest) { m.OS = []string{"darwin"} },
+		func(m *Manifest) { m.Privilege = "admin" },
+		func(m *Manifest) { m.Sides = []Side{SideAgent}; m.Privilege = "none" },
+		func(m *Manifest) { m.Emits = []event.Type{{Kind: "other.found", Schema: 1}} },
+		func(m *Manifest) { m.Emits = []event.Type{{Kind: "agent.health", Schema: 1}} },
+		func(m *Manifest) { m.Consumes = []string{"capture.*"} },
+		func(m *Manifest) { m.Budget.HeldMB = -1 },
+	}
+	for i, f := range bad {
+		m := good()
+		f(&m)
+		if m.Validate() == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	h := Manifest{Name: "health", Sides: []Side{SideAgent}, Privilege: "root", Emits: []event.Type{{Kind: "agent.health", Schema: 1}, {Kind: "telemetry_gap", Schema: 1}}}
+	if err := h.Validate(); err != nil {
+		t.Fatalf("core module: %v", err)
+	}
+}
+
+type regMod struct{ m Manifest }
+
+func (r regMod) Manifest() Manifest                     { return r.m }
+func (regMod) Start(ctx context.Context, _ Host) error { <-ctx.Done(); return nil }
+func (regMod) Health() Health                          { return Health{State: StateOK} }
+
+func TestRegistry(t *testing.T) {
+	m := good()
+	m.Name = "regtest"
+	m.Emits = []event.Type{{Kind: "regtest.x", Schema: 1}}
+	Register(regMod{m})
+	if got, ok := Lookup("regtest"); !ok || got.Manifest().Name != "regtest" {
+		t.Fatal("lookup")
+	}
+	names := []string{}
+	for _, r := range Registered() {
+		names = append(names, r.Manifest().Name)
+	}
+	if !slices.IsSorted(names) || !slices.Contains(names, "regtest") {
+		t.Fatalf("registered %v", names)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate accepted")
+		}
+	}()
+	Register(regMod{m})
+}
+func TestEffective(t *testing.T) {
+	tr, fa := true, false
+	cases := []struct {
+		host, block *bool
+		def, want   bool
+	}{{nil, nil, true, true}, {nil, nil, false, false}, {nil, &fa, true, false}, {nil, &tr, false, true}, {&fa, &tr, true, false}, {&tr, &fa, false, true}}
+	for i, c := range cases {
+		if Effective(c.host, c.block, c.def) != c.want {
+			t.Errorf("case %d", i)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/module/ -v`. Expected: FAIL with `panic: unimplemented: W1 Task 7`.
+- [ ] **Step 3: Implement** `Validate` (rules above, errors name the field), and the registry as a mutex-guarded map written only from `init`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/module/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "module: manifest validation and controller registry"`
+
+---
+
+### Task 8: Store reader, field equality and module tables
+
+**Files:**
+- Modify: `internal/store/query.go` (`Query.Fields`), `internal/store/reader.go`, `internal/store/migrations.go` (append `module_migrations`)
+- Test: `internal/store/reader_test.go`
+
+**Interfaces:**
+- Consumes: built `Store`, `Ingest`, `Events`.
+- Produces: `Reader`, `Query.Fields`, `ModuleDB` (`Migrate`, `Exec`, `Query`), `(*Store).ModuleDB(module string) ModuleDB`.
+
+Rules: a `Fields` key must match `^[a-z0-9_]{1,64}$` (it goes into a JSON path); values compare as text: `CAST(json_extract(fields, '$.'||key) AS TEXT) = ?`. `Migrate` keeps `module_migrations(module TEXT PRIMARY KEY, applied INTEGER NOT NULL)`, applies entries past `applied` in one transaction, and refuses a statement that creates or alters a table whose name does not start with `<module>_`. `Exec` refuses a statement whose `INSERT INTO`, `REPLACE INTO`, `UPDATE` or `DELETE FROM` target does not start with `<module>_`. `shortcut: table ownership checked by name prefix with a regexp, upgrade to a SQLite authorizer if a module needs dynamic SQL`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestQueryFieldEquality(t *testing.T) {
+	// store with agent "h1"; ingest two sealed events kind "k" with Fields {"host":"a","n":5} and {"host":"b","n":6}
+	// Events(ctx, Query{Kind: "k", Fields: map[string]string{"host": "a"}}) -> 1 event, Fields["host"]=="a"
+	// Events(ctx, Query{Kind: "k", Fields: map[string]string{"n": "6"}}) -> 1 event
+}
+func TestQueryFieldKeyValidated(t *testing.T) {
+	// Events(ctx, Query{Fields: map[string]string{"a') OR 1=1 --": "x"}}) -> non-nil error
+}
+func TestModuleDBMigrateOwnPrefix(t *testing.T) {
+	db := st.ModuleDB("deps")
+	if err := db.Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT)"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT)"}); err != nil {
+		t.Fatalf("second run must be a no-op: %v", err)
+	}
+	if err := st.ModuleDB("deps").Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT)", "CREATE TABLE edge(a TEXT)"}); err == nil {
+		t.Fatal("foreign table name accepted")
+	}
+}
+func TestModuleDBExecOwnTables(t *testing.T) {
+	db := st.ModuleDB("deps")
+	_ = db.Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT)"})
+	if _, err := db.Exec(ctx, "INSERT INTO deps_edge(a) VALUES (?)", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, "DELETE FROM events"); err == nil {
+		t.Fatal("write to a core table accepted")
+	}
+	rows, err := db.Query(ctx, "SELECT a FROM deps_edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/ -run 'Field|ModuleDB' -v`. Expected: FAIL (`unimplemented: W1 Task 8`, or `Fields` ignored).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "store: Reader, field equality, module tables"`
+
+---
+
+### Task 9: Scoped vault reader
+
+**Files:**
+- Modify: `internal/vault/reader.go`
+- Test: `internal/vault/reader_test.go`
+
+**Interfaces:**
+- Consumes: built `(*Vault).Get(name) (Secret, string, error)`, `ErrLocked`, `ErrNotFound`.
+- Produces: `Reader`, `Source`, `Scoped`, `ErrNotAllowed`.
+
+- [ ] **Step 1: Remove the skip:**
+
+```go
+func TestScoped(t *testing.T) {
+	// create and unlock a vault in t.TempDir() as vault_test.go does; put "a" and "b"
+	r := Scoped(v, []string{"a"})
+	if s, err := r.Get("a"); err != nil || s.String() == "" { // use the Secret accessor vault_test.go uses
+		t.Fatalf("a: %v", err)
+	}
+	if _, err := r.Get("b"); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("b: %v", err)
+	}
+	// lock v; r.Get("a") -> errors.Is(err, ErrLocked)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vault/ -run TestScoped -v`. Expected: FAIL (`unimplemented: W1 Task 9`).
+- [ ] **Step 3: Implement** `Scoped` as a small struct holding the source and a name set.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vault/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vault: scoped reader for modules"`
+
+---
+
+### Task 10: UI registrar
+
+**Files:**
+- Modify: `internal/ui/registrar.go`
+- Test: `internal/ui/registrar_test.go`
+
+**Interfaces:**
+- Consumes: built `(*Server).Handle` (authenticated, CSRF-checked, audited), the test login helpers of `ui_test.go`.
+- Produces: `(*Server).Registrar`, `Tiles`, `GridColumns`, `ModulePages`, `Discard`.
+
+Rules: `module` and `route` match `^[a-z0-9_]{1,32}$` and `^[a-z0-9_/-]{1,64}$` with no `..` (else panic, a programming error); `Page` registers `GET /m/<module>/<route>`, `Action` registers `POST /m/<module>/action/<name>`; both serve 404 while `enabled()` is false; `Tiles` and `GridColumns` skip disabled modules; a tile whose render fails shows its error text (escaped), never breaks the page. Register before serving.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestRegistrarPage(t *testing.T) {
+	on := true
+	// e := the test server env from ui_test.go
+	r := e.s.Registrar("demo", func() bool { return on })
+	r.Page("x", "Demo", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "hi") }))
+	// unauthenticated GET /m/demo/x -> not 200
+	// logged-in GET /m/demo/x -> 200, body "hi"
+	on = false
+	// logged-in GET /m/demo/x -> 404
+}
+func TestRegistrarActionNeedsCSRF(t *testing.T) {
+	r := e.s.Registrar("demo", func() bool { return true })
+	r.Action("go", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
+	// logged-in POST /m/demo/action/go without the CSRF token -> 403; with it -> 204
+}
+func TestRegistrarTiles(t *testing.T) {
+	on := true
+	r := e.s.Registrar("demo", func() bool { return on })
+	r.Tile("t", func(context.Context) (template.HTML, error) { return "<b>ok</b>", nil })
+	r.Tile("bad", func(context.Context) (template.HTML, error) { return "", errors.New("boom") })
+	tv := e.s.Tiles(context.Background())
+	// want 2 views; tv[i].HTML == "<b>ok</b>" for "t"; Err == "boom" for "bad"
+	on = false
+	if len(e.s.Tiles(context.Background())) != 0 {
+		t.Fatal("disabled module tile shown")
+	}
+}
+func TestRegistrarRejectsBadRoute(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("bad route accepted")
+		}
+	}()
+	e.s.Registrar("demo", func() bool { return true }).Page("../x", "x", http.NotFoundHandler())
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/ui/ -run Registrar -v`. Expected: FAIL (`unimplemented: W1 Task 10`).
+- [ ] **Step 3: Implement** a per-module registrar struct appending to server-held slices behind a mutex; handlers wrap with the `enabled` check and go through `s.Handle`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/ui/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "ui: module registrar (pages, actions, tiles, grid columns)"`
+
+---
+
+### Task 11: Manifest module blocks, host `modules:` and labels
+
+**Files:**
+- Modify: `internal/manifest/types.go` (`Manifest.Modules`, `Host.Modules`, `Host.Labels`), `internal/manifest/load.go` (read `modules/*.yml`), `internal/manifest/modules.go`, `internal/manifest/labels.go`, `manifest/schema/hosts.yml.schema.json`
+- Test: `internal/manifest/modules_test.go`, `internal/manifest/labels_test.go`
+
+**Interfaces:**
+- Consumes: built `Load`, `expandNode`, the strict decode in `load.go`.
+- Produces: `ModuleBlock`, `ModuleBlock.Decode`, `Manifest.Modules`, `Host.Modules`, `Host.Labels`, `(*Manifest).ModuleEnabled`, `ParseLabels`, `LabelExpr.Match`, `(*Manifest).HostsMatching`.
+
+Rules: `modules/` entries must be files named `^[a-z][a-z0-9_]*\.yml$` (anything else is a load error); each is template-expanded like the other files; `Enabled` is nil when the key is absent; `enabled`, `act_enabled` and `auto` are read from the YAML and the full text kept in `Raw`. `ModuleEnabled(host, module, def)` = `module.Effective(hostEntry, block.Enabled, def)` (import `internal/module`, which does not import `manifest`). Label grammar: identifiers `[a-z0-9_-]+`, `!`, `&&`, `||`, parentheses; precedence `!` > `&&` > `||`; at most 256 bytes.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestLoadModuleBlocks(t *testing.T) {
+	fsys := minimalManifestFS() // topology.yml + hosts.yml as load_test.go builds them, host "web1"
+	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nauto: [harden]\nlevel: 3\n")}
+	fsys["modules/other.yml"] = &fstest.MapFile{Data: []byte("level: 1\n")}
+	m, err := Load(fsys, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := m.Modules["demo"]
+	if b.Enabled == nil || *b.Enabled || !b.ActEnabled || !slices.Equal(b.Auto, []string{"harden"}) {
+		t.Fatalf("block %+v", b)
+	}
+	if m.Modules["other"].Enabled != nil {
+		t.Fatal("absent enabled must be nil")
+	}
+	var cfg struct {
+		module.Common `yaml:",inline"`
+		Level         int `yaml:"level"`
+	}
+	if err := b.Decode(&cfg); err != nil || cfg.Level != 3 || !cfg.ActEnabled {
+		t.Fatalf("decode %+v %v", cfg, err)
+	}
+	var strict struct {
+		Level int `yaml:"level"`
+	}
+	if b.Decode(&strict) == nil {
+		t.Fatal("unknown keys accepted")
+	}
+}
+func TestModuleBlockBadFileName(t *testing.T) {
+	fsys := minimalManifestFS()
+	fsys["modules/Demo.yaml"] = &fstest.MapFile{Data: []byte("{}")}
+	if _, err := Load(fsys, Options{}); err == nil {
+		t.Fatal("bad file name accepted")
+	}
+}
+func TestModuleEnabledPrecedence(t *testing.T) {
+	fsys := minimalManifestFS() // hosts.yml gives web1 `modules: {demo: true}` and `labels: [linux, web]`
+	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\n")}
+	m, _ := Load(fsys, Options{})
+	if !m.ModuleEnabled("web1", "demo", false) {
+		t.Fatal("host entry must win")
+	}
+	if m.ModuleEnabled("db1", "demo", true) {
+		t.Fatal("block false must beat default true")
+	}
+	if !m.ModuleEnabled("db1", "absent", true) {
+		t.Fatal("default applies without a block")
+	}
+}
+
+// labels_test.go
+func TestParseLabels(t *testing.T) {
+	cases := []struct {
+		expr   string
+		labels []string
+		want   bool
+	}{
+		{"linux && !workstation", []string{"linux", "server"}, true},
+		{"linux && !workstation", []string{"linux", "workstation"}, false},
+		{"(a || b) && c", []string{"b", "c"}, true},
+		{"a || b && c", []string{"a"}, true},
+		{"!a", nil, true},
+	}
+	for _, c := range cases {
+		e, err := ParseLabels(c.expr)
+		if err != nil || e.Match(c.labels) != c.want {
+			t.Errorf("%q %v: %v", c.expr, c.labels, err)
+		}
+	}
+	for _, bad := range []string{"", "a &&", "a b", "!(", "a & b", strings.Repeat("a", 257)} {
+		if _, err := ParseLabels(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/manifest/ -run 'Module|Labels' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (a small recursive-descent parser for labels). Add `modules` (object of booleans) and `labels` (array of strings) to `hosts.yml.schema.json`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "manifest: module blocks, host modules and labels, label expressions"`
+
+---
+
+### Task 12: `module.Common` in every agent settings block
+
+**Files:**
+- Modify: `internal/plan/agentconfig.go` (`ModuleLimits`, delete `DetectSettings.ActEnabled`, strict decode in `(*ConfigVerifier).Parse`, add `BlockFor`)
+- Modify: `internal/agent/mods/doc.go` (`spec`, `subSpec` take `rate float64`), every factory's `Section` in `internal/agent/mods/*.go` (enabled = block non-nil and `Enabled`), `internal/agent/mods/detect.go` (read `s.ActEnabled` from `Common`)
+- Modify: `internal/controller/genconfig.go` (every rendered block gets `Enabled: true`)
+- Test: `internal/plan/common_test.go`, `internal/agent/mods/enabled_test.go`
+
+**Interfaces:**
+- Consumes: `module.Common` (Task 1).
+- Produces: `plan.ModuleLimits{module.Common; RatePerSec float64; Burst int}`; `plan.BlockFor(cfg, name) (any, bool)` (stub from Task 1); agent config bodies with unknown fields are refused.
+
+- [ ] **Step 1: Write the failing tests** (Task 1 did not, because they need the `ModuleLimits` change):
+
+```go
+// internal/plan/common_test.go
+func TestModuleLimitsCarriesCommon(t *testing.T) {
+	b, _ := json.Marshal(NetSettings{ModuleLimits: ModuleLimits{Common: module.Common{Enabled: true}}})
+	if !bytes.Contains(b, []byte(`"enabled":true`)) || !bytes.Contains(b, []byte(`"act_enabled":false`)) {
+		t.Fatalf("%s", b)
+	}
+}
+func TestConfigParseRejectsUnknownField(t *testing.T) {
+	// build the canonical body of a valid AgentConfig for host "h1", then add the key "x_typo": 1
+	// inside modules.net; sign it with configSigningBytes and an ed25519 key; wrap as *link.Config
+	// v := &ConfigVerifier{Key: pub, HostID: "h1", Store: <mem store as agentconfig_test.go uses>}
+	// v.Parse(w) -> non-nil error mentioning "x_typo"
+}
+func TestBlockFor(t *testing.T) {
+	cfg := &AgentConfig{Modules: ModuleSettings{Net: &NetSettings{}}}
+	if b, ok := BlockFor(cfg, "net"); !ok || b.(*NetSettings) == nil {
+		t.Fatal("net")
+	}
+	if b, ok := BlockFor(cfg, "audit"); !ok || b.(*AuditSettings) != nil {
+		t.Fatal("absent block must be a typed nil")
+	}
+	if _, ok := BlockFor(cfg, "nope"); ok {
+		t.Fatal("unknown module")
+	}
+}
+
+// internal/agent/mods/enabled_test.go
+func TestSectionHonoursEnabled(t *testing.T) {
+	// for each registered factory except "health": a config whose block for it is present with
+	// Enabled false -> Section reports enabled == false; with Enabled true -> enabled == true
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/ ./internal/agent/mods/ -run 'Common|Unknown|BlockFor|Enabled' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `BlockFor` finds the `ModuleSettings` field whose json tag name equals `name` by reflection. `Parse` decodes the body with `DisallowUnknownFields`. `health` stays on when its block is nil (core module). Update existing tests that build settings literals.
+- [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plan: module.Common in every agent settings block; strict config decode"`
+
+---
+
+### Task 13: Agent factory manifest, health reporter, kind-filtered subscribe
+
+**Files:**
+- Modify: `internal/agent/registry.go` (`Factory.Manifest`, `RegisterFactory` validation, `Env` carries the module name and `Consumes`, `Subscribe(buf, kinds...)`), `internal/agent/module.go` (`HealthReporter`, `(*Supervisor).Health`), `internal/agent/config.go` (`reconcile` sets the per-factory `Env` fields)
+- Test: `internal/agent/contract_test.go`
+
+**Interfaces:**
+- Consumes: `module.Manifest`, `module.Health` (Task 1), `(Manifest).Validate` (Task 7).
+- Produces: `Factory.Manifest`; `HealthReporter`; `(*Supervisor).Health(name) (module.Health, bool)`; `Env.Subscribe(buf int, kinds ...string)`.
+
+Rules: `RegisterFactory` panics when `Manifest.Name` is set and differs from `Name` or fails `Validate`. Supervisor state mapping: `ok`→`ok`, `starting`→`degraded` (Detail `starting`), `restarting`→`restarting`, `over_budget`→`over_budget`, `stopped`→`disabled`. `Usage.Events` = `Emitted`, `Usage.Dropped` = `RateDropped + SpoolDrops`. With a `HealthReporter`, its `State` wins unless the supervisor says `restarting` or `over_budget`; its `Detail`, `Gaps`, `Info`, `CPUMillis`, `HeldBytes`, `BytesOut` are copied. `Subscribe` with no kinds delivers every kind (pre-contract modules); with kinds, only those; a kind outside the factory's `Manifest.Consumes` (when the manifest is set) is dropped from the filter and logged once.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+type hrMod struct{}
+
+func (hrMod) Name() string                                   { return "hr" }
+func (hrMod) Start(ctx context.Context, emit Emit) error     { <-ctx.Done(); return nil }
+func (hrMod) Health() module.Health {
+	return module.Health{State: module.StateDegraded, Gaps: []module.Gap{{What: "x", Why: "y"}}, Info: map[string]string{"rules_hash": "abc"}}
+}
+
+func TestSupervisorHealthMergesReporter(t *testing.T) {
+	s := NewSupervisor(SupervisorOptions{Emit: func(event.Event) error { return nil }})
+	_ = s.Add(ModuleSpec{Module: hrMod{}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.Run(ctx)
+	// poll up to 2 s: h, ok := s.Health("hr")
+	// want ok, h.State == module.StateDegraded, h.Info["rules_hash"] == "abc", len(h.Gaps) == 1
+}
+func TestRegisterFactoryValidatesManifest(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("name mismatch accepted")
+		}
+	}()
+	RegisterFactory(Factory{Name: "zz1", Manifest: module.Manifest{Name: "zz2", Sides: []module.Side{module.SideAgent}, Privilege: "root"},
+		Section: func(*plan.AgentConfig) (string, bool) { return "", false }, Build: func(Env, *plan.AgentConfig) (ModuleSpec, error) { return ModuleSpec{}, nil }})
+}
+func TestSubscribeKindFilter(t *testing.T) {
+	// build a test agent (testutil_test.go); env := agent env for a factory whose Manifest.Consumes = ["k1"]
+	// ch, stop := env.Subscribe(8, "k1", "k2")
+	// publish events of kind k1, k2, k3
+	// want: ch yields exactly one event, kind k1
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run 'Health|RegisterFactory|Subscribe' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. Existing callers `env.Subscribe(1024)` compile unchanged.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: factory manifests, HealthReporter, kind-filtered subscribe"`
+
+---
+
+### Task 14: Heartbeat health blocks and `hello` manifests
+
+**Files:**
+- Modify: `internal/link/message.go` (`Heartbeat.Health`, bounds in `Validate`), `internal/agent/agent.go` (`heartbeat` fills `Health`; `hello` `Caps["modules"]`), `internal/controller/agent.go` (keep the latest per agent), new `internal/controller/health.go` (`AgentHealth`)
+- Test: `internal/link/heartbeat_test.go`, `internal/controller/health_test.go`
+
+**Interfaces:**
+- Consumes: `(*Supervisor).Health` (Task 13); config status (`ConfigStatus.Modules`).
+- Produces: `link.Heartbeat.Health map[string]module.Health` (`json:"health,omitempty"`); `(*Controller).AgentHealth(host) map[string]module.Health`; `hello` `Caps["modules"]` = the `[]module.Manifest` of factories with a manifest.
+
+Bounds in `Validate`: at most 256 entries; `Detail` ≤ 1024 bytes; ≤ 32 `Gaps`, each `What`/`Why` ≤ 256; ≤ 32 `Info` entries, keys ≤ 64 and values ≤ 256 bytes. A module whose config status is `unavailable: <why>` appears with `State: unavailable` and `Gaps: [{What: <name>, Why: <why>}]`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// internal/link/heartbeat_test.go
+func TestHeartbeatHealthBounds(t *testing.T) {
+	ok := &Heartbeat{HostClock: time.Now(), Health: map[string]module.Health{"a": {State: module.StateOK}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	gaps := make([]module.Gap, 33)
+	bad := &Heartbeat{HostClock: time.Now(), Health: map[string]module.Health{"a": {State: module.StateOK, Gaps: gaps}}}
+	if bad.Validate() == nil {
+		t.Fatal("33 gaps accepted")
+	}
+}
+// internal/controller/health_test.go
+func TestAgentHealthFromHeartbeat(t *testing.T) {
+	// with the e2e helpers (newCtl and a real agent): register a factory whose module implements
+	// HealthReporter with Info {"rules_hash": "abc"}; enable it in the config; wait for two heartbeats
+	// want: c.AgentHealth(host)[name].Info["rules_hash"] == "abc"
+	// and an unavailable module (Build returns ErrUnavailable) shows State unavailable with one Gap
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/link/ ./internal/controller/ -run 'HeartbeatHealth|AgentHealth' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified; keep `Heartbeat.Modules` (the config status key `config` and the state strings) unchanged.
+- [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "link: per-module health in heartbeats; module manifests in hello"`
+
+---
+
+### Task 15: Agent harness
+
+**Files:**
+- Modify: `internal/agent/harness.go`; `internal/agent/agent.go` (`emit` writes to a harness sink when the agent has no spool)
+- Test: `internal/agent/harness_test.go`
+
+**Interfaces:**
+- Consumes: `reconcile`, `Supervisor`, `publish`, `subscribe`, `kept` (built); `Supervisor.Health` (Task 13).
+- Produces: `HarnessOptions`, `Harness`, `NewHarness`, `Apply`, `Run`, `Publish`, `Emitted`, `Health`, `Kept` (Task 1 signatures). `Fact` is a stub until Task 31.
+
+The harness is a real `*Agent` built without link, spool or identity: its supervisor's emit appends to an in-memory list (bounded to 100 000 events, oldest dropped) after calling `EmitErr`; `Apply` runs the real `reconcile` over `Factories` only; `Health` returns the supervisor health, or for a module the config status marks `unavailable: why`, `State: unavailable` with that gap.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func harnessFactory(build func(Env, *plan.AgentConfig) (ModuleSpec, error)) Factory {
+	return Factory{Name: "hx", Section: func(*plan.AgentConfig) (string, bool) { return "v1", true }, Build: build}
+}
+
+type oneShot struct{}
+
+func (oneShot) Name() string { return "hx" }
+func (oneShot) Start(ctx context.Context, emit Emit) error {
+	_ = emit(event.Event{Kind: "hx.x"})
+	<-ctx.Done()
+	return nil
+}
+
+func TestHarnessRunsFactory(t *testing.T) {
+	h, err := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {
+		return ModuleSpec{Module: oneShot{}}, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+	h.Apply(&plan.AgentConfig{Host: "h1"})
+	// poll up to 2 s: len(h.Emitted()) == 1 && h.Emitted()[0].Kind == "hx.x"; h.Health("hx").State == module.StateOK
+}
+func TestHarnessUnavailable(t *testing.T) {
+	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {
+		return ModuleSpec{}, fmt.Errorf("%w: needs linux", ErrUnavailable)
+	})}})
+	h.Apply(&plan.AgentConfig{Host: "h1"})
+	hl, ok := h.Health("hx")
+	if !ok || hl.State != module.StateUnavailable || len(hl.Gaps) != 1 {
+		t.Fatalf("%+v %v", hl, ok)
+	}
+}
+func TestHarnessEmitErr(t *testing.T) {
+	got := make(chan error, 1)
+	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), EmitErr: func() error { return errors.New("link down") },
+		Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {
+			return ModuleSpec{Module: emitOnce{got}}, nil // emitOnce sends emit's error on got
+		})}})
+	// run, apply; want <-got != nil within 2 s
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run Harness -v`. Expected: FAIL (`unimplemented: W1 Task 15`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: test harness over the real reconciler and supervisor"`
+
+---
+
+### Task 16: Controller-origin event chain
+
+**Files:**
+- Create: `internal/controller/chain.go`
+- Modify: `internal/controller/controller.go` (`New` ensures the `controller` agent row exists, keyed by the controller identity's public key), `internal/controller/alerts.go` (ingest hook: alert rows for declared alert-class kinds), the `c.alert` function in `internal/controller/agent.go` (also emits declared kinds)
+- Test: `internal/controller/chain_test.go`
+
+**Interfaces:**
+- Consumes: `event.Lookup`, `event.Validate`; `(*store.Store).Ingest`, `Latest`, `InsertAlertOnce` via `IngestTx`.
+- Produces: `(*Controller).EmitController(ctx, e) (event.Event, error)`.
+
+Rules: `EmitController` sets `Agent = "controller"`, `Time = now` when zero, requires `event.Validate(e) == nil`, seals from the stored head of agent `controller` and ingests, under one mutex. The ingest hook adds an alert row (rule = kind, host = `fields.host` when present else the agent) for an event whose kind is declared with `Alert: true` and whose priority is `PriorityHigh` or `PriorityCritical`; `detect.alert` keeps its existing path (it is declared by W4). `c.alert(host, kind, detail)` also emits an event of `kind` with fields `{host, detail}` when `event.Lookup(kind)` succeeds; undeclared kinds (`store.chain_error`, `config.generate_failed`) stay ring-only.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestEmitControllerChain(t *testing.T) {
+	c := newTestController(t) // controller.New with DataDir t.TempDir(), AgentListen "127.0.0.1:0", UIListen "off"
+	e1, err := c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, _ := c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h2"}))
+	if e1.Agent != "controller" || e1.Seq != 1 || e2.Seq != 2 || e2.PrevHash != e1.Hash {
+		t.Fatalf("%+v %+v", e1, e2)
+	}
+}
+func TestEmitControllerAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	c := newTestControllerAt(t, dir)
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	c.Close()
+	c = newTestControllerAt(t, dir)
+	e, err := c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	if err != nil || e.Seq != 2 {
+		t.Fatalf("seq %d err %v", e.Seq, err)
+	}
+}
+func TestEmitControllerAlertRow(t *testing.T) {
+	c := newTestController(t)
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.silent", event.AgentSilent{Host: "h1", Detail: "no message"}))
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	// want: exactly one alert row (list rows with the store method alerts.go uses), rule "agent.silent", host "h1"
+}
+func TestEmitControllerRejectsUndeclared(t *testing.T) {
+	c := newTestController(t)
+	if _, err := c.EmitController(ctx, event.Event{Kind: "nope"}); !errors.Is(err, event.ErrUndeclared) {
+		t.Fatalf("got %v", err)
+	}
+}
+func TestDeclaredAlertBecomesEvent(t *testing.T) {
+	c := newTestController(t)
+	c.alert("h1", "agent.silent", "no message for 30s")
+	// want: c.st.Latest(ctx, "controller", "agent.silent") returns an event with Fields["host"] == "h1"
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run 'EmitController|DeclaredAlert' -v`. Expected: FAIL (`undefined: EmitController` until Task 1's stub, then `unimplemented`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: controller-origin event chain; alert rows from the kind flag"`
+
+---
+
+### Task 17: Controller `Host` (config, query, tables, emit, secrets, UI, logger)
+
+**Files:**
+- Modify: `internal/controller/host.go`
+- Test: `internal/controller/host_test.go`
+
+**Interfaces:**
+- Consumes: `manifest.ModuleBlock` (Task 11), `store.Reader`/`ModuleDB` (Task 8), `vault.Scoped` (Task 9), `(*ui.Server).Registrar`/`ui.Discard` (Task 10), `EmitController` (Task 16).
+- Produces: `type moduleHost struct` implementing every `module.Host` method except `Subscribe`, `Propose`, `RunReadOnly`, `RunStanding`, `RunAuto`, `Control` (later tasks); `func (c *Controller) hostFor(m module.ControllerModule) *moduleHost`; `var _ module.Host = (*moduleHost)(nil)`.
+
+Rules: `Config` returns `module.ErrNoConfig` without a block, else `block.Decode(v)`. `Tables` errors unless `Manifest().Tables` is non-empty, else `c.st.ModuleDB(name)`. `Emit` refuses (`module.ErrNotInScope`) a kind not in `Manifest().Emits`, forces `Agent = "controller"`, then `EmitController`. `Secrets(names...)` refuses (`vault.ErrNotAllowed`) a name that is not a string value somewhere in the block's YAML, else `vault.Scoped(source, names)` over the controller's vault (`vault.ErrLocked` when none or locked). `UI` is the server's registrar for the module (enabled = the module is running) or `ui.Discard` when the UI is off. `Logger` is the controller logger with `module=<name>`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func init() {
+	event.Declare(event.Type{Kind: "ctltest.found", Schema: 1, Priority: event.PriorityNormal, Fields: struct {
+		X string `json:"x"`
+	}{}})
+}
+
+type ctlMod struct{ m module.Manifest }
+
+func (c ctlMod) Manifest() module.Manifest                    { return c.m }
+func (ctlMod) Start(ctx context.Context, _ module.Host) error { <-ctx.Done(); return nil }
+func (ctlMod) Health() module.Health                          { return module.Health{State: module.StateOK} }
+
+func testMod() ctlMod {
+	return ctlMod{module.Manifest{Name: "ctltest", Sides: []module.Side{module.SideController}, Privilege: "none",
+		Emits: []event.Type{{Kind: "ctltest.found", Schema: 1}}, Consumes: []string{"agent.resumed"}}}
+}
+
+func TestHostConfigStrict(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\nlevel: 2\ndb: ecom.db\n"})
+	h := c.hostFor(testMod())
+	var cfg struct {
+		module.Common `yaml:",inline"`
+		Level         int    `yaml:"level"`
+		DB            string `yaml:"db"`
+	}
+	if err := h.Config(&cfg); err != nil || cfg.Level != 2 {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	var strict struct {
+		Level int `yaml:"level"`
+	}
+	if h.Config(&strict) == nil {
+		t.Fatal("unknown keys accepted")
+	}
+	other := testMod()
+	other.m.Name = "nocfg"
+	if err := c.hostFor(other).Config(&strict); !errors.Is(err, module.ErrNoConfig) {
+		t.Fatalf("got %v", err)
+	}
+}
+func TestHostEmitOnlyManifestKinds(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil)
+	h := c.hostFor(testMod())
+	e, _ := event.New("ctltest.found", struct {
+		X string `json:"x"`
+	}{"y"})
+	e.Agent = "spoofed"
+	if err := h.Emit(e); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := c.st.Latest(ctx, "controller", "ctltest.found")
+	if got.Agent != "controller" {
+		t.Fatal("agent not forced")
+	}
+	r, _ := event.New("agent.resumed", event.AgentResumed{Host: "h"})
+	if err := h.Emit(r); !errors.Is(err, module.ErrNotInScope) {
+		t.Fatalf("got %v", err)
+	}
+}
+func TestHostSecretsScoped(t *testing.T) {
+	// controller with an unlocked test vault holding "ecom.db" and "other"; block as in TestHostConfigStrict
+	// h.Secrets("ecom.db") -> reader; Get("ecom.db") ok
+	// h.Secrets("other") -> errors.Is(err, vault.ErrNotAllowed)
+}
+func TestHostTablesNeedDeclaration(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil)
+	if _, err := c.hostFor(testMod()).Tables(); err == nil {
+		t.Fatal("tables without declaration")
+	}
+	m := testMod()
+	m.m.Tables = []string{"ctltest_rows"}
+	if _, err := c.hostFor(m).Tables(); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run TestHost -v`. Expected: FAIL (`unimplemented: W1 Task 17`).
+- [ ] **Step 3: Implement** as specified; the unimplemented methods keep their Task 1 stubs.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: module Host (config, query, tables, emit, secrets, ui)"`
+
+---
+
+### Task 18: `Host.Subscribe` over committed events
+
+**Files:**
+- Create: `internal/controller/bus.go`
+- Modify: `internal/controller/alerts.go` (the ingest hook registers `tx.OnCommit` to publish the batch), `internal/controller/host.go` (`Subscribe`)
+- Test: `internal/controller/bus_test.go`
+
+**Interfaces:**
+- Consumes: `store.IngestTx.OnCommit` (built), `moduleHost` (Task 17).
+- Produces: `(*moduleHost).Subscribe(kinds, buf)`; an unexported `c.bus` with `publish([]event.Event)` and a per-subscriber drop counter readable as `c.bus.dropped(module string) uint64`.
+
+Rules: delivered only after the store commit; channel capacity `buf` (1..65536, default 1024); a full channel drops and counts, never blocks ingest; kinds outside `Manifest().Consumes` are removed from the filter and logged; the cancel function closes nothing the publisher may still send on (remove under the lock, then stop).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestHostSubscribeCommitted(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil)
+	h := c.hostFor(testMod()) // Consumes ["agent.resumed"]
+	ch, stop := h.Subscribe([]string{"agent.resumed", "agent.silent"}, 8)
+	defer stop()
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.silent", event.AgentSilent{Host: "h1"}))
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	select {
+	case e := <-ch:
+		if e.Kind != "agent.resumed" {
+			t.Fatalf("got %s (agent.silent is not in Consumes)", e.Kind)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event")
+	}
+}
+func TestHostSubscribeSlowConsumer(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil)
+	_, stop := c.hostFor(testMod()).Subscribe([]string{"agent.resumed"}, 1)
+	defer stop()
+	start := time.Now()
+	for i := 0; i < 50; i++ {
+		_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	}
+	if time.Since(start) > 5*time.Second || c.bus.dropped("ctltest") == 0 {
+		t.Fatalf("blocked or not counted: %v %d", time.Since(start), c.bus.dropped("ctltest"))
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run TestHostSubscribe -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: committed-event bus for controller modules"`
+
+---
+
+### Task 19: Controller module runner
+
+**Files:**
+- Modify: `internal/controller/modules.go`; `cmd/phylax/serve.go` (run `c.RunModules(ctx, module.Registered())` in a goroutine)
+- Test: `internal/controller/modules_test.go`
+
+**Interfaces:**
+- Consumes: `module.Registered`, `(*manifest.Manifest).ModuleEnabled`, `hostFor` (Task 17), `link.Backoff`.
+- Produces: `(*Controller).RunModules(ctx, mods) error`, `(*Controller).ModuleHealth() map[string]module.Health`.
+
+Rules: enablement is `ModuleEnabled(<controller host from topology>, name, Manifest().Default)`; a disabled module never starts and reports `disabled`. An enabled module runs in a goroutine with panic recovery and restart backoff 1 s to 60 s, reset after 30 s of stable running (the agent supervisor's numbers); `ErrNoConfig` from `Start` means `unavailable` with gap `{config, modules/<name>.yml missing}` and no restart; while running, `ModuleHealth` returns the module's `Health()` with `Usage.Dropped` set from the bus drop counter; during backoff `restarting`. `RunModules` returns after `ctx` ends and every module goroutine has exited (each gets 5 s; one that does not exit is reported and abandoned).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+type flakyMod struct {
+	ctlMod
+	starts *atomic.Int32
+}
+
+func (f flakyMod) Start(ctx context.Context, h module.Host) error {
+	if f.starts.Add(1) == 1 {
+		panic("first start fails")
+	}
+	<-ctx.Done()
+	return nil
+}
+
+func TestRunModulesEnablement(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n", "modules/offmod.yml": "enabled: false\n"})
+	off := testMod()
+	off.m.Name = "offmod"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.RunModules(ctx, []module.ControllerModule{testMod(), off}) }()
+	// poll up to 2 s: c.ModuleHealth()["ctltest"].State == module.StateOK and ["offmod"].State == module.StateDisabled
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("RunModules did not return")
+	}
+}
+func TestRunModulesRestartsAfterPanic(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	c.modBackoffMin = 10 * time.Millisecond // unexported knob for tests
+	f := flakyMod{testMod(), new(atomic.Int32)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.RunModules(ctx, []module.ControllerModule{f})
+	// poll up to 3 s: f.starts.Load() == 2 && c.ModuleHealth()["ctltest"].State == module.StateOK
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run RunModules -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: module runner with restart backoff and health"`
+
+---
+
+### Task 20: Analysis worker
+
+**Files:**
+- Create: `internal/controller/analysis.go`
+- Modify: `internal/controller/modules.go` (start the worker for modules implementing `module.AnalyzerProvider`)
+- Test: `internal/controller/analysis_test.go`
+
+**Interfaces:**
+- Consumes: `moduleHost.Subscribe` (Task 18), `moduleHost.Emit` (Task 17), `module.Analyzer`.
+- Produces: analysers run on trigger (committed `Inputs` events, debounced 1 s) and every `Every`; each run under `context.WithTimeout(ctx, c.analysisDeadline)` (default 10 s); outputs emitted through the module's `Host.Emit`; a run that errors or overruns emits nothing and adds the gap `{analyser <name>, <error or "run exceeded 10s">}` to the module's health until the next good run.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+type anaMod struct {
+	ctlMod
+	as []module.Analyzer
+}
+
+func (a anaMod) Analyzers() []module.Analyzer { return a.as }
+
+func TestAnalyzerTriggeredByInput(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	m := anaMod{testMod(), []module.Analyzer{{Name: "count", Inputs: []string{"agent.resumed"},
+		Run: func(ctx context.Context, q store.Reader, now time.Time) ([]event.Event, error) {
+			evs, err := q.Events(ctx, store.Query{Kind: "agent.resumed"})
+			if err != nil {
+				return nil, err
+			}
+			out, err := event.New("ctltest.found", struct {
+				X string `json:"x"`
+			}{fmt.Sprint(len(evs))})
+			return []event.Event{out}, err
+		}}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.RunModules(ctx, []module.ControllerModule{m})
+	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+	// poll up to 4 s: c.st.Latest(ctx, "controller", "ctltest.found") has Fields["x"] == "1"
+}
+func TestAnalyzerDeadline(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	c.analysisDeadline = 100 * time.Millisecond
+	m := anaMod{testMod(), []module.Analyzer{{Name: "slow", Every: 50 * time.Millisecond,
+		Run: func(ctx context.Context, _ store.Reader, _ time.Time) ([]event.Event, error) { <-ctx.Done(); return nil, ctx.Err() }}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.RunModules(ctx, []module.ControllerModule{m})
+	// poll up to 2 s: some gap in c.ModuleHealth()["ctltest"].Gaps has What == "analyser slow"
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run Analyzer -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. `shortcut: per-module analyser CPU budget is the run deadline only, upgrade when a lab run shows an analyser hogging the worker`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: analysis worker with per-run deadline"`
+
+---
+
+### Task 21: Lint registry and `SS000`
+
+**Files:**
+- Modify: `internal/plan/lint/lint.go`
+- Create: `internal/plan/lint/ss000.go`
+- Test: `internal/plan/lint/lint_test.go`
+
+**Interfaces:**
+- Consumes: `plan.Node`, `plan.Plan`, `plan.ApprovalClass` (Task 1); `actions.Registry.Get`, `Spec().Validate(params)`, `Action.Touches`.
+- Produces: `Register`, `Rules`, `Run`, `Finding`, `Ctx`, `Rule`; rule `SS000` registered from `init`.
+
+`SS000` applies when `Ctx.Class` is `auto_readonly` or `auto` (no finding for `click` or `standing`). For `auto_readonly`, a node passes only if it is not a gate, its action exists, `Spec().ReadOnly`, `Risk == RiskNone`, `Touches(params)` is empty and the action is not `host.exec`. For `auto`, a node is refused if its action is unknown, `host.exec`, of risk `destructive`, or in the click-only set `proc.kill_tree`, `ad.account.krbtgt_reset`, `palo.revert`, `backup.restore` (the set is a package variable `ClickOnly`). Finding messages name the condition.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func node(id, action string, params map[string]any) plan.Node {
+	return plan.Node{ID: id, Action: action, Target: "h1", Params: params}
+}
+func TestRegisterRejectsBadAndDuplicate(t *testing.T) {
+	for _, id := range []string{"X1", "ss001", "SS0001", "SS000"} { // SS000 is already registered
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s accepted", id)
+				}
+			}()
+			Register(Rule{ID: id, Check: func(plan.Node, Ctx) []Finding { return nil }})
+		}()
+	}
+}
+func TestSS000ReadOnly(t *testing.T) {
+	reg := actions.Core()
+	ro := plan.Plan{Nodes: []plan.Node{node("p", "net.tcp_probe", /* params net.tcp_probe's Spec declares, e.g. */ map[string]any{"host": "127.0.0.1", "port": 22})}}
+	if f := Run(ro, Ctx{Class: plan.ClassAutoReadOnly, Actions: reg}); len(f) != 0 {
+		t.Fatalf("read-only plan refused: %v", f)
+	}
+	w := plan.Plan{Nodes: []plan.Node{node("w", "file.write", map[string]any{"path": "/tmp/x", "content": "y"})}}
+	f := Run(w, Ctx{Class: plan.ClassAutoReadOnly, Actions: reg})
+	if len(f) != 1 || f[0].Rule != "SS000" || f[0].Node != "w" {
+		t.Fatalf("write not refused: %v", f)
+	}
+	if len(Run(w, Ctx{Class: plan.ClassClick, Actions: reg})) != 0 {
+		t.Fatal("SS000 must not apply to click plans")
+	}
+}
+func TestSS000AutoRefusesClickOnly(t *testing.T) {
+	reg := actions.Core()
+	p := plan.Plan{Nodes: []plan.Node{node("x", "host.exec", map[string]any{"argv": []any{"/bin/true"}})}}
+	if f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg}); len(f) == 0 {
+		t.Fatal("host.exec allowed in an auto plan")
+	}
+}
+func TestRulesSorted(t *testing.T) {
+	ids := []string{}
+	for _, r := range Rules() {
+		ids = append(ids, r.ID)
+	}
+	if !slices.IsSorted(ids) || !slices.Contains(ids, "SS000") {
+		t.Fatal(ids)
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/lint/ -v`. Expected: FAIL (`unimplemented: W1 Task 21`).
+- [ ] **Step 3: Implement** as specified (params for the test actions: read their `Spec().Params` and use valid values).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/lint/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "lint: rule registry and SS000"`
+
+---
+
+### Task 22: Approval class on plans and steps; template parameters
+
+**Files:**
+- Modify: `internal/plan/plan.go` (`Plan.Class`, `Module`, `Template`, `Approver`), `internal/plan/step.go` (`StepBody.Class`; `Signer.Issue` copies the plan's class), `internal/plan/template.go` (`ExpandTemplate`), `internal/controller/plantemplates.go` (accept `module:`; add `LoadModuleTemplate`)
+- Test: `internal/plan/template_test.go`, `internal/plan/class_test.go`, `internal/controller/plantemplates_module_test.go`
+
+**Interfaces:**
+- Consumes: built `Plan`, `Node`, `StepBody`, `Signer`, `Verifier`, `ParseTemplate`, `LoadTemplate`.
+- Produces: `Plan.Class/Module/Template/Approver`; `StepBody.Class`; `ExpandTemplate(p, params) (Plan, error)`; `func LoadModuleTemplate(plansRoot, mod, name string) (plan.Plan, error)` in `internal/controller`.
+
+`ExpandTemplate` replaces `${name}` (name `^[a-z][a-z0-9_]{0,31}$`) in every node's `Target` and in every string inside `Params` (recursing into maps and slices); errors on a placeholder without a parameter, on a parameter that no placeholder uses (except the reserved `trigger`), and on a parameter value containing `${`. `LoadModuleTemplate` loads from `plansRoot/<mod>/` and errors unless the template's `module:` equals `mod`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// internal/plan/template_test.go
+func TestExpandTemplate(t *testing.T) {
+	p := Plan{ID: "t", Nodes: []Node{{ID: "a", Action: "file.hash", Target: "${host}", Params: map[string]any{"path": "/srv/${f}", "list": []any{"${f}", 3}}}}}
+	got, err := ExpandTemplate(p, map[string]string{"host": "h1", "f": "x", "trigger": "h1:7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := got.Nodes[0]
+	if n.Target != "h1" || n.Params["path"] != "/srv/x" || n.Params["list"].([]any)[0] != "x" {
+		t.Fatalf("%+v", n)
+	}
+	if p.Nodes[0].Target != "${host}" {
+		t.Fatal("input plan modified")
+	}
+	for i, params := range []map[string]string{{"host": "h1"}, {"host": "h1", "f": "x", "extra": "1"}, {"host": "h1", "f": "${x}"}} {
+		if _, err := ExpandTemplate(p, params); err == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+}
+// internal/plan/class_test.go
+func TestStepSignatureCoversClass(t *testing.T) {
+	// issue a step with the test signer of step_test.go for a plan with Class: ClassAuto
+	// want: step.Class == ClassAuto; Verify ok
+	// set step.Class = ClassClick; Verify -> error
+}
+// internal/controller/plantemplates_module_test.go
+func TestLoadModuleTemplateChecksModule(t *testing.T) {
+	root := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(root, "demo"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "demo", "ok.yml"), []byte("id: ok\nmodule: demo\non_failure: stop_dependents\nnodes: []\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "demo", "bad.yml"), []byte("id: bad\nmodule: other\non_failure: stop_dependents\nnodes: []\n"), 0o644)
+	if p, err := LoadModuleTemplate(root, "demo", "ok"); err != nil || p.Module != "demo" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if _, err := LoadModuleTemplate(root, "demo", "bad"); err == nil {
+		t.Fatal("foreign module accepted")
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/ ./internal/controller/ -run 'Expand|Class|ModuleTemplate' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. Adding `Class` to `StepBody` changes the signed bytes of new steps only.
+- [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plan: approval class on plans and steps; template parameters"`
+
+---
+
+### Task 23: `RunReadOnly`
+
+**Files:**
+- Create: `internal/controller/approvals.go`
+- Modify: `internal/controller/host.go` (`RunReadOnly` delegates with the module name)
+- Test: `internal/controller/approvals_test.go`
+
+**Interfaces:**
+- Consumes: `LoadModuleTemplate`, `ExpandTemplate` (Task 22), `lint.Run` (Task 21), built `CreatePlan`, `ApprovePlan`, `Apply`.
+- Produces: `(*Controller).RunReadOnly(ctx, mod, template, params) (string, error)`; `(*moduleHost).RunReadOnly`.
+
+Steps inside: load and expand; set `Class = ClassAutoReadOnly`, `Module`, `Template`, `Approver = "auto_readonly:" + mod`; id from `PlanIDFor`; `lint.Run` with `Ctx{Manifest, Query: c.st, Class, Actions: c.reg}`; any finding → error listing every finding, nothing stored; else `CreatePlan`, `ApprovePlan(id, Approver)`, `Apply`. Templates live under `Config.PlansPath`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestRunReadOnlyStartsPlan(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{"ctltest/probe.yml": "id: probe\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: p, action: net.tcp_probe, target: '${host}', params: {host: 127.0.0.1, port: 22}}\n"})
+	id, err := c.RunReadOnly(ctx, "ctltest", "probe", map[string]string{"host": "h1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := c.PlanStatus(id)
+	// want: the stored plan has Class auto_readonly, Approver "auto_readonly:ctltest", and is approved (st shows it)
+	_ = st
+}
+func TestRunReadOnlyRefusesWrite(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{"ctltest/w.yml": "id: w\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: w, action: file.write, target: h1, params: {path: /tmp/x, content: y}}\n"})
+	_, err := c.RunReadOnly(ctx, "ctltest", "w", nil)
+	if err == nil || !strings.Contains(err.Error(), "SS000") {
+		t.Fatalf("got %v", err)
+	}
+	// want: no plan stored (c.StoredPlans(ctx) is empty)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run RunReadOnly -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: auto_readonly plans (RunReadOnly)"`
+
+---
+
+### Task 24: Standing approvals
+
+**Files:**
+- Create: `internal/store/standing.go` (table `standing_approvals` in a new core migration; `InsertStanding`, `Standing`, `ListStanding`, `SetStandingRevoked`)
+- Modify: `internal/controller/approvals.go` (`CreateStanding`, `RevokeStanding`, `RunStanding`), `internal/controller/host.go`
+- Test: `internal/store/standing_test.go`, `internal/controller/standing_test.go`
+
+**Interfaces:**
+- Consumes: `plan.StandingApproval` (Task 1), `manifest.ParseLabels`, `Host.Labels` (Task 11), `Propose` (Task 25; until then `RunStanding` returns `module.ErrProposed` without recording, and Task 25 wires the record).
+- Produces: `store` methods `InsertStanding(ctx, plan.StandingApproval) error`, `Standing(ctx, id string) (plan.StandingApproval, error)`, `ListStanding(ctx) ([]plan.StandingApproval, error)`, `SetStandingRevoked(ctx, id string) error`; controller `CreateStanding`, `RevokeStanding`, `RunStanding`.
+
+Rules: `CreateStanding` requires `ID`, `Module`, `Template`, `Approver`, `Created`, a parseable `Targets`, a non-empty `Actions` list with no `host.exec` and no action of risk `lockout` or `destructive`, and `now < Expires <= now + 72h` (`shortcut: 72 h cap stands in for "the event's end", upgrade when the manifest records the event window`). `RunStanding` falls back to a click proposal (`module.ErrProposed`, reason named) when the approval is missing, revoked or expired, its `Module` or `Template` differ, a node's action is not in `Actions`, a node's risk is `lockout` or above, a node is `host.exec`, or a node's target host's labels do not match `Targets`. Otherwise `Class = ClassStanding`, `Approver = sa.Approver + " (standing " + sa.ID + ")"`, lint, create, approve, apply.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// internal/controller/standing_test.go (manifest: host h1 labels [linux, server]; plans ctltest/dump.yml with one file.hash node on ${host})
+func sa() plan.StandingApproval {
+	return plan.StandingApproval{ID: "s1", Module: "ctltest", Template: "dump", Targets: "linux", Actions: []string{"file.hash"},
+		Expires: time.Now().Add(time.Hour), Approver: "Captain", Created: "admin"}
+}
+func TestCreateStandingValidates(t *testing.T) {
+	c := newStandingController(t)
+	for i, f := range []func(*plan.StandingApproval){
+		func(s *plan.StandingApproval) { s.Expires = time.Time{} },
+		func(s *plan.StandingApproval) { s.Expires = time.Now().Add(73 * time.Hour) },
+		func(s *plan.StandingApproval) { s.Actions = []string{"host.exec"} },
+		func(s *plan.StandingApproval) { s.Approver = "" },
+		func(s *plan.StandingApproval) { s.Targets = "linux &&" },
+	} {
+		s := sa()
+		f(&s)
+		if c.CreateStanding(ctx, s) == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	if err := c.CreateStanding(ctx, sa()); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestRunStandingInScope(t *testing.T) {
+	c := newStandingController(t)
+	_ = c.CreateStanding(ctx, sa())
+	id, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"})
+	if err != nil || id == "" {
+		t.Fatalf("%q %v", id, err)
+	}
+	// want: stored plan Class standing, Approver "Captain (standing s1)"
+}
+func TestRunStandingOutOfScopeProposes(t *testing.T) {
+	c := newStandingController(t)
+	s := sa()
+	s.Targets = "windows"
+	_ = c.CreateStanding(ctx, s)
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+	_ = c.RevokeStanding(ctx, "s1", "admin")
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("revoked: %v", err)
+	}
+}
+func TestRunStandingExpired(t *testing.T) {
+	// insert s with Expires one second ahead via CreateStanding, wait until past, RunStanding -> ErrProposed
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/ ./internal/controller/ -run Standing -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified; write a store round-trip test for the four store methods in `standing_test.go`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/ ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: standing approvals with scope and expiry"`
+
+---
+
+### Task 25: Proposals
+
+**Files:**
+- Create: `internal/store/proposals.go` (table `proposals`: `id INTEGER PRIMARY KEY, module, title, template, params JSON, evidence JSON, reason, created_ns, state ('open'|'accepted'|'dismissed'), plan_id, by`), `internal/controller/proposals.go`, `internal/ui/proposals.go` + `internal/ui/templates/proposals.html` (list open proposals; Accept and Dismiss buttons)
+- Modify: `internal/controller/host.go` (`Propose`), `internal/controller/approvals.go` (`RunStanding` fallbacks record a proposal), `internal/ui/ui.go` (`Ops` gains the three proposal methods)
+- Test: `internal/controller/proposals_test.go`, `internal/ui/proposals_test.go`
+
+**Interfaces:**
+- Consumes: `module.Proposal`, `module.EventRef`, `LoadModuleTemplate`, `ExpandTemplate`, `CreatePlan`, `ApprovePlan`, `Apply`.
+- Produces: store `InsertProposal(ctx, ProposalRow) (int64, error)`, `Proposal(ctx, id) (ProposalRow, error)`, `OpenProposals(ctx) ([]ProposalRow, error)`, `CloseProposal(ctx, id int64, state, planID, by string) error`, with `type ProposalRow struct{ ID int64; Module, Title, Template string; Params map[string]string; Evidence []string /* "agent:seq" */; Reason string; Created time.Time; State, PlanID, By string }`; controller `Propose`, `AcceptProposal`, `DismissProposal`; `(*moduleHost).Propose`; UI routes `GET /proposals`, `POST /proposals/{id}/accept`, `POST /proposals/{id}/dismiss`.
+
+Rules: `Propose` validates that the template loads for the module and expands with the params (a broken proposal is refused at creation, not at the click); Title ≤ 200 bytes; at most 1000 open proposals per module (`shortcut: oldest open proposal of the module is dismissed beyond 1000, upgrade if a module legitimately floods`). `AcceptProposal` creates the plan with `Class = ClassClick`, `Approver = by`, approves and applies it, and closes the proposal `accepted` with the plan id; accepting a closed proposal is an error.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestProposeAndAccept(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{"ctltest/fix.yml": "id: fix\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hosts}}\n"})
+	id, err := c.Propose(ctx, module.Proposal{Module: "ctltest", Title: "hash hosts", Template: "fix", Params: map[string]string{"host": "h1"}, Reason: "tier 1",
+		Evidence: []module.EventRef{{Agent: "h1", Seq: 7}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID, err := c.AcceptProposal(ctx, id, "driver")
+	if err != nil || planID == "" {
+		t.Fatalf("%q %v", planID, err)
+	}
+	// want: the plan's Class is click and Approver "driver"; the row is accepted with plan_id; OpenProposals is empty
+	if _, err := c.AcceptProposal(ctx, id, "driver"); err == nil {
+		t.Fatal("accepted twice")
+	}
+}
+func TestProposeRejectsBrokenTemplate(t *testing.T) {
+	c := newTestControllerWithPlans(t, nil)
+	if _, err := c.Propose(ctx, module.Proposal{Module: "ctltest", Title: "x", Template: "missing"}); err == nil {
+		t.Fatal("missing template accepted")
+	}
+}
+func TestRunStandingFallbackRecordsProposal(t *testing.T) {
+	// as TestRunStandingOutOfScopeProposes; then OpenProposals has one row with Module "ctltest" and a Reason naming "targets"
+}
+// internal/ui/proposals_test.go
+func TestProposalsPage(t *testing.T) {
+	// Ops fake returning one open proposal titled "<script>x</script>": GET /proposals is 200 and the title is escaped
+	// POST /proposals/1/accept with CSRF calls Ops.AcceptProposal(1, <operator>) and redirects
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ ./internal/ui/ -run 'Propos' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/ ./internal/controller/ ./internal/ui/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: click proposals and the proposals page"`
+
+---
+
+### Task 26: `RunAuto` and the auto conditions
+
+**Files:**
+- Create: `internal/controller/auto.go`
+- Modify: `internal/controller/host.go` (`RunAuto`), `internal/controller/controller.go` (`Options.Probe`)
+- Test: `internal/controller/auto_test.go`
+
+**Interfaces:**
+- Consumes: `manifest.ModuleBlock.ActEnabled`/`Auto` (Task 11), the last heartbeat per agent (`SafeMode`, receive time), `lint.Run` with `ClassAuto` (Task 21), `Propose` (Task 25), `Options.Probe`.
+- Produces: `(*Controller).RunAuto(ctx, mod, template, params) (string, error)`; `Options.Probe func(ctx context.Context, service string) error`; `(*moduleHost).RunAuto`.
+
+Conditions, checked in this order; the first failure creates a proposal with `Reason` naming it and returns `module.ErrProposed`:
+1. the module block exists with `act_enabled: true` (`shortcut` per deviation 14);
+2. `template` is in the block's `auto` list;
+3. the template loads and expands (`trigger` is not substituted);
+4. every target host has a heartbeat received in the last 15 s with `SafeMode == false` (no heartbeat = unknown = fail: Review Focus 4);
+5. `lint.Run(..., Class: ClassAuto)` has no finding;
+6. every node whose action's `Touches` is non-empty and whose target host carries a scored service (`manifest.Services` with `scored: true` on that host) has a probe: `Options.Probe != nil` (else reason `probe cannot run`);
+7. the breaker for (module, template, host) is closed (Task 28; until then always closed).
+On success: `Class = ClassAuto`, `OnFailure = rollback_plan`, `Approver = "auto:" + mod + "/" + template` plus `" trigger " + params["trigger"]` when given; create, approve, apply.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// helper: newAutoController(t, block string) with manifest host h1 (scored service "web" on h1) and plans
+// ctltest/t1.yml (file.hash on ${host}: read-only, no touches), ctltest/t2.yml (file.write of a temp path on ${host}: a path touch)
+// and ctltest/bad.yml (host.exec on ${host}); setHeartbeat(c, "h1", safeMode bool, at time.Time) writes the agent state directly
+func TestRunAutoNeedsActEnabled(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: false\nauto: [t1]\n")
+	setHeartbeat(c, "h1", false, time.Now())
+	_, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"})
+	if !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "act_enabled") {
+		t.Fatalf("got %v", err)
+	}
+	// want: one open proposal for ctltest with Reason containing "act_enabled"
+}
+func TestRunAutoNotOnAllowlist(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [other]\n")
+	setHeartbeat(c, "h1", false, time.Now())
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+}
+func TestRunAutoUnknownSafeModeProposes(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	c.opt.Probe = func(context.Context, string) error { return nil }
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("no heartbeat: %v", err)
+	}
+	setHeartbeat(c, "h1", true, time.Now())
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("safe mode on: %v", err)
+	}
+	setHeartbeat(c, "h1", false, time.Now().Add(-time.Minute))
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("stale heartbeat: %v", err)
+	}
+}
+func TestRunAutoLintAndProbe(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t2, bad]\n")
+	setHeartbeat(c, "h1", false, time.Now())
+	if _, err := c.RunAuto(ctx, "ctltest", "bad", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("host.exec: %v", err)
+	}
+	_, err := c.RunAuto(ctx, "ctltest", "t2", map[string]string{"host": "h1"}) // Probe is nil
+	if !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "probe cannot run") {
+		t.Fatalf("no probe: %v", err)
+	}
+}
+func TestRunAutoStarts(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	c.opt.Probe = func(context.Context, string) error { return nil }
+	setHeartbeat(c, "h1", false, time.Now())
+	id, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1", "trigger": "h1:7"})
+	if err != nil || id == "" {
+		t.Fatalf("%q %v", id, err)
+	}
+	// want: stored plan Class auto, OnFailure rollback_plan, Approver "auto:ctltest/t1 trigger h1:7"
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run RunAuto -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: auto plans behind act_enabled, allowlist, safe mode, lint and probe"`
+
+---
+
+### Task 27: Probe before and after each scored node of an `auto` plan
+
+**Files:**
+- Modify: `internal/controller/plans.go` (dispatch and result handling for nodes of `ClassAuto` plans), `internal/controller/auto.go`
+- Test: `internal/controller/auto_probe_test.go`
+
+**Interfaces:**
+- Consumes: `Options.Probe`; the plan engine's node dispatch and rollback paths (`dispatch`, `onStepResult`, `RollbackOrder`, `MarkRolledBack`).
+- Produces: for a node of a `ClassAuto` plan whose target carries scored services and whose action touches anything: before dispatch, `Probe(ctx, service)` for each scored service on the target, and a red probe fails the node with reason `before-probe red: <service>` (nothing applied); after the node verifies, the same probes, and a red probe rolls the node back through the plan's `rollback_plan` path with reason `after-probe red: <service>`. Probes are bounded: one retry after 5 s (`c.probeRetry`, overridable in tests), then red.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAutoAfterProbeRollsBack(t *testing.T) {
+	// e2e helpers (newCtl + a real agent "h1" with a scored service "web" in the manifest); module block act_enabled with auto [t1];
+	// t1: one file.write node to a temp path on h1
+	// Options.Probe returns nil before and an error after (count calls)
+	// RunAuto(... "t1" ...) then Wait(planID)
+	// want: node state rolled_back, reason contains "after-probe red: web"; the temp file content is the original
+}
+func TestAutoBeforeProbeStops(t *testing.T) {
+	// same setup; Probe always errors
+	// want: node failed with "before-probe red: web"; the agent received no apply step (OnStepSent saw none)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run AutoAfter\|AutoBefore -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified, touching only the `ClassAuto` branch.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: scorer-mimic probe around scored nodes of auto plans"`
+
+---
+
+### Task 28: Auto circuit breaker
+
+**Files:**
+- Modify: `internal/controller/auto.go`
+- Test: `internal/controller/breaker_test.go`
+
+**Interfaces:**
+- Consumes: the rollback outcome of `ClassAuto` plans (Task 27), `store` kv (`internal/store/kv.go`), `EmitController` (Task 16), `event.PlanAutoHalted`.
+- Produces: `(*Controller).noteAutoRollback(mod, template, host string, at time.Time)` (unexported, called on every automatic rollback); `(*Controller).ReenableAuto(ctx, mod, template, host, by)`; condition 7 of `RunAuto`.
+
+Rules: two automatic rollbacks of the same (module, template, host) within 10 minutes halt it: kv key `auto_halted/<module>/<template>/<host>` set (survives restart), `plan.auto_halted` emitted at `PriorityCritical`; `RunAuto` then proposes with reason `template halted on <host>`; `ReenableAuto` deletes the key and records an audit entry with `by`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestBreakerHaltsAfterTwoRollbacks(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	c.opt.Probe = func(context.Context, string) error { return nil }
+	setHeartbeat(c, "h1", false, time.Now())
+	now := time.Now()
+	c.noteAutoRollback("ctltest", "t1", "h1", now)
+	c.noteAutoRollback("ctltest", "t1", "h1", now.Add(9*time.Minute))
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "halted") {
+		t.Fatalf("got %v", err)
+	}
+	e, err := c.st.Latest(ctx, "controller", "plan.auto_halted")
+	if err != nil || e.Priority != event.PriorityCritical {
+		t.Fatalf("%+v %v", e, err)
+	}
+	_ = c.ReenableAuto(ctx, "ctltest", "t1", "h1", "driver")
+	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); err != nil {
+		t.Fatalf("after re-enable: %v", err)
+	}
+}
+func TestBreakerWindow(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	now := time.Now()
+	c.noteAutoRollback("ctltest", "t1", "h1", now)
+	c.noteAutoRollback("ctltest", "t1", "h1", now.Add(11*time.Minute))
+	// want: not halted (kv key absent)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run Breaker -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: auto circuit breaker per module, template and host"`
+
+---
+
+### Task 29: Controller executor for every controller-side action
+
+**Files:**
+- Create: `internal/controller/exec.go` (the executor moved out of `devexec_run.go` and made available without devices)
+- Modify: `internal/controller/devexec_run.go` (device setup only), `internal/controller/controller.go` (`New` installs the executor), `internal/actions/env.go` (`Env.Probe`)
+- Test: `internal/controller/exec_test.go`
+
+**Interfaces:**
+- Consumes: built `devExec` (`exec`, `env`, `localCheck`, `dispatchLocalLocked`, `localDone`), `isLocalAction`, `EmitController`, `Options.Probe`.
+- Produces: `actions.Env.Probe`; every `Runs: RunsController` action runs in the controller executor whether or not `EnableDeviceExec` was called (device actions without a directory fail with `no device directory`); after each phase the executor emits `agent.step_result` (agent `controller`) with plan, node, host, phase, outcome, error and the plan's class; the executor's `Env.Probe` is `Options.Probe`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+type ctlAction struct{ probed *atomic.Int32 }
+
+func (ctlAction) Spec() actions.Spec {
+	return actions.Spec{Name: "ctltest.local", Risk: actions.RiskNone, ReadOnly: true, Runs: actions.RunsController}
+}
+func (ctlAction) Locks(actions.Params) []string           { return nil }
+func (ctlAction) Touches(actions.Params) []actions.Touch  { return nil }
+// Plan, Capture and Verify return zero values; Apply calls env.Probe(ctx, "web") when env.Probe != nil and counts it
+
+func TestLocalActionWithoutDevices(t *testing.T) {
+	reg := actions.Core()
+	a := ctlAction{new(atomic.Int32)}
+	reg.Register(a)
+	c := newTestControllerWithRegistry(t, reg, func(context.Context, string) error { return nil }) // Options.Registry, Options.Probe
+	// create, approve, apply a click plan with one node {action: ctltest.local, target: <controller host>}; Wait
+	// want: node verified; a.probed.Load() == 1;
+	// c.st.Latest(ctx, "controller", "agent.step_result") decodes to event.AgentStepResult with Outcome set and Node == the node id
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run LocalAction -v`. Expected: FAIL (executor absent without `EnableDeviceExec`).
+- [ ] **Step 3: Implement** the move and the three additions; existing device tests keep passing.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/ ./internal/actions/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: executor for every controller-side action, with Env.Probe"`
+
+---
+
+### Task 30: Facts, controller side
+
+**Files:**
+- Modify: `internal/plan/fact.go`, `internal/controller/facts.go` (new), `internal/controller/host.go` (`Control`)
+- Test: `internal/plan/fact_test.go`, `internal/controller/facts_test.go`
+
+**Interfaces:**
+- Consumes: `module.ControlMsg` (Task 1), `manifest.ParseLabels`/`HostsMatching` (Task 11), built `SendControl(ctx, host, kind, on, args)`.
+- Produces: `plan.FactSender` with the table `work_window→teamfeed`, `round_clock→scorer`, `gpo_finding→ad`, `scorer_probe_result→checks`, `creds_txn→creds`; `(*Controller).SendFact(ctx, mod, m)`; `(*moduleHost).Control(m)` = `SendFact` with a 30 s timeout.
+
+Rules: `Type == "fact"`; `FactSender(m.Fact) == mod`; `ID` 1..128 bytes; `0 < TTL <= MaxFactTTL`; encoded `Data` ≤ `MaxFactData`; each `Hosts` entry is a manifest host name, else a label expression; no resolved host is an error. Args are the JSON of `event.ControllerFact{ID, Fact, TS: now, TTL, Data}`, sent with `SendControl(ctx, host, plan.ControlFact, true, args)` to every resolved host; a host that is not connected is logged and skipped (it treats the fact as unknown).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// internal/plan/fact_test.go
+func TestFactSender(t *testing.T) {
+	for fact, mod := range map[string]string{"work_window": "teamfeed", "round_clock": "scorer", "gpo_finding": "ad", "scorer_probe_result": "checks", "creds_txn": "creds"} {
+		if got, ok := FactSender(fact); !ok || got != mod {
+			t.Errorf("%s: %s %v", fact, got, ok)
+		}
+	}
+	if _, ok := FactSender("made_up"); ok {
+		t.Error("unknown subtype")
+	}
+}
+// internal/controller/facts_test.go
+func TestSendFactValidates(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil) // host h1
+	good := module.ControlMsg{Type: "fact", Hosts: []string{"h1"}, Fact: "round_clock", ID: "rc", TTL: time.Minute, Data: map[string]any{"delay": 60}}
+	for i, f := range []func(*module.ControlMsg){
+		func(m *module.ControlMsg) { m.Type = "safe_mode" },
+		func(m *module.ControlMsg) { m.TTL = 0 },
+		func(m *module.ControlMsg) { m.TTL = 25 * time.Hour },
+		func(m *module.ControlMsg) { m.ID = "" },
+		func(m *module.ControlMsg) { m.Data = map[string]any{"x": strings.Repeat("a", 17<<10)} },
+		func(m *module.ControlMsg) { m.Hosts = []string{"nohost && x"} },
+	} {
+		m := good
+		f(&m)
+		if c.SendFact(ctx, "scorer", m) == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	if c.SendFact(ctx, "checks", good) == nil {
+		t.Error("wrong sender accepted")
+	}
+}
+func TestSendFactSigned(t *testing.T) {
+	// e2e helpers with a connected agent h1; capture Options.OnControlSent
+	// SendFact(ctx, "scorer", good) -> nil; the captured control has Kind "fact" and args decode to
+	// event.ControllerFact{ID: "rc", Fact: "round_clock", TTL: time.Minute, ...}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/ ./internal/controller/ -run 'Fact' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/ ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: control: fact with subtype senders and bounds"`
+
+---
+
+### Task 31: Facts, agent side
+
+**Files:**
+- Create: `internal/agent/facts.go`
+- Modify: `internal/agent/handlers.go` (the kind switch of `handleControl`), `internal/agent/registry.go` (`Env.Fact`), `internal/agent/harness.go` (`Fact`)
+- Test: `internal/agent/facts_test.go`
+
+**Interfaces:**
+- Consumes: `plan.ControlFact`, `plan.MaxFactData`, `event.ControllerFact`, `event.New`, `publish` (bus only).
+- Produces: a verified `fact` control is decoded strictly (≤ `MaxFactData` bytes), stored in memory keyed by `ID` with the agent's receipt time (at most 1024 facts; the oldest is evicted), and published on the on-host bus as a `controller.fact` event (never spooled). `Env.Fact(id)` returns false when never received or when `now > receivedAt + TTL`. An unknown control kind is answered with `agent.control_refused` (verify this already holds; test it). `Harness.Fact(f)` delivers through the same store-and-publish path. Unexported test hooks used by Tasks 31 and 32: `(*Harness).setNow(func() time.Time)` (the agent's clock for facts and windows) and `(*Harness).env() Env`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestFactReachesBusNotSpool(t *testing.T) {
+	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: []Factory{subscriberFactory("fx", []string{"controller.fact"})}})
+	// run, apply; ch := the subscriber module's received channel
+	h.Fact(event.ControllerFact{ID: "rc", Fact: "round_clock", TS: time.Now(), TTL: time.Minute, Data: map[string]any{"delay": 60}})
+	// want: the subscriber receives one event of kind controller.fact with Fields["id"] == "rc"
+	// want: no controller.fact in h.Emitted() (nothing reached the spool path)
+}
+func TestFactTTLFromReceipt(t *testing.T) {
+	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir()})
+	now := time.Now()
+	h.setNow(func() time.Time { return now }) // unexported clock hook
+	h.Fact(event.ControllerFact{ID: "x", Fact: "round_clock", TS: now.Add(-time.Hour), TTL: time.Minute}) // controller clock an hour behind
+	if _, ok := h.env().Fact("x"); !ok {
+		t.Fatal("fact must be known right after receipt")
+	}
+	now = now.Add(61 * time.Second)
+	if _, ok := h.env().Fact("x"); ok {
+		t.Fatal("fact must be unknown after its TTL")
+	}
+	if _, ok := h.env().Fact("never"); ok {
+		t.Fatal("unreceived fact must be unknown")
+	}
+}
+func TestFactReplacedByID(t *testing.T) {
+	// two facts with ID "x", Data {"v":1} then {"v":2}: Env.Fact("x").Data["v"] == json.Number("2")
+}
+func TestUnknownControlRefused(t *testing.T) {
+	// test agent of testutil_test.go: a correctly signed control of kind "made_up" -> an agent.control_refused event
+	// with Fields["kind"] == "made_up" is spooled; the agent keeps running
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run 'Fact|UnknownControl' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: controller facts on the bus with receipt-time TTL"`
+
+---
+
+### Task 32: `work_window` supervisor effect
+
+**Files:**
+- Create: `internal/agent/window.go`
+- Modify: `internal/agent/agent.go` (`emit` stamps the open window's tag; load the window at start), `internal/agent/facts.go` (a `work_window` fact updates the window)
+- Test: `internal/agent/window_test.go`
+
+**Interfaces:**
+- Consumes: `event.ControllerFact` (Task 31), `internal/atomicfile`.
+- Produces: `work_window` fact data `{window string, tag string, until RFC 3339 string, end bool}` opens, extends or (with `end: true`) ends the window; the window is persisted at `<StateDir>/work_window.json` atomically; while `now < until`, every event the agent emits whose `Tag` is empty gets the window's tag; at `until` it ends by itself, with or without a link. An event that already carries a plan tag keeps it.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestWorkWindowStampsTag(t *testing.T) {
+	dir := t.TempDir()
+	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: dir, Factories: []Factory{emitterFactory("wx")}}) // emits "wx.e" on demand
+	now := time.Now()
+	h.setNow(func() time.Time { return now })
+	h.Fact(event.ControllerFact{ID: "ww", Fact: "work_window", TS: now, TTL: time.Hour,
+		Data: map[string]any{"window": "w1", "tag": "window:w1", "until": now.Add(10 * time.Minute).UTC().Format(time.RFC3339)}})
+	// trigger one emit -> last emitted event has Tag "window:w1"
+	// an emit with Tag "plan:p1" keeps "plan:p1"
+	now = now.Add(11 * time.Minute)
+	// trigger one emit -> Tag ""
+}
+func TestWorkWindowSurvivesRestart(t *testing.T) {
+	// open a window ending in 10 minutes in harness 1; build harness 2 on the same StateDir
+	// trigger one emit in harness 2 -> Tag "window:w1"
+}
+func TestWorkWindowEnd(t *testing.T) {
+	// open, then a fact with {"window":"w1","end":true} -> next emit has Tag ""
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run WorkWindow -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (one window at a time; a fact for another window replaces it).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: work_window fact stamps the envelope tag"`
+
+---
+
+### Task 33: JSON Schema of module config blocks
+
+**Files:**
+- Modify: `internal/module/schema.go`
+- Create: `internal/module/all/schema_test.go`, `manifest/schema/modules/` (generated files)
+- Test: `internal/module/schema_test.go`
+
+**Interfaces:**
+- Consumes: `plan.BlockFor` (Task 12), `module.Registered`, `module.Configurable`, `agent.Registered()` (Task 1).
+- Produces: `module.Schema(v any) ([]byte, error)`; one `manifest/schema/modules/<name>.schema.json` per contract module; the check that committed files equal the generated ones (`go test ./internal/module/all/ -run Schema -update` rewrites them).
+
+Mapping: struct → `object` with `properties` from json tags (embedded structs flattened), `additionalProperties: false`, `required` = fields without `omitempty`; `string`, `bool` → `boolean`, ints → `integer`, floats → `number`, `time.Duration` → `integer` with `"description": "nanoseconds"`, slices → `array` with `items`, `map[string]T` → `object` with `additionalProperties` = schema of T, pointers → the pointee, `any` → `{}`. Output is indented JSON with sorted keys and `"$schema": "https://json-schema.org/draft/2020-12/schema"`, `"title": <name>`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestSchemaOfStruct(t *testing.T) {
+	type inner struct {
+		N int `json:"n"`
+	}
+	type cfg struct {
+		Common
+		Level  int               `json:"level"`
+		Hosts  []string          `json:"hosts,omitempty"`
+		Inner  inner             `json:"inner"`
+		Map    map[string]string `json:"map,omitempty"`
+		Window time.Duration     `json:"window,omitempty"`
+	}
+	b, err := Schema(cfg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s map[string]any
+	_ = json.Unmarshal(b, &s)
+	props := s["properties"].(map[string]any)
+	for _, k := range []string{"enabled", "act_enabled", "auto", "level", "hosts", "inner", "map", "window"} {
+		if _, ok := props[k]; !ok {
+			t.Errorf("missing %s", k)
+		}
+	}
+	if s["additionalProperties"] != false || props["level"].(map[string]any)["type"] != "integer" {
+		t.Fatalf("%s", b)
+	}
+}
+// internal/module/all/schema_test.go
+func TestModuleSchemasCommitted(t *testing.T) {
+	// for every agent factory with a manifest: block type from plan.BlockFor(&plan.AgentConfig{}, name)
+	// for every controller module implementing module.Configurable: ConfigBlock()
+	// generate; with -update write manifest/schema/modules/<name>.schema.json; else compare with the file (diff in the error)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/module/ ./internal/module/all/ -run Schema -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified; run with `-update` once (no contract module yet, so no file is written until Tasks 38 and 39).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/module/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "module: JSON Schema of config blocks, checked in CI"`
+
+---
+
+### Task 34: Conformance, agent checks 1 to 3
+
+**Files:**
+- Create: `internal/module/conformance/leak.go`
+- Modify: `internal/module/conformance/agent.go`
+- Test: `internal/module/conformance/agent_test.go` (runs the suite over two fixture factories defined in the test: one conforming, one that leaks a goroutine)
+
+**Interfaces:**
+- Consumes: `agent.NewHarness` and its methods (Task 15), `plan.BlockFor`.
+- Produces: `runAgentChecks(c) map[string]error` with the checks `no_config` (check 1: `Section(&plan.AgentConfig{})` reports disabled or `Build` returns `agent.ErrUnavailable`; neither panics; a panic is recovered and returned as the error), `default_config` (check 2: with `c.Default`, health reaches `ok` or `unavailable` within 10 s), `stops_cleanly` (check 3: after cancel the harness `Run` returns within 5 s and the goroutine set returns to the pre-start set within 1 s, comparing `runtime.Stack(buf, true)` snapshots by top function and ignoring goroutines that existed before); and `conformance.Agent(t, c)`, which runs `runAgentChecks` and reports each entry as a subtest (`t.Run(name, ...)` failing with the error). Later tasks add entries to the same map.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAgentChecks1to3Pass(t *testing.T) {
+	Agent(t, AgentCase{Factory: goodFactory(), Default: cfgWith("good")})
+}
+func TestAgentCheck3CatchesLeak(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: leakyFactory(), Default: cfgWith("leaky")}); errs["stops_cleanly"] == nil {
+		t.Fatal("goroutine leak not detected")
+	}
+}
+func TestAgentCheck2CatchesHang(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: neverOKFactory(), Default: cfgWith("neverok")}); errs["default_config"] == nil {
+		t.Fatal("module stuck in starting not detected")
+	}
+}
+func TestAgentCheck1CatchesPanic(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: panicsWithoutConfigFactory(), Default: cfgWith("p")}); errs["no_config"] == nil {
+		t.Fatal("panic on empty config not detected")
+	}
+}
+```
+
+(`goodFactory`, `leakyFactory`, `neverOKFactory`, `panicsWithoutConfigFactory` and `cfgWith` are helpers in `helpers_test.go` of this package: real `agent.Factory` values with small modules, and a config with the named module's block enabled. Each factory uses a unique `Name`; the tests pass the factory to the harness directly and never register it globally.)
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Checks1to3|Check3|Check2' -v`. Expected: FAIL (`unimplemented: W1 Task 34`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "conformance: agent checks 1-3 (no config, default config, clean stop)"`
+
+---
+
+### Task 35: Conformance, agent checks 4 to 7 and 12
+
+**Files:**
+- Modify: `internal/module/conformance/agent.go`
+- Test: `internal/module/conformance/agent_more_test.go`
+
+**Interfaces:**
+- Consumes: Task 34; `event.Validate`, `event.Lookup`; `Factory.Manifest`.
+- Produces subtests: `health` (check 4: within 5 s a health block exists; for each OS in `Manifest.OS` other than `runtime.GOOS`, and for `Privilege == "root"` when not running as root, the state is `unavailable` or `degraded` with a non-empty `Gaps`), `declared_kinds` (checks 5 and 12: every emitted event's kind is in `Manifest.Emits` and `event.Validate` passes; every `Consumes` entry is declared with `event.Lookup`), `budget` (check 6: `c.Load` published at 10× `Budget.EventsPerSec` for 3 s; emitted rate ≤ `EventsPerSec × 1.1 + Burst`; reported `HeldBytes` ≤ `HeldMB << 20`; reported `CPUMillis` per second ≤ `CPUMillisPerSec` when non-zero), `link_loss` (check 7: with `EmitErr` failing for `LinkLoss` (60 s; 2 s under `testing.Short()`) and `c.Load` published, the module stays `ok` and the supervisor restarts it zero times).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAgentCheck5CatchesUndeclared(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: emitsUndeclaredFactory(), Default: cfgWith("undecl")}); errs["declared_kinds"] == nil {
+		t.Fatal("undeclared kind not detected")
+	}
+}
+func TestAgentCheck12CatchesLegacyField(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: emitsConnWithSrcIPFactory(), Default: cfgWith("legacy")}); errs["declared_kinds"] == nil {
+		t.Fatal("non-canonical conn field not detected")
+	}
+}
+func TestAgentCheck6CatchesOverBudget(t *testing.T) {
+	// the module reports HeldBytes above its HeldMB
+	if errs := runAgentChecks(AgentCase{Factory: heldBytesLiarFactory(), Default: cfgWith("fat")}); errs["budget"] == nil {
+		t.Fatal("over budget not detected")
+	}
+}
+func TestAgentCheck7CatchesCrashOnEmitError(t *testing.T) {
+	if errs := runAgentChecks(AgentCase{Factory: crashOnEmitErrFactory(), Default: cfgWith("fragile"), Load: someLoad()}); errs["link_loss"] == nil {
+		t.Fatal("crash under link loss not detected")
+	}
+}
+func TestAgentCheck4CatchesMissingGap(t *testing.T) {
+	// manifest OS ["plan9"] but Build succeeds and health is ok with no gaps
+	if errs := runAgentChecks(AgentCase{Factory: wrongOSNoGapFactory(), Default: cfgWith("os")}); errs["health"] == nil {
+		t.Fatal("missing OS gap not detected")
+	}
+}
+func TestAgentChecks4to7Pass(t *testing.T) {
+	Agent(t, AgentCase{Factory: goodFactory(), Default: cfgWith("good"), Load: someLoad()})
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check5|Check12|Check6|Check7|Checks4to7' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "conformance: agent checks 4-7 and 12 (health, kinds, budget, link loss)"`
+
+---
+
+### Task 36: Conformance, agent checks 8 and 9; controller checks
+
+**Files:**
+- Modify: `internal/module/conformance/agent.go`, `internal/module/conformance/controller.go`
+- Test: `internal/module/conformance/controller_test.go`, `internal/module/conformance/agent_reconfig_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 34 and 35; `plan.BlockFor`; `controller.New`, `RunModules`, `ModuleHealth` (Task 19), `hostFor` through `RunModules`; `module.Configurable`, `module.AnalyzerProvider`.
+- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 11: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAgentCheck8CatchesLostKeep(t *testing.T) {
+	c := AgentCase{Factory: forgetfulFactory(), Default: cfgWith("forget"), Reconfig: cfgWith2("forget"), KeepKey: "baseline"}
+	if errs := runAgentChecks(c); errs["reconfig"] == nil {
+		t.Fatal("lost Keep state not detected")
+	}
+}
+func TestAgentCheck9CatchesLooseBlock(t *testing.T) {
+	// Block is a test settings struct whose UnmarshalJSON ignores unknown keys
+	if errs := runAgentChecks(AgentCase{Factory: goodFactory(), Default: cfgWith("good"), Block: &looseSettings{}}); errs["config_decode"] == nil {
+		t.Fatal("unknown field accepted")
+	}
+}
+func TestControllerCheck11CatchesNondeterminism(t *testing.T) {
+	c := ControllerCase{Module: randomAnalyserModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
+	if errs := runControllerChecks(c); errs["analysers"] == nil {
+		t.Fatal("nondeterministic analyser not detected")
+	}
+}
+func TestControllerCheck9CatchesLooseConfig(t *testing.T) {
+	// a Configurable module whose Start ignores Host.Config errors and reports ok
+	c := ControllerCase{Module: ignoresConfigErrorModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
+	if errs := runControllerChecks(c); errs["config_decode"] == nil {
+		t.Fatal("unknown key accepted")
+	}
+}
+func TestControllerChecksPass(t *testing.T) {
+	Controller(t, ControllerCase{Module: goodControllerModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)})
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check8|Check9|Check11|ControllerChecks' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. The controller harness is a real `controller.New` in `t.TempDir()` with `AgentListen: "127.0.0.1:0"`, `UIListen: "off"` and a manifest directory holding a minimal topology, one host and `modules/<name>.yml`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "conformance: reconfiguration, strict blocks, controller checks, analyser determinism"`
+
+---
+
+### Task 37: Conformance static checks
+
+**Files:**
+- Create: `internal/module/conformance/static_test.go`
+- Modify: `internal/module/conformance/allowed.go` (`ModulePackages`: module name → package path, for the 34 catalogue modules plus `health`)
+- Test: the file itself; injected-failure cases use fixture packages under `internal/module/conformance/testdata/` (ignored by `go build`, loaded with `go list` against a temp `GOPATH`-free module copy is not needed: parse their files with `go/parser`)
+
+**Interfaces:**
+- Consumes: `agent.Registered()`, `module.Registered()`, `event.Declared()`, `PreContract`, `AllowedLibraries`, `CoreImports`, `phylax_design.md`.
+- Produces these tests:
+  - `TestNoSiblingImports` (check 9, bug 15 guard): for every contract module (a registered agent factory or controller module with a manifest, not in `PreContract`), `go list -deps -f '{{.ImportPath}}' ./<pkg>/...` contains no other module's package (from `ModulePackages`) and nothing under `internal/` outside `CoreImports`, `AllowedLibraries` and its own tree; and its `internal/agent/mods/<name>*.go` files import only core packages, the allowed libraries and its own package (parsed with `go/parser`). `internal/enroll` is never allowed.
+  - `TestKindTable` (T46): parse the "Event kinds" table of `phylax_design.md` (rows between the header `| Kind | Class |` and the next blank line); every declared kind outside the test prefixes (`ttest.`, `ctltest.`, `regtest.`) has a row with the same schema, alert flag and class (`common` for the eight common kinds, `core` for the 29, `module` otherwise); every common and core row is declared; every row whose emitter is a contract module is declared; every contract module's `Emits` kinds have rows naming it as emitter; every `Consumes` entry has a row.
+  - `TestPreContractShrinks`: every registered factory or controller module without a manifest is in `PreContract`; every `PreContract` name that now has a manifest fails the test ("remove X from PreContract").
+  - `TestConformanceTestPresent`: every contract module's package directory has a `_test.go` file containing `conformance.Agent(` or `conformance.Controller(`.
+  - `TestLibrariesStateless`: each `AllowedLibraries` package that exists has no `init` function calling `Register`, `Declare` or `RegisterFactory`, and no package-level `var` of map, slice or pointer type assigned outside `init` (parsed with `go/parser`; `shortcut: syntactic check, upgrade to go/analysis if a library hides state behind a constructor`).
+
+- [ ] **Step 1: Remove the skips** (the five tests above, written in full by Task 1 against the stubs; plus the injected-failure test):
+
+```go
+func TestImportCheckCatchesSibling(t *testing.T) {
+	// testdata/sibling/a.go is "package x" importing ".../internal/integrity"; checkFileImports("depot", "testdata/sibling/a.go")
+	// must return an error naming internal/integrity; testdata/ok/a.go importing internal/signing and internal/sockets returns nil
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/module/conformance/ -run 'Sibling|KindTable|PreContract|ConformanceTestPresent|Stateless|ImportCheck' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the helpers the tests call (`checkFileImports`, `parseKindTable`, `contractModules`).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/module/conformance/`. Expected: PASS (no contract module yet besides fixtures; `health` is in `PreContract`).
+- [ ] **Step 5: Commit.** `git commit -am "conformance: import, kind-table, pre-contract and presence checks"`
+
+---
+
+### Task 38: Worked example A: `health` on the contract
+
+**Files:**
+- Modify: `internal/agent/health.go` (factory `Manifest`, `HealthReporter`, `TelemetryGap` through `event.New`), `internal/module/conformance/allowed.go` (remove `health` from `PreContract`)
+- Create: `internal/agent/health_conformance_test.go` (package `agent_test`), `manifest/schema/modules/health.schema.json` (via `-update`)
+- Test: `internal/agent/health_conformance_test.go`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces: the first agent module on the contract, the pattern every agent retrofit copies:
+
+```go
+Manifest: module.Manifest{
+	Name: "health", Sides: []module.Side{module.SideAgent}, Privilege: "root", Default: true,
+	Emits: []event.Type{mustType("agent.health"), mustType(event.KindTelemetryGap)},
+	Budget: module.Budget{CPUMillisPerSec: 1, HeldMB: 1, EventsPerSec: 1, Burst: 64, BytesOutPerMin: 64 << 10},
+}
+// mustType(kind) = the declared event.Type, panicking if undeclared (an unexported helper in health.go)
+```
+
+`Health()` reports `ok` with `Info{"modules": "<count>"}`; `Privilege` is root because it reads the supervisor of a root agent, and on a non-root test run the harness reports the privilege gap as `degraded` (check 4).
+
+- [ ] **Step 1: Remove the skip:**
+
+```go
+func TestHealthConformance(t *testing.T) {
+	f := factoryNamed(t, "health") // from agent.Registered()
+	conformance.Agent(t, conformance.AgentCase{
+		Factory:  f,
+		Default:  &plan.AgentConfig{Host: "h1", Modules: plan.ModuleSettings{Health: &plan.HealthSettings{ModuleLimits: plan.ModuleLimits{Common: module.Common{Enabled: true}}, IntervalSec: 1}}},
+		Reconfig: &plan.AgentConfig{Host: "h1", Modules: plan.ModuleSettings{Health: &plan.HealthSettings{ModuleLimits: plan.ModuleLimits{Common: module.Common{Enabled: true}}, IntervalSec: 2}}},
+	})
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/agent/ -run TestHealthConformance -v`. Expected: FAIL (`declared_kinds`: manifest empty, or `PreContract` check).
+- [ ] **Step 3: Implement** the manifest, `Health()`, the `event.New` gap; remove `health` from `PreContract`; run `go test ./internal/module/all/ -run Schema -update`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/ ./internal/module/...`. Expected: PASS, including `TestNoSiblingImports`, `TestKindTable` and `TestPreContractShrinks` with `health` as a contract module.
+- [ ] **Step 5: Commit.** `git commit -am "health: first agent module on the contract"`
+
+---
+
+### Task 39: Worked example B: `suricata` on the contract (controller side)
+
+**Files:**
+- Move: `internal/integrations/suricata/*` → `internal/suricata/` (`git mv`; delete the old directory; no shim)
+- Create: `internal/suricata/module.go` (controller module, config block, kind declarations), `internal/suricata/conformance_test.go`, `manifest/2027/modules/suricata.yml` (`enabled: false`), `manifest/schema/modules/suricata.schema.json`
+- Modify: `internal/suricata/eve.go`, `zeek.go` (kinds `suricata.alert`, `suricata.dns`, `suricata.http`, `suricata.zeek_conn`, `suricata.zeek_dns`; events built with `event.New`; `Agent` left empty, the Host sets `controller`), `internal/module/all/all.go` (blank-import `internal/suricata`)
+- Test: `internal/suricata/suricata_test.go` (existing, updated), `internal/suricata/conformance_test.go`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces: the first controller module on the contract, the pattern every controller retrofit copies:
+
+```go
+type Config struct {
+	module.Common `yaml:",inline"`
+	Hosts         []string `yaml:"hosts,omitempty" json:"hosts,omitempty"` // where Suricata and Zeek run (controller by default)
+}
+type Module struct{ /* health behind a mutex */ }
+func (*Module) Manifest() module.Manifest // Name "suricata", Sides [controller], Privilege "none", Default false,
+	// Emits the six suricata.* kinds (incl. suricata.run), Actions ["suricata.analyze_pcap"], Budget per the module section
+func (*Module) Start(ctx context.Context, h module.Host) error // decodes Config; reports unavailable with gap
+	// {"suricata.analyze_pcap", "not built (W11)"} and waits for ctx
+func (*Module) Health() module.Health
+func (*Module) ConfigBlock() any // Config{}
+func init() { module.Register(&Module{}) }
+```
+
+Payload structs: one per kind, fields exactly the keys `eve.go` and `zeek.go` write today (`suricata.run` has `pcap`, `alerts`, `records`, `error`). The rename map applies: `zeek.conn` → `suricata.zeek_conn`, `zeek.dns` → `suricata.zeek_dns`. This fixes the `suricata` half of Known bug 17 (`Agent: "suricata"`/`"zeek"` is gone).
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestSuricataConformance(t *testing.T) {
+	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\n", Now: time.Unix(1e9, 0)})
+}
+func TestReadEVEEmitsDeclaredKinds(t *testing.T) {
+	evs, _, err := ReadEVE(mustOpen(t, "testdata/eve.json"), false)
+	if err != nil || len(evs) == 0 {
+		t.Fatal(err)
+	}
+	for _, e := range evs {
+		if e.Agent != "" {
+			t.Fatalf("reader must not set the agent: %q", e.Agent)
+		}
+		if err := event.Validate(e); err != nil {
+			t.Fatalf("%s: %v", e.Kind, err)
+		}
+	}
+}
+func TestReadZeekKinds(t *testing.T) {
+	evs, _, _ := ReadZeek(mustOpen(t, "testdata/conn.log"), KindZeekConn)
+	if len(evs) == 0 || evs[0].Kind != "suricata.zeek_conn" {
+		t.Fatalf("%v", evs)
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/suricata/ -v`. Expected: FAIL (package not found until the move, then kind errors).
+- [ ] **Step 3: Implement** the move and the module; check `grep -rn 'integrations/suricata\|"zeek\.' --include=*.go .` returns nothing.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS, including the static checks with `suricata` as a contract module.
+- [ ] **Step 5: Commit.** `git commit -am "suricata: move to internal/suricata; first controller module on the contract"`
+
+---
+
+### Task 40: `phylax modules` and the Platform page module table
+
+**Files:**
+- Create: `cmd/phylax/modules.go`
+- Modify: `cmd/phylax/main.go` (dispatch `modules`; import `internal/module/all` instead of `internal/agent/mods`), `internal/ui/reports.go` + `internal/ui/templates/health.html` (module table), `internal/ui/ui.go` (`Ops` gains `Modules(ctx) []ModuleRow`), `internal/controller/webops.go` (implements it from `AgentHealth`, `ModuleHealth` and `PreContract`)
+- Test: `cmd/phylax/modules_test.go`, `internal/ui/modules_page_test.go`
+
+**Interfaces:**
+- Consumes: `agent.Registered()` (Task 1), `module.Registered()`, `conformance.PreContract` (import from `cmd/phylax` is fine; it is a plain list), `ui.ModuleRow`, `AgentHealth`, `ModuleHealth`.
+- Produces: `phylax modules [-json]` printing one line per module (`name sides os default emits-count status`) or the manifests as JSON, `status` being `contract` or `pre-contract`; the `/health` page gains a table of every agent's and the controller's module health (state, detail, gaps), pre-contract modules marked.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+// cmd/phylax/modules_test.go
+func TestModulesCommand(t *testing.T) {
+	var out bytes.Buffer
+	if err := runModules([]string{"-json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		Name   string          `json:"name"`
+		Status string          `json:"status"`
+		Manifest module.Manifest `json:"manifest"`
+	}
+	_ = json.Unmarshal(out.Bytes(), &rows)
+	// want: a row "health" status contract; a row "suricata" status contract; a row "audit" status pre-contract
+}
+// internal/ui/modules_page_test.go
+func TestHealthPageModuleTable(t *testing.T) {
+	// Ops fake returning rows {Agent: "h1", Module: "audit", State: "degraded", Gaps: ["<b>x</b>: y"], PreContract: true}
+	// logged-in GET /health -> 200; body contains "audit", "pre-contract", and the gap text escaped (&lt;b&gt;)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./cmd/phylax/ ./internal/ui/ -run 'ModulesCommand|ModuleTable' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race && ./bin/phylax modules`. Expected: PASS; the command lists `health` and `suricata` as contract and the other registered modules as pre-contract.
+- [ ] **Step 5: Commit.** `git commit -am "cmd: phylax modules; Platform page module health"`
+
+---
+
+### Task 41: CI gates
+
+**Files:**
+- Modify: `.github/workflows/ci.yml`, `Makefile`
+- Create: `internal/module/conformance/skip_guard_test.go` (Known bug 11 guard)
+- Test: `internal/module/conformance/skip_guard_test.go`
+
+**Interfaces:**
+- Consumes: the conformance package (Tasks 34 to 37).
+- Produces: `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v3-redesign` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
+
+- [ ] **Step 1: Remove the skip:**
+
+```go
+func TestSkipsCarryReason(t *testing.T) {
+	bad := findBareSkips(t, "../../..") // walks internal/ and cmd/, parses *_test.go, returns "file:line" for t.Skip() with no or empty argument
+	if len(bad) > 0 {
+		t.Fatalf("t.Skip without a reason (Known bug 11):\n%s", strings.Join(bad, "\n"))
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL or PASS.** Run: `go test ./internal/module/conformance/ -run TestSkipsCarryReason -v`. Expected: FAIL listing offenders if any exist; fix each by adding the reason the skip already implies (the precondition it checks). If none exist, the test passes on first run; keep it as the guard.
+- [ ] **Step 3: Implement** the workflow and Makefile changes. Mark `race` and `conformance` as required checks in the repository settings (David does this in GitHub; note it in the pull request).
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows size vet test race conformance`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "ci: race and conformance jobs on v3-redesign and v4-*; t.Skip reason guard"`
+
+---
+
+### Task 42: Lab (stronger agent or David)
+
+**Files:**
+- Create: `docs/impl/lab/w1-module-contract.md`
+
+Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom`, `ubuntu-email`, `win11`, `ad`), from a build of the merged branch:
+
+- [ ] **Step 1: Platform.** Every agent's heartbeat shows per-module health on `/health`; `health` and `suricata` show as contract modules, the rest pre-contract; a non-root test agent shows the privilege gap. Record screenshots or the page text.
+- [ ] **Step 2: Facts (T74 core half).** Send a `round_clock` fact from a test controller module to `rocky-ecom` and `win11`; confirm `controller.fact` on each bus (agent debug log) and none in the store; cut the link for longer than the TTL and confirm the fact reads unknown; send a `work_window` fact, run `touch` on the host and confirm the `file_change` (once W3 exists; today any agent event) carries the window tag, then let it end with the link down.
+- [ ] **Step 3: Approval classes (T73).** Run a read-only template with `RunReadOnly`, a refused write template, a standing approval in scope and out of scope (and after expiry), and an `auto` template with `act_enabled` false (proposal), true with no probe (proposal), and with a probe stub that goes red after the change (rollback, then breaker halt after the second).
+- [ ] **Step 4: Controller restart and spool (T18, T29 partial).** Restart `phylax serve` mid-run; confirm the controller chain continues (no seq 1 after restart) and agents resume; `kill -9` an agent during a burst and confirm its spool repairs and events with `schema` and `tag` verify.
+- [ ] **Step 5: Record and commit.** Write the date, commit, VMIDs, each step's result and measured values, and what was not run, to `docs/impl/lab/w1-module-contract.md`. `git commit -m "lab: W1 module contract results"`.
+
+---
+
+## Self-review
+
+**Spec coverage** (design "The module contract" and the core pieces W1 owns):
+
+| Design requirement | Task |
+| --- | --- |
+| One package, registration file, config block with `enabled`/`act_enabled`, unknown fields an error, schema from struct | 11, 12, 33, 36 (check 9) |
+| Declared typed events, `Declare`/`Lookup`/`New`/`Decode`, schema versions | 3, 4, 5 |
+| Envelope `Schema` and `Tag`, protocol minor | 2 |
+| Canonical fields of common kinds, `x_` prefix, rules reject others (CI half) | 4, 35 (check 12) |
+| Kind table single source, compared with the registry and `Consumes` (T46) | 37 |
+| Capability manifest, published by `phylax modules` and in `hello` | 1, 7, 14, 40 |
+| Agent `Factory.Manifest`, `HealthReporter`, `ModuleSpec` from budget, `Subscribe` kinds | 13 |
+| Controller `Host`, `ControlMsg`, `ControllerModule`, `Analyzer` | 17, 18, 19, 20, 23-30 |
+| Persistence rule: one writer, module tables, query API | 8, 17 |
+| Health and budgets, heartbeat per-module block (bug 16 core) | 13, 14 |
+| Configuration: host `modules:`, effective enablement, observe-mode switch | 7, 11, 12 |
+| Isolation: no sibling imports, shared libraries closed list | 37 |
+| Conformance checks 1-12 | 34 (1-3), 35 (4-7, 12), 36 (8, 9, 11), 41 (10: `-race` job) |
+| Controller executor, approval classes, auto conditions, breaker (T73, T79 core half) | 22-29 |
+| Lint registration and `SS000` | 21 |
+| `control: fact`, `controller.fact`, subtypes, `work_window` effect (T74 core half) | 30, 31, 32 |
+| UI registrar, Platform module health | 10, 40 |
+| Controller-origin events under agent `controller` (bug 17 core) | 16, 39 |
+| Known bug 11 guard | 41 |
+| Retrofit order: contract, conformance, Host and registrar, then modules; "pre-contract" listing | task order; 37, 40 |
+
+Not in W1, by design: per-module content (`rules/<module>/`, `plans/<module>/`) and every module retrofit other than `health` and `suricata` (README workstreams); the agent's last-line re-lint of `auto` plans beyond the existing guard (`shortcut` noted in Task 21's rule; W5 extends the guard data); label-expression targets inside templates (W5).
+
+**Step scan:** every test step carries test names and assertions; prose-only test bodies (Tasks 6, 14, 27, 30, 31, 42 and the store/vault helpers) name the exact setup helper, the action and the assertion, because they drive existing e2e harnesses whose helper names the implementer reads from the package's own `_test.go` files. No step says "handle edge cases" or "add validation" without the rule.
+
+**Type consistency:** `store.Reader` everywhere (never `store.Query` as an interface); `module.ErrProposed` for every fallback; `Host` plan methods take `(template, params)`; `ModuleDB.Migrate` (no `Store.MigrateModule`); `Env.Subscribe(buf, kinds...)`; `event.ControllerFact` is the fact args and the `controller.fact` payload; `plan.ClassAuto` etc. match the design's class names.
+
+**Review Focus:** each of the five lines has its test in the owning task (2, 3/6, 16, 26, 31).
+
+**Proportion:** the plan is about a sixth of the design's length; code blocks are signatures and tests, with no function bodies except where an algorithm is not fixed by the test (none needed one).
