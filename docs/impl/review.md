@@ -615,3 +615,9 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - Falco-style rule format (lists, macros, exceptions): yes.
 - P1 (per-executable egress): yes, alert-only allowlist of which programs may connect out (D216 CHANGE). Automatic blocking: offer it as a suggestion the operator approves with one click ("block this?"), never silent.
 - P2 (noexec /tmp, /dev/shm, /var/tmp): yes, live remount with a pre-check and remount rollback, opt-in per host (N5.7).
+
+### Area 2 (2026-10-31)
+- All calls in area 2 accepted.
+- A2.Q1: yes, build `inventory` (D81) as one module, installed software versions included.
+- A2.Q2: yes, eBPF stays cut (D92); a kernel rootkit blinds audit and eBPF alike. Reopen only if T43 fails.
+- A2.Q3: no `kernel.modules_disabled` lock (one-way, does nothing against prebaked LKMs, risks breaking later module loads). Instead ADD an audit syscall rule on `init_module`/`finit_module` so any module load alerts regardless of tool (existing rules key on `insmod`/`modprobe` comm only, `rules/linux_exec.yml:219`).
