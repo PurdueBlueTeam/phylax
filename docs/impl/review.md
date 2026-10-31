@@ -663,3 +663,6 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A7.Q2: open; David will ask organizers whether automated PCR submission is OK. Build `pcr.generate`/`pcr.verify` now; `pcr.submit` (Quotient JSON API `POST /api/pcrs/submit`, one-click confirm, check updated/skipped) is conditional on that answer. Never call the reset endpoint.
 - A7.Q3: Orange customer flows are not a separate module: they are multi-step flow checks on scored services inside `checks` (N7.2 merged into the checks module; run from Kali and LAN like other checks).
 - All other area-7 calls accepted.
+
+### Area 8 (2026-10-31)
+- All calls accepted. N8.1: the service doctor collect plan runs on the first failed check of a scored service (read-only; once per failure streak, re-run on demand).
