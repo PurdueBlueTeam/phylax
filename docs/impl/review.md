@@ -662,4 +662,4 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A7.Q1: yes, delete the account-guessing inference. Quotient access from inside the environment is uncertain, so both inputs are first-class: read Quotient's API when reachable, or paste the credlist/user list (and Up/Down table) into the UI. Auth-log learning maps usernames to services and flags unknown scorer logins.
 - A7.Q2: open; David will ask organizers whether automated PCR submission is OK. Build `pcr.generate`/`pcr.verify` now; `pcr.submit` (Quotient JSON API `POST /api/pcrs/submit`, one-click confirm, check updated/skipped) is conditional on that answer. Never call the reset endpoint.
 - A7.Q3: Orange customer flows are not a separate module: they are multi-step flow checks on scored services inside `checks` (N7.2 merged into the checks module; run from Kali and LAN like other checks).
-- All other area-7 calls accepted? (pending confirmation)
+- All other area-7 calls accepted.
