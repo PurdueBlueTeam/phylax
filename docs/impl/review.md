@@ -669,3 +669,9 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 
 ### Area 9 (2026-10-31)
 - All calls accepted. A9.Q1: keep the built extra decoys (D383 = KEEP), LAN-only, opt-in per host in decoys.yml. D389 public decoys cut.
+
+### Area 7 revision (2026-10-31)
+- Quotient is NOT directly reachable from inside the environment, and there's no good way to move the scored-user list inside. So:
+  - D251 reverts to the earlier design: learning scorer accounts from observed logins (scorer-labeled traffic + auth events) is the primary source, kept, not deleted. Quotient's list is not an input.
+  - D278-D280 portal read: not available inside; drop the API read and the "paste the list" input as primary paths. Service status comes from our own checks (and an optional hand-entered Up/Down note).
+  - `pcr.submit` (A7.Q2) is moot: PCRs are entered by a human in Quotient outside the environment. Phylax generates a short, typeable list of (credlist, user, new password) and verifies by login afterwards.
