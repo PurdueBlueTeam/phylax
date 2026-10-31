@@ -604,3 +604,14 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 13. **Per-module budget in the heartbeat.** CPU ms, RSS and bytes out per module, so a runaway rule is visible and the conformance suite can check "respects budget".
 14. **`validate` hook on config writes.** A typed validator (`sshd -t`, `visudo -cf`, `nginx -t`, `nft -c`, ...) runs on the temp file before the atomic rename.
 15. **Grouped multi-host results.** Collapse identical outputs ("14 same, 2 differ"), outliers first, with per-host status; the convergence board (N11.7) uses the same grouping.
+
+## Answers from David (recorded per round)
+
+### Area 1 (2026-10-31)
+- All calls in area 1 accepted.
+- A1.Q1: settled earlier: module contract, registry and event bus first, then retrofit existing modules.
+- A1.Q2: build the Go WinRM client for Windows first contact (D139 = KEEP, WinRM). No SMB-drop variant.
+- A1.Q3: yes. T+0 is a manual console rotation of admin and service credentials; Phylax enrolls right after.
+- Falco-style rule format (lists, macros, exceptions): yes.
+- P1 (per-executable egress): yes, alert-only allowlist of which programs may connect out (D216 CHANGE). Automatic blocking: offer it as a suggestion the operator approves with one click ("block this?"), never silent.
+- P2 (noexec /tmp, /dev/shm, /var/tmp): yes, live remount with a pre-check and remount rollback, opt-in per host (N5.7).
