@@ -632,3 +632,5 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - David: simplicity is key throughout; less to break. Apply it to every call.
 - A4.Q1: content guard (N4.1) yes, implemented safely (constraints pending confirmation below).
 - A4.Q2: yes, cut the Sigma importer; hand-port.
+- A4.Q3: yes. Content guard constraints: (1) only files listed by path in services.yml; (2) restore only from the plan-tagged golden copy; (3) ignore changes under a plan tag or while a plan holds the service lock; (4) scorer-mimic probe after each restore, roll back our restore and alert on failure; (5) second restore of the same file within 10 min stops and alerts; (6) starts alert-only per service until switched to act. Simplicity trims: rule format keeps `lists`, `exceptions`, per-rule `rate:`; drop `macros`, `maturity:`, `requires:`; suppression records are exceptions with reason/owner/expiry written from the UI (one mechanism); cut N3.5 offline bundle; cut the D85 typed-params change.
+- A3.Q2: yes, rest of area 3 accepted; delete the unused `modules.disable_loading` action (D157).
