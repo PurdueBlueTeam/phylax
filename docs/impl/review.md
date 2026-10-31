@@ -707,3 +707,7 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - D1: no. The team packet arrives well before the event, so the manifest is written from the packet and committed as today.
 - D2: yes. Rewrite phylax_design.md around the module contract (core, then one section per module from a fixed template, then operations and testing), carrying over kept text and applying every decision here. Old line references (L<n>) refer to `git show v3:phylax_design.md`.
 - A7.Q4 (implied by A7.Q6, the PCR process David approved): rotated scored passwords are typeable passphrases (about four random words plus a digit, ~20-25 chars, no look-alike characters), shown large on screen; verified by login.
+
+### Design approval round (2026-10-31)
+- B1: yes, enable AD Recycle Bin, automatically (no approval) as part of the T+0/first-hour automation on the DC; restoring a deleted scored user from the Recycle Bin is automatic too, verified by the next scorer login.
+- David: "I want as much of Phylax automated as possible." This revises the earlier preference that actions beyond tier 0 are one-click suggestions. Scope of the change pending (see A-AUTO).
