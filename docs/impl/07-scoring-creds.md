@@ -1518,3 +1518,729 @@ func TestNoOldChecksPaths(t *testing.T) {
 - [ ] **Step 5: Commit.** `git commit -am "controller: remove the checks hub and scorer wiring now owned by the modules"`
 
 ---
+
+### Task 31: `vantage`: one agent module with three sub-roles, no `scorer` import
+
+**Files:**
+- Create: `internal/vantage/module.go`, `internal/vantage/gate.go`
+- Modify: `internal/vantage/{vantage,scan,canary,verify}.go` (kinds through `event.New`, `scorer.Window` removed), `internal/agent/mods/vantage.go`
+- Test: `internal/vantage/module_test.go`, `internal/vantage/{scan,canary,verify,core}_test.go` (updated)
+
+**Interfaces:**
+- Consumes: `plan.VantageSettings`, `AgentConfig.Roles`, `plan.RoundClock.Window`, `probe.Allowlist` (Task 12), `event.New`.
+- Produces:
+
+```go
+type Module struct{ /* scanner, canary, verify by role */ }
+func New(cfg Config, env agent.Env) (*Module, error)       // agent.Module "vantage"; HealthReporter; roles scanner and canary switch the sub-parts, the verify service is always built
+func Active() *Module                                       // the running instance, for the pcr.verify action (shortcut: one agent per process)
+func (m *Module) refuse(target, reason string)             // emits vantage.refused (RefusedScan), High, deduplicated
+```
+
+The three old agent modules (`vantage.scanner`, `vantage.verify`, `vantage.canary`) become one module `vantage`; `Section` is enabled when `Modules.Vantage != nil`; the allowlist check is a hard check in the agent (scans, canary replies are inbound-only, verify targets). The gate is a local 12-line adapter over `Env.Fact("round_clock")` and `plan.RoundClock.Window` (`shortcut: duplicated in checks, hoist to agent.Env when a third module needs it`). The `scorer.Verifier` implementation `RemoteVerifier` is deleted (the controller starts verification with a plan, Task 33); `LocalTransport` stays for the lab.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestVantageAgentConformance(t *testing.T) {
+	conformance.Agent(t, conformance.AgentCase{Factory: factoryNamed(t, "vantage"), Default: kaliCfg(1), Reconfig: kaliCfg(2), KeepKey: "vantage.last_scan", Load: canaryLoad()})
+}
+func TestRolesSwitchSubparts(t *testing.T) { /* Roles [scanner]: scanner on, canary listener not bound; [canary]: reverse; [] with block non-nil: only verify */ }
+func TestRefusesNonAllowlistedScanTarget(t *testing.T) { /* settings Allowlist 127.0.0.0/8, a scan request for 203.0.113.9: nothing dialled, one vantage.refused, event validates */ }
+func TestKindsAreDeclaredAndTagged(t *testing.T) { /* every emitted event validates; canary hits and scans carry no vantage.check names; grep guard: no "vantage.check" in the package */ }
+func TestNoScorerImport(t *testing.T) { /* go list -deps ./internal/vantage excludes internal/scorer and internal/checks */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/agent/mods/ -run 'Conformance|RolesSwitch|RefusesNon|KindsAre|NoScorerImport' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/ ./internal/agent/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: one agent module with scanner, canary and verify sub-roles"`
+
+---
+
+### Task 32: `vantage`: dangerous ports, scored ports closed, pre-window scan
+
+**Files:**
+- Create: `internal/vantage/exposure.go`, `rules/vantage/dangerous_ports.yml`
+- Modify: `internal/vantage/scan.go` (`Diff`, `DiffExposure`), `internal/vantage/module.go`
+- Test: `internal/vantage/exposure_test.go`
+
+**Interfaces:**
+- Consumes: `plan.VantageSettings.ScoredServices`, `PreWindow`, `DangerousPorts`.
+- Produces:
+
+```go
+type Dangerous struct{ Proto string; Port uint16; UnlessScoredKind string } // 135, 139, 445 unless smb, 3389 unless rdp, 23, 5985, 5986 unless winrm, 3306, 5432, 6379, 27017, 9200
+func LoadDangerous(fsys fs.FS) ([]Dangerous, error)
+// Diff gains: DangerousOpen []Finding; ScoredClosed []Finding
+func DiffExposure(declared Exposure, observed Observed, scanned []netip.Addr, danger []Dangerous, scoredKinds map[netip.Addr]map[string]bool) Diff
+func NextScanAt(now time.Time, last time.Time, interval time.Duration, pre []time.Time) time.Time
+```
+
+The scan is diffed against the scored set only (no public decoys). `newly_open` fires once until the port closes; a scored port that is closed fires `closed` with `scored: true`; an open port on the dangerous list fires `dangerous_open` unless the manifest scores that service; a cancelled scan emits nothing; a full-range scan starts 10 minutes before each pre-window time; the scan waits `quiet_wait` for a quiet window when a clock feed exists and runs at its low rate otherwise.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestDangerousOpenUnlessScored(t *testing.T) { /* 445 open, smb not scored: dangerous_open; smb scored: not dangerous (and not newly_open); 3306 open: dangerous_open; 5985 with winrm scored: none */ }
+func TestScoredPortClosedAlerts(t *testing.T) { /* declared 443 scored, observed closed: ExposureChange{change closed, scored true} */ }
+func TestNewlyOpenOncePerOpening(t *testing.T) { /* open on scan 1 and 2: one event; closes then opens: a second */ }
+func TestCancelledScanEmitsNothing(t *testing.T) { /* cancel mid-scan: no vantage.scan, no exposure_change (cannot look like closed ports) */ }
+func TestNextScanAtPreWindow(t *testing.T) { /* pre [14:00]: at 13:40 with interval 15 m last 13:30 -> next 13:50 (pre-window start); at 13:55 -> 13:50 already past -> runs now once; no pre times -> last+interval */ }
+func TestDangerousListLoads(t *testing.T) { /* rules/vantage/dangerous_ports.yml parses, includes 135, 3389 unless rdp, 9200; unknown field is an error */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'Dangerous|ScoredPortClosed|NewlyOpen|Cancelled|NextScanAt' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: dangerous ports, scored ports closed, pre-window scan"`
+
+---
+
+### Task 33: `vantage`: `pcr.verify` per credlist and the RDP wrapper
+
+**Files:**
+- Create: `internal/vantage/rdpauth.go`
+- Modify: `internal/vantage/verify.go`, `internal/vantage/module.go` (action registration through `actions.RegisterExtra`)
+- Test: `internal/vantage/verify_test.go`, `internal/vantage/rdpauth_test.go`
+
+**Interfaces:**
+- Consumes: `actions.RegisterExtra` (W3), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
+- Produces:
+
+```go
+// action pcr.verify{account string, credlist string, targets string /* JSON []Target */}  Risk none, Runs agent (the Kali), secret param password
+type Target struct{ Type string `json:"type"`; Host string `json:"host"`; Port int `json:"port"`; Encrypted bool `json:"encrypted,omitempty"`; Domain string `json:"domain,omitempty"`; Service string `json:"service"` }
+func (m *Module) Verify(ctx context.Context, account, credlist string, targets []Target, pass vault.Secret) (ok bool, perService map[string]error)
+func RDPAuth(ctx context.Context, host string, port int, user, pass string) error // runs `xfreerdp /v:host:port /u:user /from-stdin /auth-only /cert:ignore`; the password goes on stdin, never argv
+var ErrToolMissing = errors.New("vantage: xfreerdp not installed")
+```
+
+Verification logs in with `AuthOnly` on the public services of that credlist group only (the controller sends the targets), succeeds only if every target accepts, and fails when there are no targets or any target is outside the allowlist (`vantage.refused`). One `vantage.pcr_verify` per service (Critical on failure). The module sets `probe.Options.RDPAuth = RDPAuth`; a missing tool is the health gap "xfreerdp absent (RDP auth probe unavailable)". `shortcut: stdin password mode of xfreerdp assumed from the 3.x flags, verify in the lab.`
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestVerifyAllMustPass(t *testing.T) { /* two fake targets (imap ok, smtp wrong password): ok false, perService["smtp"] != nil, two pcr_verify events, the failing one Critical */ }
+func TestVerifyOnlyTheCredlistsServices(t *testing.T) { /* targets list has imap only: the ssh fake server sees no connection */ }
+func TestVerifyNoTargetsOrDisallowedFails(t *testing.T) { /* no targets: failure with ErrNoPublicPath text; a 203.0.113.9 target: failure and vantage.refused, nothing dialled */ }
+func TestVerifyActionSecretNeverLeaks(t *testing.T) { /* run through actions.Env.Execute with Secrets {"password":"Plum-river-tent-82"}: Output, events and the returned error never contain it */ }
+func TestRDPAuthPasswordOnStdin(t *testing.T) {
+	// PATH=<tmp> containing a script "xfreerdp" that records argv and stdin and exits 0 / 1:
+	// stdin == "Plum-river-tent-82\n" (or the mode's framing), argv does not contain it; exit 1 -> error without the password; no tool -> ErrToolMissing and the health gap
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'VerifyAll|VerifyOnly|VerifyNoTargets|VerifyActionSecret|RDPAuth' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/ ./internal/actions/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: pcr.verify per credlist; xfreerdp wrapper with stdin password"`
+
+---
+
+### Task 34: `vantage`: Zerologon check-only tester (Sonnet)
+
+**Files:**
+- Create: `internal/vantage/zerologon.go`, `internal/vantage/zerologon_test.go`, `internal/vantage/netlogon_fake_test.go`
+- Modify: `internal/vantage/module.go` (action `probe.zerologon_check`)
+
+**Interfaces:**
+- Consumes: `actions.RegisterExtra`, `probe.Allowlist`.
+- Produces:
+
+```go
+type ZerologonResult string // "vulnerable" | "not_vulnerable" | "inconclusive"
+func ZerologonCheck(ctx context.Context, dc netip.Addr, dcName, account string, o ZerologonOptions) (ZerologonResult, error)
+type ZerologonOptions struct{ Attempts int /* 2000 */; Timeout time.Duration; Dial func(ctx context.Context, network, addr string) (net.Conn, error) }
+// action probe.zerologon_check{host string} Risk none, ReadOnly, Touches none; emits vantage.probe{probe: zerologon}
+```
+
+The tester does the public check-only handshake: DCE/RPC bind over TCP (endpoint mapper on 135 to find the Netlogon port), `NetrServerReqChallenge` with an all-zero client challenge, then `NetrServerAuthenticate3` with an all-zero client credential and the unsealed-flags negotiate value, up to `Attempts` times (each attempt succeeds with probability 1/256 on a vulnerable DC); success means `vulnerable`, every attempt rejected means `not_vulnerable`, an unreachable or filtered endpoint mapper means `inconclusive`. **It never calls `NetrServerPasswordSet2` or any opnum other than ReqChallenge (4) and Authenticate3 (26)**; it targets only an allowlisted address. `shortcut: TCP RPC through the endpoint mapper only (no SMB named pipe); a DC that answers only on the pipe reports inconclusive.`
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestZerologonVulnerableFake(t *testing.T) { /* fake Netlogon (epmapper + one RPC port): mode vulnerable accepts a zero credential with p = 1/256 (seeded) -> result vulnerable within 2000 attempts */ }
+func TestZerologonPatchedFake(t *testing.T) { /* mode patched answers STATUS_ACCESS_DENIED to every Authenticate3 -> not_vulnerable after Attempts; elapsed bounded by ctx */ }
+func TestZerologonOnlyCheckOpnums(t *testing.T) { /* in both modes the fake recorded opnums are a subset of {4, 26}; never 30 (NetrServerPasswordSet2) */ }
+func TestZerologonInconclusiveWhenFiltered(t *testing.T) { /* nothing listening on 135: inconclusive, no error, no hang past Timeout */ }
+func TestZerologonActionRefusesOutsideAllowlistAndIsReadOnly(t *testing.T) { /* Spec().ReadOnly, Risk none; host 203.0.113.9 refused with vantage.refused */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run Zerologon -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Hand-written NDR for the two calls (about 300 lines); no new module in `go.mod`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: zerologon check-only tester and action"`
+
+---
+
+### Task 35: `vantage`: SMB and WinRM exposure probes
+
+**Files:**
+- Create: `internal/vantage/smbwinrm.go`, `internal/vantage/smbwinrm_test.go`
+- Modify: `internal/checks/probe/smb.go` (export `SMBNegotiate`)
+
+**Interfaces:**
+- Consumes: the probe library's SMB2 framing.
+- Produces:
+
+```go
+type SMBInfo struct{ Dialect string; SigningRequired bool; Encrypts bool }
+func SMBNegotiate(ctx context.Context, addr string, o Options) (SMBInfo, error)        // package probe: NEGOTIATE only, no session setup
+func WinRMMethods(ctx context.Context, addr string, tls bool, o probe.Options) ([]string, error) // unauthenticated POST /wsman, the WWW-Authenticate schemes
+// Module.exposureProbes(ctx) emits vantage.probe{probe: smb_exposure | winrm_exposure, host, result, evidence} per allowlisted address
+```
+
+These are fingerprint reads, not logins: the SMB probe stops after the NEGOTIATE response; the WinRM probe sends one unauthenticated request and reads the `WWW-Authenticate` header. They run only for hosts where the corresponding probe is enabled in settings and only on allowlisted addresses.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestSMBNegotiateParses(t *testing.T) { /* fake SMB2 server answering dialect 0x0210 with signing-required: SMBInfo{"2.1", true, false}; a garbage reply -> error, no panic; no session setup bytes were received by the fake */ }
+func TestWinRMMethodsFromHeader(t *testing.T) { /* fake wsman answering 401 with WWW-Authenticate: Negotiate, Kerberos -> [Negotiate Kerberos]; 200 -> [] ; TLS variant on 5986 with a self-signed cert works */ }
+func TestExposureProbesEmitAndRespectSettings(t *testing.T) { /* settings SMB true WinRM false: only smb_exposure events; every event validates; a non-allowlisted host is skipped with vantage.refused */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/checks/probe/ -run 'SMBNegotiate|WinRMMethods|ExposureProbes' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/ ./internal/checks/probe/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: SMB and WinRM exposure probes"`
+
+---
+
+### Task 36: `vantage`: controller side, V1 to V4, pages, conformance
+
+**Files:**
+- Create: `internal/vantage/controller.go`, `internal/vantage/ui.go`, `internal/vantage/ui/vantage.html`, `internal/controller/genconfig_vantage.go`, `rules/vantage/vantage.yml`, `plans/vantage/scan_now.yml`, `manifest/2027/modules/vantage.yml`, `manifest/schema/modules/vantage.schema.json`
+- Modify: `internal/module/conformance/allowed.go` (remove `vantage` from `PreContract`), `internal/module/all/all.go`
+- Test: `internal/vantage/controller_test.go`, `internal/vantage/conformance_test.go`, `internal/controller/genconfig_vantage_test.go`
+
+**Interfaces:**
+- Consumes: `Host.Tables`, `Host.Subscribe` (`vantage.scan`, `vantage.exposure_change`), the loader of `detect` rules (W4's corpus test covers `rules/vantage/`), `Host.RunReadOnly`.
+- Produces: tables `vantage_scan(id INTEGER PRIMARY KEY AUTOINCREMENT, time_ns INTEGER NOT NULL, hosts TEXT NOT NULL, duration_ms INTEGER NOT NULL, tcp_open TEXT NOT NULL, udp_open TEXT NOT NULL)` and `vantage_exposure(host TEXT NOT NULL, port INTEGER NOT NULL, proto TEXT NOT NULL, state TEXT NOT NULL, scored INTEGER NOT NULL, first_ns INTEGER NOT NULL, last_ns INTEGER NOT NULL, PRIMARY KEY(host, port, proto))` written by one goroutine from the module's own events; rules V1 (`checks.compare` class `path_broken`, `scorer_content` or `internal_only`), V2 (`vantage.exposure_change` `newly_open`, `dangerous_open`, or `closed` with `scored: true`), V3 (`vantage.canary_hit`), V4 (`vantage.pcr_verify` with `ok: false`), severity info or 1, each with inline tests; `/vantage` (per public address open ports against the scored set, last scan and diff, canary results by host, verification history, the Kali's link and allowlist, a **Scan now** button that runs `plans/vantage/scan_now.yml` through `RunReadOnly`, the field for the organizers' scan times written to `overrides.yml`); `genconfig_vantage.go` renders `VantageSettings` for a host with role `scanner` or `canary` (allowlist, scored set from the manifest's public addresses, `PreWindow` from the overrides). `shortcut: the manifest's public address per host is the hosts.yml field public, add it to the reference manifest when absent.` Health: `degraded` when the scan is behind schedule, the clock feed is absent or `xfreerdp`/`nmap` is missing; `unavailable` when the Kali is down or its allowlist empty.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestVantageControllerConformance(t *testing.T) {
+	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\nallowlist: [172.25.21.0/24]\n", Seed: nil, Now: time.Unix(1e9, 0)})
+}
+func TestVRulesFire(t *testing.T) { /* detect corpus loader over rules/vantage: V1..V4 inline tests pass; V2 does not fire for exposure_change declared_closed */ }
+func TestExposureTableProjection(t *testing.T) { /* newly_open then closed events: one vantage_exposure row, state closed, first_ns kept */ }
+func TestScanNowRunsReadOnlyPlan(t *testing.T) { /* POST action scan_now -> Host.RunReadOnly("scan_now", {host: kali}); the template passes lint SS000 */ }
+func TestKaliSettingsRendered(t *testing.T) { /* reference manifest: kali host Modules.Vantage.Allowlist == the public /24, ScoredServices non-empty, PreWindow from overrides; a LAN host: nil */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/controller/ -run 'VantageControllerConformance|VRules|ExposureTable|ScanNow|KaliSettings' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement**, remove the `PreContract` entry, run `go test ./internal/module/all/ -run Schema -update`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/... ./internal/controller/ ./internal/module/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vantage: controller side, V1 to V4, page; vantage leaves PreContract"`
+
+---
+
+### Task 37: `creds/pcr`: the engine as a record keeper
+
+**Files:**
+- Modify: `internal/creds/pcr/engine.go`, `internal/creds/pcr/csv.go`, tests (moved in Task 1)
+- Test: `internal/creds/pcr/engine_test.go`, `internal/creds/pcr/csv_test.go`
+
+**Interfaces:**
+- Consumes: the moved engine; `vault.Secret`.
+- Produces: the engine keeps the transaction state machine, the caps and the CSV; hosts, the Kali and the portal are no longer its collaborators (plans do those steps).
+
+```go
+type Window struct{ Safe bool; Start, End time.Time; Confidence float64; Reason string }
+type Config struct{ MinWindow time.Duration; MinConfidence float64; AllowLowConfidence bool; VerifyNotice time.Duration; MaxAccountsPerBatch, MaxOpenTxns int; Policy CSVPolicy }
+func NewEngine(cfg Config) *Engine
+func (e *Engine) Plan(req PlanRequest, now time.Time) (Txn, error)                    // caps: MaxOpenTxns, CanRotate; ErrBatchTooLarge is raised by Prepare
+func (e *Engine) Gate(w Window) error                                                  // NotInWindowError / LowConfidenceError
+func (e *Engine) HostChanged(id string, now time.Time, w Window, hazard bool) error   // planned -> host_changed; Deadline = w.End; Race when hazard or now > w.End
+func (e *Engine) KaliResult(id string, ok bool, now time.Time) error
+func (e *Engine) Prepare(ids []string) (Submission, error)                             // unchanged CSV blocks; len(ids) <= MaxAccountsPerBatch
+func (e *Engine) ConfirmSubmission(subID string, reply PCRReply, at time.Time) error // unchanged
+func (e *Engine) ObserveScorerLogin(account string, ok bool, burstSeq int, at time.Time) []string // unchanged
+func (e *Engine) Rollback(id string, now time.Time) (*Submission, error)              // marks HostReverted/old-value Submission; no host call
+func (e *Engine) Load(t Txn) error                                                     // rebuild after a restart from creds_txn
+const StateReverted TxnState = "reverted"
+```
+
+Removed: `Scripted`, `PCRSubmitter`, `Submit`, `HostChanger`, `Verifier`, `WindowSource`, `ErrScriptedDisabled`, `ErrNoSubmitter`, `Generate`, `PlanForRecord`, `SyncRecord`, `CredsState`, and the imports of `creds` and `scorer`. The package imports only `internal/vault` and the standard library.
+
+- [ ] **Step 1: Write the failing tests** (the built state-machine, window, CSV, race and rollback tests are adapted, not rewritten; these are the new ones)
+
+```go
+func TestPCRImportsOnlyVault(t *testing.T) { /* go list -deps ./internal/creds/pcr contains no internal/creds, internal/scorer, internal/vantage, internal/checks */ }
+func TestCapsEnforced(t *testing.T) { /* MaxOpenTxns 6: the 7th Plan -> error; Prepare of 4 ids with MaxAccountsPerBatch 3 -> ErrBatchTooLarge; a second Plan for an account with an open txn -> CanRotate error */ }
+func TestGateNeedsWindowAndConfidence(t *testing.T) { /* Window{Safe false} -> NotInWindowError; Confidence 0.35 -> LowConfidenceError unless AllowLowConfidence */ }
+func TestHostChangedSetsDeadlineAndRace(t *testing.T) { /* inside the window: Deadline == w.End, Race false; hazard true or now after w.End: Race true; first failed login after a Race is forgiven once (Tolerated), the second is failed */ }
+func TestLoadRebuildsOpenTxn(t *testing.T) { /* a Txn at host_changed round-trips through json (no secrets in the JSON: OldPass/NewPass tagged json:"-") and Load restores it; ApplyHost-equivalent is not repeatable (HostChanged again -> ErrBadState) */ }
+func TestStateRevertedTransitions(t *testing.T) { /* verified -> reverted allowed; reverted -> planned (resync/back) allowed; failed -> reverted not allowed */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/pcr/ -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the edits; Task 1's skipped tests for `Plan`, `HostChanged` and `Load` are unskipped here.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/... ./internal/scorer/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds/pcr: the engine keeps transactions; plans do the host work"`
+
+---
+
+### Task 38: `creds`: the typeable passphrase class and the word list
+
+**Files:**
+- Create: `internal/creds/words.go`, `rules/creds/words.txt` (BIP-39 English list, 2,048 words, MIT licence text kept in `rules/creds/LICENSE-words`)
+- Modify: `internal/creds/policy.go` (`Class`: `Typeable`, `Admin`, `Machine`; `Scored` and `Unscored` removed), `internal/creds/breakglass.go`, `internal/creds/record.go`, `internal/controller/dir_devices.go`, `internal/controller/devexec_test.go`
+- Test: `internal/creds/words_test.go`, `internal/creds/creds_test.go`
+
+**Interfaces:**
+- Consumes: `vault.Secret`, `Generator.Reserve` (unique across everything generated).
+- Produces:
+
+```go
+func LoadWords(fsys fs.FS) ([]string, error)                         // 2,048 unique lowercase words; sha256 pinned
+// Class: Typeable (4 words, one capitalised, joined by '-', two digits, 20 to 25 characters), Admin (5 words, up to 32), Machine (24 to 32 from the conservative alphabet plus # % ^)
+func (g *Generator) Generate(c Class, avoid ...string) (vault.Secret, error)   // Typeable and Admin need the loaded list: NewGenerator(words []string)
+func DeriveBreakGlassTypeable(secret, host, user string, epoch uint32, words []string) (vault.Secret, error) // 5 words, HMAC-SHA256 expansion; DeriveBreakGlass stays for Machine
+```
+
+The generated password satisfies AD complexity (upper, lower, digit, `-`), stays inside `[A-Za-z0-9._+=-]`, never contains the account name (3 or more characters), and is rejected and redrawn when its length is outside 20 to 25 (the design's example `Plum-river-tent-82` is 18 characters; the design text is corrected in this commit: BIP-39 words run 3 to 8 letters). About 53 bits: `shortcut: typeable passphrases carry about 50 bits; upgrade to five words if dumped scored hashes are cracked.`
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestWordlistValid(t *testing.T) {
+	w, err := LoadWords(os.DirFS("../.."))
+	if err != nil || len(w) != 2048 { t.Fatalf("%d %v", len(w), err) }
+	// all lowercase a-z, unique, no word a prefix of another within the first 4 letters (BIP-39 property), sha256 of the file == the pinned constant
+}
+func TestTypeableShape(t *testing.T) {
+	g := NewGenerator(loadWords(t))
+	re := regexp.MustCompile(`^[A-Za-z0-9-]{20,25}$`)
+	for i := 0; i < 2000; i++ {
+		s, _ := g.Generate(Typeable, "alice")
+		pw := s.Reveal()
+		if !re.MatchString(pw) || strings.Count(pw, "-") != 3 || !hasUpper(pw) || !hasLower(pw) || !endsWithTwoDigits(pw) || strings.Contains(strings.ToLower(pw), "alice") { t.Fatalf("%q", pw) }
+		if exactlyOneCapitalisedWord(pw) == false { t.Fatalf("%q", pw) }
+		if err := PCRSafe("alice", pw); err != nil { t.Fatalf("%q: %v", pw, err) }
+	}
+}
+func TestTypeableUniqueAcrossGenerator(t *testing.T) { /* 5000 draws, no duplicates (case-insensitive SHA-256 reservation); a Reserved value is never returned */ }
+func TestAdminAndMachineClasses(t *testing.T) { /* Admin: 5 words, <= 32 chars; Machine: 24..32 chars from the alphabet with # % ^ allowed and none of , " ' \ space @ : / $ ` ; & | < > ( ) ! * ~ { } [ ] */ }
+func TestBreakGlassTypeableKnownAnswer(t *testing.T) { /* fixed secret, host, user, epoch 1 and the word list: equals the pinned vector; epoch 2 differs; the vector fails if the word-list hash changes */ }
+func TestNoScoredOrUnscoredClassLeft(t *testing.T) { /* grep guard: no "creds.Scored" or "creds.Unscored" in the tree */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'Wordlist|Typeable|AdminAndMachine|BreakGlassTypeable|NoScored' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Rejection sampling for the length window; uniform word choice with `crypto/rand`; the vector is computed once and pinned.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: typeable passphrase class, admin and machine classes, word list"`
+
+---
+
+### Task 39: `creds`: module base, inventory per (account, credlist), tables, restart
+
+**Files:**
+- Modify: `internal/creds/module.go`, `config.go`, `record.go` (`Record.Credlists []CredlistRow`, `CredlistRow{Credlist, State, Txn}`; `PCRState` gains `reverted`), `internal/creds/tables.go`
+- Create: `internal/creds/inventory.go`, `manifest/2027/modules/creds.yml`
+- Test: `internal/creds/module_test.go`, `internal/creds/inventory_test.go`
+
+**Interfaces:**
+- Consumes: `module.Host` (`Config`, `Tables`, `Subscribe`, `Secrets`, `Emit`), `accounts.yml` through `Host.Config`-adjacent manifest access (`Config.Accounts` rendered by the controller into the module block as `accounts:`), `scorer.account`, `pcr.Engine.Load`.
+- Produces: migrations
+
+```sql
+CREATE TABLE creds_account(account TEXT NOT NULL, host TEXT NOT NULL, role TEXT NOT NULL, domain INTEGER NOT NULL, scored INTEGER NOT NULL, current_version TEXT NOT NULL DEFAULT '', previous_version TEXT NOT NULL DEFAULT '', last_rotated_ns INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account, host));
+CREATE TABLE creds_credlist(account TEXT NOT NULL, host TEXT NOT NULL, credlist TEXT NOT NULL, state TEXT NOT NULL, txn TEXT NOT NULL DEFAULT '', PRIMARY KEY(account, host, credlist));
+CREATE TABLE creds_txn(txn TEXT PRIMARY KEY, account TEXT NOT NULL, state TEXT NOT NULL, json TEXT NOT NULL, updated_ns INTEGER NOT NULL);
+CREATE TABLE creds_row(txn TEXT NOT NULL, credlist TEXT NOT NULL, row INTEGER NOT NULL, user TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(txn, credlist, row));
+```
+
+One writer goroutine fills them from `creds.state` and `creds.txn`; `creds_txn.json` is a `pcr.Txn` snapshot without secrets (tables hold vault version ids only). `Start` rebuilds the engine from open `creds_txn` rows. The inventory is every account in `accounts.yml` plus the learned scored accounts (`scorer.account`: `scored`, credlist rows from the learned group); `scored: unknown` is treated as protected and is not rotatable. Health: `degraded` with the gap "vault locked, no rotation or verification", or "no quiet window" while the clock is provisional, or when the Kali is down; `unavailable` when the vault cannot be read. `Config` gains `Secrets []string` (default `[cred/*, pcr/*]`).
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestInventoryFromAccountsAndScorer(t *testing.T) { /* accounts.yml has mail-users scored with credlists [learned]; a scorer.account event for alice on imap group L2 -> record alice scored, one CredlistRow L2 stable; sysadmin@linux unscored with rotation t0_console */ }
+func TestUnknownScoredIsProtectedNotRotatable(t *testing.T) { /* scored: unknown -> Record.Scored true for the guard, Prepare refuses with "scored status unknown" */ }
+func TestTablesProjectedFromEventsOnly(t *testing.T) { /* creds.state events for (alice, L1) and (alice, L2): two creds_credlist rows; a direct Exec to creds_credlist from the test succeeds only through ModuleDB; rows hold no value, only version ids */ }
+func TestRestartRebuildsOpenTxns(t *testing.T) { /* creds_txn row at host_changed -> after a module restart Engine.Get(id).State == host_changed and no plan is started */ }
+func TestHealthStates(t *testing.T) { /* vault locked: degraded + gap; clock provisional: degraded "no quiet window"; vault read error: unavailable */ }
+func TestNoSecretInTables(t *testing.T) { /* put "Plum-river-tent-82" in the vault under pcr/t1/..., run a full inventory + a txn row: dump every creds_* table and every stored creds.* event: the value is nowhere */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'Inventory|UnknownScored|TablesProjected|RestartRebuilds|HealthStates|NoSecretInTables' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: module base, per-credlist inventory, tables, restart"`
+
+---
+
+### Task 40: Scored-account session eviction policy (T49 CI form)
+
+Precondition: W2 merged `session.terminate_predating{account | source, before}` (README row). If it is absent, stop and escalate.
+
+**Files:**
+- Create: `internal/actions/session_evict.go`
+- Modify: the W2 action file for `session.terminate_predating` (params and wiring)
+- Test: `internal/actions/session_evict_test.go`
+
+**Interfaces:**
+- Consumes: the W2 action and its session lister.
+- Produces:
+
+```go
+type Session struct{ ID, User, Source string; Start time.Time }
+type EvictParams struct{ Before, Now time.Time; Scored bool; CutoffMS int64; ExemptSources []string }
+func EvictionPolicy(ss []Session, p EvictParams) (kill, flag []Session)
+// session.terminate_predating gains params: scored bool, cutoff_ms int (>= 0), exempt_sources string (comma-separated addresses)
+```
+
+Rules: a session that began at or after `Before` is untouched. Admin and service accounts (`Scored` false): kill every session that began before `Before`. Scored accounts: kill only a session that began before `Before`, whose age at `Now` is at least `CutoffMS`, whose source parses as an address not in `ExemptSources`, and whose `Start` is non-zero; a session older than the cutoff from an exempt source is flagged; any session that cannot be classified (zero start, unparseable or empty source) is flagged, never killed; `CutoffMS == 0` (no delay measured yet) means flag-only: nothing is killed.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestEvictionPolicyTable(t *testing.T) { // T49 CI half
+	now := t0
+	before := now.Add(-5 * time.Minute)
+	ss := []Session{
+		{"young-scorer", "alice", "198.51.100.7", now.Add(-10 * time.Second)},   // began after Before: untouched
+		{"old-red", "alice", "203.0.113.5", before.Add(-2 * time.Hour)},          // old, non-scorer: killed
+		{"old-from-scorer-src", "alice", "198.51.100.7", before.Add(-2 * time.Hour)}, // older than cutoff but scorer-labelled: flagged
+		{"unclassifiable", "alice", "", before.Add(-2 * time.Hour)},              // no source: flagged
+		{"zero-start", "alice", "203.0.113.6", time.Time{}},                      // flagged
+		{"before-but-young", "alice", "203.0.113.8", before.Add(-30 * time.Second)}, // began before Before but younger than the cutoff: not killed, not flagged? flagged
+	}
+	kill, flag := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: true, CutoffMS: 120000, ExemptSources: []string{"198.51.100.7"}})
+	// kill == [old-red]; flag == [old-from-scorer-src, unclassifiable, zero-start, before-but-young]; young-scorer in neither
+	k2, f2 := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: true, CutoffMS: 0, ExemptSources: nil})
+	// flag-only: len(k2) == 0; every session older than Before is flagged
+	k3, _ := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: false})
+	// plain eviction: kills old-red, old-from-scorer-src, unclassifiable, zero-start? (only those with Start < Before and non-zero Start), before-but-young
+}
+func TestTerminateActionParams(t *testing.T) { /* negative cutoff_ms rejected; scored true without cutoff_ms defaults to flag-only; the action output lists killed and flagged ids */ }
+```
+
+(The implementer replaces the inline comments with `reflect.DeepEqual` on ids; the `before-but-young` row is flagged and a zero `Start` is flagged for scored and skipped for plain eviction.)
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'EvictionPolicy|TerminateActionParams' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the pure function and wire the action to it.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "actions: scored-account session eviction policy"`
+
+---
+
+### Task 41: `creds`: plan templates and the `CR001` transaction rule
+
+**Files:**
+- Create: `plans/creds/scored-change.yml`, `plans/creds/resync.yml`, `plans/creds/unscored-rotation.yml`, `internal/creds/lint.go`
+- Test: `internal/creds/lint_test.go`, `internal/creds/templates_test.go`
+
+**Interfaces:**
+- Consumes: `lint.Register`, `lint.Ctx.Query`, `LoadModuleTemplate`, `ExpandTemplate`, node options (Tasks 3 and 4), `session.terminate_predating` (Task 40), `pcr.verify` (Task 33), `health.check` (Task 19).
+- Produces: `CR001` registered from `init`: a node that sets a password (`user.set_password`, `ad.account.reset_password`, `splunk.password`) for an account the manifest marks scored or unknown passes only when it carries `txn: <id>`, the plan is `module: creds` and one of the three templates, and the latest `creds.txn` event for that id is not terminal (read through `Ctx.Query`). Templates (class `click` for `scored-change`, `auto` for `resync`, `click` for `unscored-rotation`):
+
+```yaml
+# scored-change.yml: params account, hosts (comma list), txn, pref (pcr/<txn>/new or pcr/<txn>/old), before, cutoff_ms, exempt_sources, kali, credlist, targets
+id: creds.scored-change
+module: creds
+on_failure: stop_dependents
+nodes:
+  - {id: change, each: hosts, action: user.set_password, target: "${host}", txn: "${txn}", window: scorer_quiet, max_hold: 600s, window_min_sec: 30, deadman_sec: 120, params: {user: "${account}", secret_params: [password], secret_refs: {password: "${pref}/${host}/${account}"}}}
+  - {id: evict,  each: hosts, action: session.terminate_predating, target: "${host}", needs: [change], params: {user: "${account}", before: "${before}", scored: true, cutoff_ms: "${cutoff_ms}", exempt_sources: "${exempt_sources}"}}
+  - {id: reply,  gate: true, ask: "Portal reply: how many rows did Quotient accept?", reply: count, needs: [evict]}
+  - {id: verify, action: pcr.verify, target: "${kali}", needs: [evict], txn: "${txn}", params: {account: "${account}", credlist: "${credlist}", targets: "${targets}", secret_params: [password], secret_refs: {password: "${pref}/verify/${account}"}}}
+```
+
+`resync.yml` is the same `change` node (value `pcr/<txn>/cur/...`, the vault's current value) followed by `verify`, no gate, no eviction; `unscored-rotation.yml` rotates an unscored account (`user.set_password`, the files that embed it, then `health.check` scorer_mimic) and has no `txn`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestCR001(t *testing.T) {
+	ctx := lintCtx(t, scoredAccounts("alice"), openTxn("t1"), closedTxn("t0"))
+	node := func(user, txn string) plan.Node { return plan.Node{ID: "n", Action: "user.set_password", Target: "h1", Txn: txn, Params: map[string]any{"user": user}} }
+	cases := []struct{ name string; p plan.Plan; want bool }{
+		{"no txn", planOf("creds", "scored-change", node("alice", "")), true},
+		{"closed txn", planOf("creds", "scored-change", node("alice", "t0")), true},
+		{"open txn", planOf("creds", "scored-change", node("alice", "t1")), false},
+		{"open txn in a hardening plan", planOf("hardening", "x", node("alice", "t1")), true},
+		{"unscored account", planOf("hardening", "x", node("svc-app", "")), false},
+		{"unknown account is protected", planOf("hardening", "x", node("mystery", "")), true},
+	}
+	for _, c := range cases { /* lint.Run(c.p, ctx) has a CR001 finding == c.want */ }
+}
+func TestScoredChangeExpandsPerHost(t *testing.T) { /* template with hosts "rocky-ecom,ubuntu-email": two change nodes and two evict nodes, ids unique, every change node has Window scorer_quiet, MaxHoldSec 600, Txn set; the reply gate has Ask and Reply count; ExpandTemplate rejects a missing param */ }
+func TestTemplatesLintClean(t *testing.T) { /* scored-change with txn open passes every registered rule except none; resync is ClassAuto and passes; unscored-rotation passes for an unscored account and fails CR001 if pointed at a scored one */ }
+func TestResyncHasNoTypedStep(t *testing.T) { /* resync.yml contains no gate and no session.terminate_predating */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'CR001|ScoredChange|TemplatesLint|ResyncHas' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the rule and the templates; extend the template loader's `each` to take a comma-separated parameter if it cannot (`each: hosts` with `${host}` per element) and say so in the commit.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/ ./internal/plan/... ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: plan templates and the CR001 transaction rule"`
+
+---
+
+### Task 42: `creds`: transaction driver A: prepare, stage, release, commit, eviction (Sonnet)
+
+**Files:**
+- Create: `internal/creds/txn.go`, `internal/creds/txn_ui.go`
+- Modify: `internal/creds/module.go`
+- Test: `internal/creds/txn_test.go`
+
+**Interfaces:**
+- Consumes: `pcr.Engine` (Task 37), `Generator` (Task 38), `vault.Writer` via `Host.Secrets("cred/*", "pcr/*")`, `Host.Propose`, `Host.Control` (`creds_txn` fact), `scorer.clock` (latest, for `Window`, `eviction_cutoff_ms`, `rounds_expected`), `scorer.round` (current sources), `agent.step_result` (Task 5), the `fakeRunner` helper (Task 1), `vantage.probe` (latest Zerologon result for domain accounts).
+- Produces:
+
+```go
+func (m *Module) Prepare(ctx context.Context, p PrepareRequest) (txn string, err error) // PrepareRequest{Accounts []AccountRef; By string; OverrideConfidence bool}
+func (m *Module) ShowList(ctx context.Context, txn, by string) (pcr.Submission, error)  // reveal is a POST action, audited by the UI shell
+func (m *Module) Stage(ctx context.Context, txn, by string) error                       // staged tick with the operator's name
+func (m *Module) Release(ctx context.Context, txn string) (proposalID int64, err error) // Host.Propose of scored-change; the operator's Accept click starts it
+```
+
+`Prepare` refuses (error text names the reason, nothing is stored): a scored status of unknown, an account with an open txn, more open transactions than `max_open_txns`, a batch larger than `max_accounts_per_txn`, a host with a `reverted` row, a domain account while the latest Zerologon result is not `not_vulnerable`, a vault that is locked, and (at `Release`) a clock that is provisional or below `min_confidence` unless `OverrideConfidence`. It generates one `Typeable` password per (account), writes `pcr/<txn>/new/<host>/<account>`, `pcr/<txn>/old/<host>/<account>` (a copy of the current value), `pcr/<txn>/verify/<account>` and, for resync, `pcr/<txn>/cur/...`; emits `creds.txn{prepared}`; opens the `creds_txn` fact (`ID: plan.CredsTxnFactID(account)`, hosts = the check runners and the Kali, TTL 30 min, refreshed every 10 min until the transaction ends). `Release` fills the plan parameters (`before` = now, `cutoff_ms` and `exempt_sources` from the latest clock and round) and proposes `scored-change`; plan node results (`agent.step_result`, filtered to plans of module `creds` with a `txn`) drive `HostChanged` (emitting `host_changed`) and record eviction. The UI also generates a dummy list (made-up users, no host change) for the timing exercise.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestPrepareRefusals(t *testing.T) {
+	for name, setup := range map[string]func(*fixture){
+		"scored unknown": func(f *fixture) { f.account("mystery", unknown) }, "open txn": func(f *fixture) { f.openTxn("alice") },
+		"too many open": func(f *fixture) { f.openTxns(6) }, "batch too large": func(f *fixture) { f.batch = 4 },
+		"reverted row on host": func(f *fixture) { f.reverted("rocky-ecom", "alice") },
+		"domain without zerologon result": func(f *fixture) { f.account("dom-user", domain) }, "vault locked": func(f *fixture) { f.lockVault() },
+	} { /* Prepare returns an error naming the reason; no vault write, no event, no fact */ }
+}
+func TestPrepareStoresPendingAndOpensFact(t *testing.T) {
+	// Prepare(alice on rocky-ecom,ubuntu-email, credlists L1,L2): vault has pcr/<txn>/new/<host>/alice for both hosts (typeable, 20-25 chars), .../old/... equal to the current values;
+	// one creds.txn{prepared}; fake Host.Control saw creds_txn:alice Open true with TTL 30 min, and a refresh after 10 min (fake clock)
+	// ShowList returns two CSV blocks (L1, L2) with one "alice,<pw>" line each and the row count; Stage by "dana" adds creds.txn{staged, by [dana]}
+}
+func TestReleaseProposesWithClockParams(t *testing.T) {
+	// clock confidence 0.9, window open, eviction_cutoff_ms 20000, scorer sources [198.51.100.7]: Release -> Host.Propose with Template "scored-change", Params hosts, txn, pref "pcr/<txn>/new", before (RFC 3339), cutoff_ms "20000", exempt_sources "198.51.100.7", Reason "tier 1"
+	// confidence 0.35 -> error "round clock confidence 0.35 below 0.50"; with OverrideConfidence -> proposed; provisional -> refused even with override? (override allows confidence only)
+}
+func TestStepResultsDriveHostChanged(t *testing.T) {
+	// fakeRunner delivers agent.step_result for change nodes (module creds, txn t1) verified inside the window: engine state host_changed, creds.txn{host_changed} emitted once after all hosts are done;
+	// a failed change node: no host_changed; the txn ends rolled_back with creds.txn{rolled_back} and the fact is closed (Open false) (failure handling detail in Task 43)
+}
+func TestRestartResumesAtHostChanged(t *testing.T) { /* kill the module after host_changed; a new module over the same store: state host_changed, no new Propose, no second host change, creds_txn fact re-sent with a fresh TTL */ }
+func TestNoSecretAnywhere(t *testing.T) { /* after prepare+release+host_changed: grep the store events, creds_* tables, the proposal row, the plan JSON stored by the controller and the module logger output for the generated password and for the old one: absent */ }
+func TestDummyListMakesNoHostChange(t *testing.T) { /* dummy list: made-up users, no vault write, no proposal, no fact */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'PrepareRefusals|PrepareStores|ReleaseProposes|StepResultsDrive|RestartResumes|NoSecretAnywhere|DummyList' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** The gate on the clock reads the same `scorer.clock` event the controller hold (Task 3) reads.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: prepare, stage, release and commit of a scored change"`
+
+---
+
+### Task 43: `creds`: transaction driver B: verify, reply, scorer login, failure handling (Sonnet)
+
+**Files:**
+- Modify: `internal/creds/txn.go`
+- Create: `internal/creds/txn_finish.go`
+- Test: `internal/creds/txn_finish_test.go`
+
+**Interfaces:**
+- Consumes: Task 42, `vantage.pcr_verify`, `scorer.login`, `scorer.item_set` (`rounds_expected`), `pcr.Engine.KaliResult/ConfirmSubmission/ObserveScorerLogin/Rollback`.
+- Produces:
+
+```go
+func (m *Module) Reply(ctx context.Context, txn, by string, r pcr.PCRReply) error // the portal reply, from the manual gate or the UI form
+func (m *Module) FixForward(ctx context.Context, txn, row, by string) error        // the operator retyped a row after a failed scored login
+func (m *Module) RollBack(ctx context.Context, txn, by string) error               // revert plan in the next quiet window + typed list with the old value
+```
+
+Behaviour: after the `reply` gate (count equal to the rows, `skipped` empty) the transaction waits for a passing `scorer.login` by that user on the credlist's service; the UI shows the expected rounds (`rounds_expected` for one user, `k ln k` for all); after `verify_notice` (15 min) without a pass a `creds.notice` is emitted, **silence never rolls back**. On `verified`: the new value becomes the current vault entry (`Put cred/<host>/<account>`, previous version recorded), the pending `pcr/<txn>/*` entries are deleted, the `creds_txn` fact is closed, `creds.state` is emitted per credlist row. Failures: (1) host change fails: the plan rolled the node back, nothing submitted, `rolled_back`, pending entries deleted; (2) the Kali verify fails (`vantage.pcr_verify ok:false`): the transaction stays `host_changed`, the revert is proposed as `scored-change` with `pref=pcr/<txn>/old` held to the next quiet window, and the typed list with the old value is shown (the human re-submits the old value; Quotient already holds the new one); (3) window missed or human late (`HostChanged` race, or the reply arrives after the deadline): marked `late` or `race`, the first failed scorer login in the next burst is forgiven once; (4) reply mismatch: treated as possibly applied, a rollback also enters the old value, `skipped` rows fail with no PCR rollback; (5) a scored login fails after submit: default fix-forward (retype one row), alternative rollback; rollback never uses "Reset to Defaults".
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestHappyPathEndToEnd(t *testing.T) { // T35 normal
+	// fixture clock open; Prepare, Stage, Release+Accept via fakeRunner, change/evict results, verify result ok, Reply(count 2, no skipped), scorer.login ok for alice@imap
+	// -> creds.txn steps in order [prepared staged committing host_changed verify_ok pcr_submitted verified]; vault cred/<host>/alice == the new value, previous version kept; pcr/<txn>/* gone; fact closed; creds.state stable
+}
+func TestSilenceNeverRollsBack(t *testing.T) { /* after Reply, advance the fake clock 20 min with no scorer.login: one creds.notice "verification overdue", state still pcr_submitted, no plan started */ }
+func TestKaliVerifyFailureStartsHeldRevert(t *testing.T) { /* verify result ok false: state stays host_changed, a Propose of scored-change with pref pcr/<txn>/old, the list shown carries the OLD value, vantage.pcr_verify V4 present */ }
+func TestReplyMismatchTreatedAsApplied(t *testing.T) {
+	// Reply count 1 for 2 rows: error "reply does not match", PCRUnknown true; RollBack's list contains the old value; Reply skipped ["bob"]: that row failed, RollBack list excludes bob's old value
+}
+func TestLateAndRaceForgiveFirstFailedLogin(t *testing.T) { /* host change after the window end: step "late"; HostChanged inside a hazard: "race"; first failed scorer.login is forgiven (Tolerated), the second moves to failed; no more than one failed round per affected user is charged */ }
+func TestFailedLoginFixForwardOrRollback(t *testing.T) { /* failed login -> state failed; FixForward(row) keeps the host, re-shows that row and returns to pcr_submitted; RollBack proposes the old-value change and never emits a "Reset to Defaults" CSV (the list has one line per affected row only) */ }
+func TestOldValueWrittenBackOnRollback(t *testing.T) { /* after rolled_back the vault current value is the old one and pending entries are deleted */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'HappyPath|SilenceNever|KaliVerifyFailure|ReplyMismatch|LateAndRace|FailedLoginFixForward|OldValueWritten' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: verification, portal reply, scorer login and failure handling"`
+
+---
+
+### Task 44: `creds`: revert detection and automatic re-apply (T51 CI form)
+
+**Files:**
+- Create: `internal/creds/revert.go`, `plans/creds/pcr-back.md` is NOT created (PCR back reuses the engine, no plan)
+- Modify: `internal/creds/txn.go`, `internal/creds/module.go`
+- Test: `internal/creds/revert_test.go`
+
+**Interfaces:**
+- Consumes: `agent.reenrolled` (core), `Host.RunAuto` and `module.ErrProposed`, `plans/creds/resync.yml`, `vantage.pcr_verify`, `scorer.login`, the operator action `mark_reverted`.
+- Produces:
+
+```go
+func (m *Module) MarkReverted(ctx context.Context, host, reason string) error // reason: reenroll | operator | login_mismatch
+func (m *Module) Resync(ctx context.Context, host, account string) error       // RunAuto("resync", params + trigger); ErrProposed leaves the row queued with a button
+func (m *Module) PCRBack(ctx context.Context, host, account, by string) error  // typed list with the old value; no host change plan
+```
+
+`agent.reenrolled` (a reverted DC reverts every domain credential) or an operator mark turns every rotated credential of that host into `reverted` per (account, credlist) and emits `creds.reverted` (Alert). `login_mismatch` fires after three consecutive failed `scorer.login` for a `verified` row (`shortcut: no probe with the previous value; upgrade when the Kali can test the previous password`). While any row of a host is `reverted`, `Prepare` refuses scored changes on it. **Re-apply is automatic (A-AUTO):** `creds.reverted` starts `RunAuto("resync")` (`trigger` = the event ref, `auto: [resync]` in the block); the plan is held to the next quiet window (`max_hold`), runs behind the scorer-mimic probe and the Kali verification and rolls back to `reverted` on a red probe; it sets no new value, so nothing is typed. If `RunAuto` returns `ErrProposed` (probe cannot run, quiet window never fits) the proposal is the button and the row stays queued. Re-apply is a transaction of type `resync` (it records that Quotient already holds the value, which is what lets CR001 pass); **PCR back** leaves the host at the old value and produces a typed list for the human.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestReenrollMarksRowsReverted(t *testing.T) { /* two verified rows on rocky-ecom (alice L1, L2) and one on ubuntu-email: agent.reenrolled{rocky-ecom} -> both rocky rows reverted, one creds.reverted{reason reenroll, credlists [L1 L2]}, ubuntu row stable */ }
+func TestRevertedBlocksScoredChangeOnHost(t *testing.T) { /* Prepare for bob on rocky-ecom refused while a reverted row exists there; allowed on ubuntu-email */ }
+func TestAutoResyncSuccess(t *testing.T) { /* fake RunAuto records template "resync", params with trigger "controller:<seq>"; the fake runner reports change verified + Kali verify ok -> rows stable, a resync creds.txn with no list shown and no scored login required to unblock */ }
+func TestResyncProposedWhenProbeCannotRun(t *testing.T) { /* RunAuto returns ErrProposed -> rows stay reverted, one open proposal with Reason, no host change */ }
+func TestResyncRedProbeReturnsToReverted(t *testing.T) { /* node result outcome rolled_back "after-probe red: web" -> state reverted again, a creds.notice, the breaker (W1 Task 28) counted */ }
+func TestPCRBackListHasOldValueNoHostPlan(t *testing.T) { /* PCRBack -> CSV block with the previous value, no Propose, state planned->host_changed shortcut documented; reply + scorer.login -> stable */ }
+func TestOperatorMarkAndDCRevertsAllDomainCreds(t *testing.T) { /* MarkReverted(host dc, operator): every domain account row reverted */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'ReenrollMarks|RevertedBlocks|AutoResync|ResyncProposed|ResyncRedProbe|PCRBack|OperatorMark' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: revert detection, automatic re-apply, PCR back"`
+
+---
+
+### Task 45: `creds`: proposals from evidence
+
+**Files:**
+- Create: `internal/creds/proposal.go`
+- Test: `internal/creds/proposal_test.go`
+
+**Interfaces:**
+- Consumes: `Host.Emit` for `creds.proposal`; plain structs only (Task 47 adds the adapters from `detect.alert`, `honeytokens.sighting`, `hunt.finding`, `chains.item`).
+- Produces:
+
+```go
+type Evidence struct{ Kind string; Ref EventRefPair; Account string; Hosts []string; Source string; Rule string }
+// Kind: pth_alert | dcsync | honeytoken_dump | credential_file | rotate_credential_item | interactive_login
+func (m *Module) Propose(ctx context.Context, ev Evidence) (emitted bool, err error)
+```
+
+A proposal starts only from evidence of compromise or leak of a specific **scored** account (`creds.proposal`: account, credlists, hosts, reason, evidence refs, `proposed_by`); a scored account in a DCSync or `ntds.dit` chain; a scored user's interactive login from a non-scorer source (`auth_event` with `logon_type` 2, 10 or an ssh session from an address that is not in the current round's scorer sources); operators can add an account by hand. Nothing is rotated automatically; an unscored account yields no proposal; the same (account, kind) within 10 minutes is deduplicated. `Config.ProposalRules` lists the rule ids that count as `pth_alert` and `dcsync`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestProposalOnlyForScoredAccounts(t *testing.T) { /* evidence for an unscored svc account: no event; for alice (scored, credlists L1, L2, hosts rocky-ecom): one creds.proposal with both credlists and the evidence ref */ }
+func TestInteractiveLoginFromNonScorerSource(t *testing.T) { /* auth_event success logon_type 10 for alice from 203.0.113.5 (not in round sources): proposal; same login from a scorer source: none */ }
+func TestProposalDeduplicated(t *testing.T) { /* two pth_alert evidences within 10 minutes: one proposal; after 11 minutes: two */ }
+func TestManualProposal(t *testing.T) { /* UI action add_proposal {account}: proposal with ProposedBy the operator and reason "operator"; unscored account refused */ }
+func TestAcceptRecordsApprover(t *testing.T) { /* accepting (Prepare from the proposal) records "approved by <name>" in creds.txn.By */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'ProposalOnly|InteractiveLogin|ProposalDedup|ManualProposal|AcceptRecords' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "creds: proposals from evidence of compromise"`
+
+---
+
+### Task 46: `creds`: T+0 sheet, unscored rotation, pages, conformance
+
+**Files:**
+- Create: `internal/creds/sheet.go`, `cmd/phylax/creds.go` (subcommand `creds sheet`), `internal/creds/ui.go`, `internal/creds/ui/{credentials,pcr}.html`, `internal/creds/conformance_test.go`, `manifest/schema/modules/creds.schema.json`
+- Modify: `cmd/phylax/main.go`, `internal/module/conformance/allowed.go` (remove `creds` from `PreContract`)
+- Test: `internal/creds/sheet_test.go`, `internal/creds/ui_test.go`, `cmd/phylax/creds_test.go`
+
+**Interfaces:**
+- Consumes: `DeriveBreakGlassTypeable`, the manifest accounts, `Registrar`, `creds.t0` events.
+- Produces: `phylax creds sheet -manifest <dir> -secret-file <path> [-epoch N]` printing, offline, every host's `sysadmin`, root and local Administrator, the domain admins and service accounts, the Palo `admin` and VyOS `vyos` accounts with their derived values and a checkbox per step; scored users never appear; `(*Module).T0Enter(ctx, secret, by)` derives and stores the values in the vault once the controller is up (a POST action, audited); `(*Module).Tick(ctx, host, account, by)` emits `creds.t0` (an owner name is required). Unscored rotation after enrollment uses `plans/creds/unscored-rotation.yml` through `Host.Propose`; any successful admin authentication from a source other than the controller after rotation is left to `detect` rule D9. Pages: `/credentials` (inventory with masked secrets and reveal as an audited POST, open proposals, the PCR list screen with staged tick, countdown, window remaining and reply form, the transaction log, the `reverted` queue), a host-grid column "creds handled" (verified when the host's T+0 rotation is ticked and no row is `reverted` or open), a tile (open transactions, reverted rows). Controller conformance: starts locked (`degraded`, vault gap), stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestSheetListsAdminsNotScoredUsers(t *testing.T) { /* reference manifest: sheet has sysadmin@linux on 3 hosts, windows Administrator, ad-admin, Palo admin, VyOS vyos; no mail-users (scored); same secret+epoch gives byte-identical output, epoch 2 differs */ }
+func TestSheetValuesAreTypeable(t *testing.T) { /* every value matches ^[A-Za-z0-9-]{20,40}$ and words come from the list */ }
+func TestT0EnterStoresDerivedValues(t *testing.T) { /* T0Enter with the printed secret: vault cred/<host>/<account> equals DeriveBreakGlassTypeable(...) for each; a wrong secret length is refused */ }
+func TestTickNeedsOwnerName(t *testing.T) { /* Tick with by "" -> error; with name -> creds.t0 event */ }
+func TestCredsControllerConformance(t *testing.T) {
+	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\nact_enabled: false\n", Seed: nil, Now: time.Unix(1e9, 0)})
+}
+func TestCredentialsPageMasksSecrets(t *testing.T) { /* GET /m/creds/credentials never contains a password; reveal is POST only and audited */ }
+func TestUnscoredRotationTemplate(t *testing.T) { /* Propose(unscored-rotation) for ecom-admin: embedded files updated in the same plan, health.check last; lint clean */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ ./cmd/phylax/ -run 'Sheet|T0Enter|TickNeeds|Conformance|PageMasks|UnscoredRotation' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement**, remove the `PreContract` entry, run `go test ./internal/module/all/ -run Schema -update`.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS, including `TestNoSiblingImports`, `TestKindTable`, `TestPreContractShrinks` with all four modules on the contract.
+- [ ] **Step 5: Commit.** `git commit -am "creds: T+0 sheet, pages, conformance; creds leaves PreContract"`
+
+---
+
+### Task 47: Late-bound inputs (run when the W4, W5, W8 and W9 seams are merged)
+
+**Files:**
+- Create: `internal/creds/adapters.go`, `internal/scorer/adapters.go`, `internal/checks/adapters.go`
+- Modify: the manifests of `creds`, `scorer` and `checks` (`Consumes`), `internal/scorer/risk.go`, `internal/checks/doctor.go`
+- Test: `internal/creds/adapters_test.go`, `internal/scorer/adapters_test.go`, `internal/checks/adapters_test.go`
+
+**Interfaces:**
+- Consumes: the declared kinds `detect.alert` (W4), `honeytokens.sighting` (W9), `hunt.finding` (W5), `chains.item` (W8), `traceback.change` (W8), `deps.graph` (W8), `inventory.probe_result` (W3, already declared); their payload structs from the producing packages' `kinds.go` read at this point (no import: decode with a local struct).
+- Produces: `creds`: `evidenceFromAlert`, `evidenceFromSighting`, `evidenceFromFinding`, `evidenceFromChainItem` mapping to `Evidence` (Task 45); `scorer`: `traceback.change` joins the risk analyser (`ours` when an untagged change of ours or a failed plan node precedes the outage, `red` for an untagged change by red, `platform` for a Phylax fault); `checks`: `deps.graph` high-confidence edges join the doctor's dependency probes. Each manifest `Consumes` gains the kinds; `Manifest.Validate` and conformance check 12 pass.
+
+- [ ] **Step 1: Write the failing tests**
+
+```go
+func TestEvidenceMapping(t *testing.T) { /* a detect.alert with rule id in ProposalRules and entities.account alice -> Evidence{pth_alert}; a honeytokens.sighting that shows a dump -> honeytoken_dump; a hunt.finding of kind credential_file -> credential_file; chains.item kind rotate_credential -> rotate_credential_item; a chain event that is not an item is ignored */ }
+func TestRiskCauseWithTraceback(t *testing.T) { /* untagged change by us before the red -> ours; untagged by red -> red; none -> unknown; identical output twice */ }
+func TestDoctorUsesDepsGraph(t *testing.T) { /* a high-confidence edge web -> db in deps.graph adds a TCP probe node for db to the doctor plan; low confidence does not */ }
+func TestManifestsConsumeDeclaredKinds(t *testing.T) { /* Validate nil for the three; every Consumes entry event.Lookup ok */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ ./internal/scorer/ ./internal/checks/ -run 'EvidenceMapping|RiskCauseWith|DoctorUsesDeps|ManifestsConsume' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "scoring-creds: adapters for late-bound inputs"`
+
+---
+
+### Task 48: Lab (stronger agent or David)
+
+Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra; the "ccdc27" lab) with real Quotient at commit `9000379` (admin API for ground truth), two credlists, a Kali on the VyOS side leg, one unpatched and one patched DC, and the Orange traffic generator built from `checks/flows/*.yml`. Does not block the merge.
+
+**Files:**
+- Create: `docs/impl/lab/w7-scoring-creds.md`
+
+- [ ] **Step 1: Run the matrix tests and record each** (date, commit, VMIDs, test id, pass or fail, measured values, what was not run):
+  - T14 a Quotient `event.conf` hot-adds an HTTP path, a DNS record and a custom check: a `scorer.proposal` within one round.
+  - T15 two hours with Orange traffic: 100% of Quotient's checks proposed, 0 false proposals, dropped checks stale within 5 rounds.
+  - T30 20 bursts with jitter, a discarded round, a team-wide missing burst: Delay and Jitter within 1 s, the dropped round is not an incident.
+  - T35 PCR transaction: normal, a list entered mid-round, wrong order, a list typo, edge-character passwords, one user on two credlists: at most one failed round per affected user, verification via the Kali and the scorer's next login, rollback by a typed list of the old values.
+  - T37 `BadAttempts` and scorer fingerprints with the runner address changed each round: no brute-force or lockout alert, scorer-labelled by behaviour.
+  - T39 faithful checks against Quotient's results: agreement 98% or more after calibration; a Palo rule that blocks the public path but not the LAN gives `path_broken`; a newly opened port fires V2; an egress leak fires V3.
+  - T49 eviction: a scorer session in flight, a session older than the measured delay, an unclassifiable session: only the old non-scorer session is evicted; before a delay is measured eviction is flag-only; 0 failed scorer rounds.
+  - T50 account and credlist learning against two credlists: 100% of the accounts used in the window; service-to-credlist matches the admin API.
+  - T51 revert a host and the AD after a PCR: rows `reverted`, scored changes blocked, automatic re-apply in a quiet window (button if the probe cannot run), PCR back offered.
+  - New: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down); a closed scored port raises V2; the Zerologon tester against the unpatched and the patched DC; the pre-window scan; `xfreerdp /auth-only` stdin mode.
+- [ ] **Step 2: Record the measurements the plan marks open:** agent and controller CPU and memory per module against the starting budgets, mailbox growth from the SMTP probe, `max_accounts_per_txn` and `max_open_txns` from the typing exercise, the verification wait against `rounds_expected`.
+- [ ] **Step 3: Commit.** `git add docs/impl/lab/w7-scoring-creds.md && git commit -m "lab: W7 scoring and credentials record"`; open an issue for every failure.
+
+---
+
+## Self-review
+
+**Spec coverage.** `checks`: probe library move and no scheduler (1), TFTP/NTP (8, 9, 11 only when scored), runner with allowlist and fact gate (12, 13), sealed credentials (7, 14, 18), tables and writer (15), red/latency/compare with pairing and 3 samples (16), probe-result facts, proposals, lifecycle and accept-current (17), `Env.Probe` with two users per credlist and `health.check` (19), doctor (20), Orange flows (21), pages and conformance (22). `scorer`: base, replay, no `sysadmin` (23), clock/rounds/fact/eviction cutoff (24), discovery/proposals/blocked/silent (25), account learning with BadAttempts and credlist groups (26), SLA precedence and per-round accrual (27), points at risk (28), pages/notes/health (29), old wiring removed (30). `vantage`: one module (31), dangerous ports/scored closed/pre-window (32), `pcr.verify` per credlist and RDP (33), Zerologon (34), SMB/WinRM (35), controller side V1-V4 (36). `creds`: engine (37), passphrase class (38), per-credlist inventory (39), eviction policy (40), templates and CR001 (41), process steps 1 to 4 (42), steps 5 and 6 (43), step 7 revert and A-AUTO (44), proposals (45), T+0, rotation, pages (46). Core gaps closed: window hold (3), manual gate, txn, PCR flag (4), step results (5), vault writer (6), sealing (7), fact data (2). Late inputs (47). Lab (48). Known bug 20 probe half: Task 19. Not built here, by design: agent-side `Env.Probe`; the `detect` pass-the-hash pack (W4); `session.terminate_predating` itself (W2).
+
+**Step scan.** Each test step carries names and assertions with the design's values (window 30 s and confidence 0.5, `red_after` 2, 3 samples, 200 history rows, 20 to 25 characters, `verify_notice` 15 min, caps 3 and 6, BIP-39 2,048 words); code steps carry signatures and the file. Comment-bodied tests (marked `/* ... */`) are descriptions the implementer turns into the code they name, as in W1 and W3.
+
+**Type consistency.** `RoundClock`, `CredsTxnFact`, `ProbeResultFact` (Task 1) are used by Tasks 2, 13, 17, 24, 31, 42; `EventRefPair` by Tasks 16, 25, 36, 45; `ResultEvent` by 12, 15, 16, 17; `pcr.Window`/`Engine` (37) by 42 to 44; `CredsTxnFactID` (13) by 42; `Allowlist` moves to `probe` in Task 12 and is used by 31 to 35; `vault.Writer` (6) by 42, 43; `link.SealSecret` replaces the Task 1 `plan.SealSecret` sketch (Task 7 states it; Task 1 declares it in `link`).
+
+**Proportion.** About four modules, 48 tasks; the plan is about 1.6 times the module sections it implements, mostly tests and signatures. No function body is transcribed except the extrapolation rule (Task 2), the eviction rules (Task 40) and the lint cases (Task 41), which the signatures alone do not determine.

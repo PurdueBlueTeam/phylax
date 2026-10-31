@@ -1282,3 +1282,978 @@ func TestSysmonInstallRefusesPathsOutsideDepot(t *testing.T) { /* installer path
 - [ ] **Step 5: Commit.** `git commit -am "actions: sysmon.install"`
 
 ---
+
+### Task 24: `respond` recipe format, loader, validation and the pending-action list
+
+**Files:**
+- Create: `internal/respond/recipe.go`, `internal/respond/validate.go`, `internal/respond/pending.go`, `internal/respond/view.go`, `internal/module/all/content.go`
+- Modify: `rules/respond/recipes.go` (package `respondrecipes`: `//go:embed *.yml` into `var FS embed.FS`; the embed needs at least one `.yml`, so this task adds `firewall_restore.yml` early or Task 28 lands first in the same pull request), `internal/respond/config.go`
+- Test: `internal/respond/recipe_test.go`, `internal/respond/validate_test.go`
+
+**Interfaces:**
+- Consumes: `actions.Registry` (`Get`, `Names`), `actions.Spec` (`Risk`, `Validate`), `actions.Action.Touches`, `plan` template loader (`controller.LoadModuleTemplate` is controller-side; here templates are read from an `fs.FS` rooted at `plans/respond`).
+- Produces:
+
+```go
+type Step struct {
+	Action     string            `yaml:"action"`
+	Params     map[string]any    `yaml:"params"`
+	ParamsFrom map[string]string `yaml:"params_from"` // param -> "entities.<key>"
+	Optional   bool              `yaml:"optional"`    // skip silently when an entity is absent
+	Gate       string            `yaml:"gate"`        // output key that must be non-empty, else the recipe stops (skipped_guard, "gate")
+	Block      bool              `yaml:"block"`       // source_block guards apply (Task 29)
+	OS         string            `yaml:"os"`          // "", "linux" or "windows"
+	Probe      bool              `yaml:"probe"`       // touches scored state: a known green scorer-mimic verdict is required first
+	Rollback   bool              `yaml:"rollback"`    // the action returns rollback data
+}
+type Proposal struct {
+	Title      string            `yaml:"title"`
+	Template   string            `yaml:"template"` // plans/respond/<name>.yml
+	Params     map[string]string `yaml:"params"`
+	ParamsFrom map[string]string `yaml:"params_from"`
+	Note       string            `yaml:"note"`
+}
+type TestAlert struct {
+	Rule     string            `yaml:"rule"`
+	Mode     string            `yaml:"mode"`
+	Tier     int               `yaml:"tier"`
+	Agent    string            `yaml:"agent"`
+	Entities map[string]string `yaml:"entities"`
+}
+type RecipeTest struct {
+	Name        string    `yaml:"name"`
+	Alert       TestAlert `yaml:"alert"`
+	WantTier0   []string  `yaml:"want_tier0"`   // action names, in order
+	WantPropose []string  `yaml:"want_propose"` // template names
+	WantAuto    []string  `yaml:"want_auto"`
+	WantError   string    `yaml:"want_error"`   // substring of the Resolve error
+}
+type Recipe struct {
+	Name              string      `yaml:"recipe"`
+	Module            string      `yaml:"module"`
+	Triggers          []string    `yaml:"triggers"`
+	RequiresSensors   []string    `yaml:"requires_sensors"`
+	GPOSetting        string      `yaml:"gpo_setting"` // "", firewall, defender, audit
+	UnscoredHostsOnly bool        `yaml:"unscored_hosts_only"`
+	Collect           []string    `yaml:"collect"`
+	Tier0             []Step      `yaml:"tier0"`
+	Propose           []Proposal  `yaml:"propose"`
+	Auto              []string    `yaml:"auto"`
+	Tests             []RecipeTest `yaml:"tests"`
+	File              string      `yaml:"-"`
+}
+type RecipeSet struct{ Recipes []*Recipe }
+func Parse(name string, data []byte) (*RecipeSet, error)     // multi-document, strict (KnownFields); recipe, module: respond, triggers and tests mandatory
+func LoadFS(fsys fs.FS) (*RecipeSet, error)                    // every *.yml in the root, sorted
+func SetContent(fsys fs.FS)                                    // internal/module/all/content.go calls SetContent(respondrecipes.FS)
+func Content() fs.FS
+func Matches(trigger, ruleID string) bool                      // exact id, or "D1.*": prefix "D1." only (never D17 or D1f)
+func (rs *RecipeSet) For(ruleID string) []*Recipe               // sorted by recipe name
+type Resolved struct {
+	Recipe  *Recipe
+	Tier0   []Call            // Call{Action string; Params map[string]any; Step Step}
+	Propose []ProposalCall    // ProposalCall{Title, Template string; Params map[string]string; Note string}
+	Auto    []string
+}
+func (r *Recipe) Resolve(a AlertView, now time.Time) (Resolved, error)
+type AlertView struct { // loose view of a detect.alert (no import of internal/detect)
+	ID, Rule, Mode, Agent string
+	Tier                  int
+	Entities              map[string]string
+	Seq                   uint64
+	Time                  time.Time
+}
+func ViewOf(e event.Event) (AlertView, error) // json round trip of Fields into the view; unknown keys ignored; Mode/Tier/Rule required
+func (rs *RecipeSet) RunTests() []TestResult // TestResult{Recipe, Test string; Err error}
+type Validator struct {
+	Actions   *actions.Registry
+	RuleIDs   map[string]bool // nil: skip the trigger check
+	Templates fs.FS           // plans/respond
+	Modules   map[string]bool // module names for requires_sensors
+}
+func (rs *RecipeSet) Validate(v Validator) []error
+var ClickOnly = []string{"proc.kill_tree", "proc.suspend", "proc.dump", "binary.restore_from_depot", "fw.quarantine", "ad.account.krbtgt_reset", "backup.restore", "palo.revert", "vyos.apply", "host.exec", "user.set_password", "sql.set_password", "ad.account.reset_password"}
+type Pending struct{ Owner string; Scored bool } // Scored: the action's Touches can name scored state (so a step must say probe and rollback)
+var PendingActions = map[string]Pending{
+	"fw.restore": {"W6", false}, "fw.apply": {"W6", false}, "fw.quarantine": {"W6", false},
+	"unit.disable": {"W5", false}, "task.disable": {"W5", false}, "runkey.remove": {"W5", false}, "wmi.subscription_remove": {"W5", false},
+	"ad.recycle_restore": {"W5", true}, "ad.gpo_unlink": {"W5", false}, "binary.restore_from_depot": {"W5", true},
+	"hunt.persistence": {"W5", false}, "yara.scan": {"W5", false}, "session.terminate_predating": {"W2", false},
+}
+```
+
+`Resolve` rules: a `params_from` value must be `entities.<key>` and the alert must carry the key (else an error `entity <key> missing`, unless the step is `Optional`, which is then omitted); a resolved string must have no byte below 0x20 and no 0x7f, at most 4096 bytes, and a value for a parameter named `path`, `exe`, `unit_path` or ending `_path` must be absolute and equal to its `filepath.Clean` (no `..`); `${now}` in a literal param becomes `now` in RFC 3339 UTC; `os` mismatch with `runtime.GOOS` omits the step. `Validate` rules (each an error naming recipe and step): `module: respond`; every trigger is an exact id or `<id-prefix>.*` and, with `RuleIDs`, matches at least one rule; every action is registered or in `PendingActions` (and the entry must not also be registered: `remove it from PendingActions`); no `ClickOnly` action and no registered action with `Risk == RiskDestructive` under `tier0:`, and no `proc.kill_tree` under `auto:` either (templates under `auto:` are checked in Task 30); a tier-0 step whose action is registered and whose `Touches` for the test alerts' resolved params is non-empty, or whose action is a `Scored` pending one, must set `probe` and `rollback`; a recipe with `tier0:` has at least one `propose:` entry (a skipped tier-0 action becomes a click); every `Proposal.Template` and `auto` name has `<name>.yml` in `Templates` with `module: respond`, and the proposal's `params`+`params_from` keys plus `host` equal the template's `${...}` placeholder set; every `requires_sensors` name is in `Modules`; at least one test, and every test passes `RunTests`.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestParseStrict(t *testing.T) { /* unknown key (ir_template, tier1) -> error; missing triggers -> error; duplicate recipe name across docs -> error */ }
+func TestTriggerMatching(t *testing.T) {
+	for _, c := range []struct{ trig, id string; want bool }{
+		{"D1.*", "D1.service-spawns-shell", true}, {"D1.*", "D17b.x", false}, {"D1.*", "D1f.web", false},
+		{"D10k.fw-exec-tamper", "D10k.fw-exec-tamper", true}, {"D10k", "D10k.fw-exec-tamper", false}, {"D1.*", "D1", false},
+	} { if got := Matches(c.trig, c.id); got != c.want { t.Errorf("%+v", c) } }
+}
+func TestResolveBindsEntities(t *testing.T) { /* params_from {path: entities.path} with path /var/www/x.php resolves; missing key -> error "entity path missing"; Optional step omitted */ }
+func TestHostileEntityRefused(t *testing.T) { /* path "/var/www/a\nb", "/var/www/../../etc/shadow", "relative.php", 5000 bytes -> Resolve error, each */ }
+func TestViewOfIgnoresUnknownKeys(t *testing.T) { /* a detect.alert with a key the view does not know decodes; without rule -> error */ }
+func TestValidateRejectsClickOnlyUnderTier0AndAuto(t *testing.T) { /* proc.kill_tree under tier0: error; under propose: ok; a registered RiskDestructive action under tier0: error */ }
+func TestValidateScoredStepNeedsProbeAndRollback(t *testing.T) { /* fake registered action whose Touches names a service: step without probe -> error; with both -> ok */ }
+func TestValidatePendingAction(t *testing.T) { /* fw.restore is accepted while unregistered; registering a fake fw.restore makes Validate report "remove it from PendingActions" */ }
+func TestValidateTemplatesAndParams(t *testing.T) { /* missing template file -> error; params mismatch with ${...} -> error naming the extra/missing key */ }
+func TestValidateTier0NeedsPropose(t *testing.T) { /* tier0 without propose -> error */ }
+func TestRunTestsFailingExpectation(t *testing.T) { /* want_tier0 [fw.restore] but the recipe resolves [win.defender] -> TestResult.Err */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Parse|Trigger|Resolve|Hostile|ViewOf|Validate|RunTests' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. `Matches`: a trigger ending `.*` is a prefix match on the text up to and including the dot; otherwise equality.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/module/all/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: recipe format, loader, validation, pending-action list"`
+
+---
+
+### Task 25: Tier-0 guards: protected set, rate limits, loop detection
+
+**Files:**
+- Modify: `internal/respond/guards.go`
+- Test: `internal/respond/guards_test.go`
+
+**Interfaces:**
+- Produces (pure, fake-clock testable, state exportable for `Env.Keep`):
+
+```go
+type Protected struct{ /* base names, lower case */ }
+func NewProtected(extra []string) *Protected
+func (p *Protected) Exe(path string) bool // base name in: csrss.exe wininit.exe winlogon.exe services.exe smss.exe lsass.exe svchost.exe systemd sshd, or in extra; Windows and Linux separators
+
+type Limiter struct{ /* per object and per host windows */ }
+func NewLimiter(hostPerMin int, now func() time.Time) *Limiter // object cap is 1 per minute (decision 12); hostPerMin default 3
+func (l *Limiter) Allow(host, object string) (ok bool, why string) // why "object" or "host"; records only when ok
+
+type Loop struct{ /* object -> times, open set */ }
+func NewLoop(count int, window time.Duration, now func() time.Time) *Loop // defaults 3 and 10 min
+func (l *Loop) Record(object string) (n int, opened bool) // opened true exactly once, on the Count-th record inside the window
+func (l *Loop) Open(object string) bool
+func (l *Loop) Clear()
+type LoopState struct{ Times map[string][]time.Time; Open []string }
+func (l *Loop) Export() LoopState
+func (l *Loop) Import(LoopState)
+```
+
+Bounds: at most 1024 objects tracked (oldest evicted), at most 16 times per object.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestProtectedSet(t *testing.T) {
+	p := NewProtected([]string{"myagent.exe"})
+	for _, e := range []string{`C:\Windows\System32\LSASS.EXE`, "/usr/lib/systemd/systemd", "/usr/sbin/sshd", `C:\x\myagent.exe`} { if !p.Exe(e) { t.Errorf("%s", e) } }
+	if p.Exe("/usr/bin/nc") { t.Error("nc protected") }
+}
+func TestRateLimitAcrossMinuteBoundary(t *testing.T) {
+	clk := newClock()
+	l := NewLimiter(3, clk.now)
+	for i := 0; i < 3; i++ { if ok, _ := l.Allow("h", fmt.Sprintf("o%d", i)); !ok { t.Fatal(i) } }
+	if ok, why := l.Allow("h", "o9"); ok || why != "host" { t.Fatal(ok, why) }
+	clk.add(61 * time.Second)
+	if ok, _ := l.Allow("h", "o9"); !ok { t.Fatal("window did not slide") }
+	if ok, why := l.Allow("h", "o9"); ok || why != "object" { t.Fatal("per-object cap") }
+}
+func TestLoopOpensOnThird(t *testing.T) {
+	clk := newClock(); l := NewLoop(3, 10*time.Minute, clk.now)
+	if _, o := l.Record("fw"); o { t.Fatal() }
+	clk.add(2 * time.Minute); l.Record("fw")
+	clk.add(2 * time.Minute)
+	if n, o := l.Record("fw"); !o || n != 3 || !l.Open("fw") { t.Fatal(n, o) }
+	if _, o := l.Record("fw"); o { t.Fatal("opened twice") }
+}
+func TestLoopWindowExpires(t *testing.T) { /* three records spread over 11 minutes: not opened */ }
+func TestLoopExportImport(t *testing.T) { /* round trip keeps the open set and times */ }
+func TestGuardBounds(t *testing.T) { /* 2000 distinct objects: tracked <= 1024, no panic */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Protected|RateLimit|Loop|GuardBounds' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: protected set, rate limiter, loop detector"`
+
+---
+
+### Task 26: Breaker, probe verdicts, facts and the GPO check
+
+**Files:**
+- Modify: `internal/respond/breaker.go`
+- Test: `internal/respond/breaker_test.go`
+
+**Interfaces:**
+- Consumes: `plan.HostService`, `plan.HealthProbe`, `event.ControllerFact`, `event.Decode`.
+- Produces:
+
+```go
+type Verdict struct {
+	Known  bool
+	Green  bool
+	Detail string // "green", "red:<service>", "unknown:<why>"
+}
+type Prober struct {
+	Services []plan.HostService
+	Run      func(ctx context.Context, p plan.HealthProbe) error // runs the read-only probe action through actions.Env.Execute
+	Fact     func(id string) (event.ControllerFact, bool)        // agent.Env.Fact: false when never received or expired
+}
+func (p *Prober) Local(ctx context.Context) Verdict   // no scored service: known green. A scored service with Health nil: unknown ("no health block"). Any probe error: red:<name>.
+func (p *Prober) Scorer() Verdict                     // per scored service fact "scorer_probe:<name>": missing or expired -> unknown; Data["ok"]==false -> red; every one ok -> green. No scored service: known green.
+func (p *Prober) Watch(ctx context.Context, window, poll time.Duration, needScorer bool) Verdict
+// polls Local each `poll` (and Scorer when needScorer) for `window`; returns the first red, else unknown if any poll was unknown and needScorer, else green.
+type Breaker struct{ /* open set keyed by action name; persists with Keep */ }
+func NewBreaker() *Breaker
+func (b *Breaker) Trip(action string); func (b *Breaker) Open(action string) bool; func (b *Breaker) Reset()
+func (b *Breaker) Export() []string; func (b *Breaker) Import([]string)
+type GPOFacts struct{ /* by id, with receipt time and ttl */ }
+func NewGPOFacts(now func() time.Time) *GPOFacts
+func (g *GPOFacts) Add(f event.ControllerFact)  // only f.Fact == "gpo_finding"
+func (g *GPOFacts) Covers(setting string) bool  // an unexpired fact whose data (keys matched case-insensitively) has enforced true and affects/section/item containing setting (case-insensitive)
+```
+
+Rules: the unknown verdict is never green (`Known` false means the caller must not act). `Watch` returns early on the first red. The fact id is `scorer_probe:<service>`; its `Data` is `{"service": string, "ok": bool}` (hand-off to W7, listed in the last task).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestUnknownVerdictNeverActs(t *testing.T) { // review focus 1
+	noHealth := &Prober{Services: []plan.HostService{{Name: "web", Scored: true}}}
+	if v := noHealth.Local(context.Background()); v.Known || v.Green { t.Fatalf("%+v", v) }
+	noFact := &Prober{Services: []plan.HostService{{Name: "web", Scored: true, Health: &plan.HealthProbe{Action: "net.tcp_probe"}}},
+		Run: func(context.Context, plan.HealthProbe) error { return nil }, Fact: func(string) (event.ControllerFact, bool) { return event.ControllerFact{}, false }}
+	if v := noFact.Scorer(); v.Known || v.Green { t.Fatalf("%+v", v) } // expired and never-received look the same
+	if v := noFact.Local(context.Background()); !v.Known || !v.Green { t.Fatalf("%+v", v) }
+}
+func TestScorerRedFactIsRed(t *testing.T) { /* fact Data {"service":"web","ok":false} -> Known, !Green, Detail "red:web" */ }
+func TestLocalProbeErrorIsRed(t *testing.T) { /* Run returns an error -> red:web */ }
+func TestWatchReturnsFirstRed(t *testing.T) { /* Run fails on the 3rd poll: Watch returns red before the window ends (poll 5 ms, window 1 s) */ }
+func TestBreakerTripAndReset(t *testing.T) { /* Trip("fw.restore"); Open true; other action false; Reset clears; Export/Import round trip */ }
+func TestGPOStopsLoop(t *testing.T) {
+	g := NewGPOFacts(clk.now)
+	g.Add(event.ControllerFact{ID: "{A}", Fact: "gpo_finding", TTL: 30 * time.Minute, Data: map[string]any{"Affects": "Windows Firewall", "Enforced": true}})
+	if !g.Covers("firewall") || g.Covers("defender") { t.Fatal() }
+	clk.add(31 * time.Minute)
+	if g.Covers("firewall") { t.Fatal("expired fact still covers") }
+}
+func TestGPOFactNotEnforcedDoesNotCover(t *testing.T) { /* Enforced false -> false */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Unknown|ScorerRed|LocalProbe|Watch|BreakerTrip|GPO' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: breaker, probe verdicts that treat unknown as no, GPO fact check"`
+
+---
+
+### Task 27: `respond` tier-0 runner (agent module)
+
+**Files:**
+- Modify: `internal/respond/runner.go`, `internal/respond/manifest.go`, `internal/respond/config.go`, `internal/agent/mods/respond.go`, `internal/module/conformance/allowed.go` (`ModulePackages["respond"]`)
+- Test: `internal/respond/runner_test.go`, `internal/respond/conformance_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 24 to 26; `agent.Env` (`Subscribe`, `Keep`, `Kept`, `Fact`, `Actions`, `Health`, `Logger`); `actions.Env.Execute`, `Confirm`, `Rollback`, `Request{Action, Params, NodeID, Deadman}`, `actions.WithTag`, `actions.Tag`, `actions.ErrSafeMode`, `actions.ErrNotReversible`, `actions.ErrScoringUnsafe`; `HealthSource.ModuleHealth` (Task 11).
+- Produces:
+
+```go
+func Manifest() module.Manifest // Name "respond", Sides [agent, controller], OS both, Privilege "root", Default true,
+	// Consumes [detect.alert, controller.fact, respond.action, respond.breaker], Emits [respond.action, respond.breaker, respond.loop],
+	// Budget{2, 4, 2, 20, 50 << 10, 1}, Content ["rules/respond","plans/respond"], Pages ["responses","recipes"]
+type Config struct { // modules/respond.yml: the design YAML
+	module.Common      `yaml:",inline"`
+	Tier0              struct {
+		MaxPerHostPerMin int                  `yaml:"max_per_host_per_min"`
+		BreakerWindow    time.Duration        `yaml:"breaker_window"`
+		Loop             struct{ Count int `yaml:"count"`; Window time.Duration `yaml:"window"` } `yaml:"loop"`
+		Block            struct{ ExpiresAfter time.Duration `yaml:"expires_after"`; MaxActive int `yaml:"max_active"` } `yaml:"block"`
+		Recipes          []string             `yaml:"recipes"`
+	} `yaml:"tier0"`
+	ProtectedProcesses []string `yaml:"protected_processes"`
+	ManifestDir        string   `yaml:"manifest_dir"` // controller side: where AppendOverrides writes (Task 31)
+}
+func (c Config) Settings() plan.Tier0Settings // seconds, defaults 3, 120, 3, 600, 14400, 20
+type Module struct{ /* recipes, guards, prober, breaker, gpo facts, counters */ }
+func NewModule(env agent.Env, s *plan.RespondSettings) (*Module, error) // parses s.Recipes; Actions() nil -> error wrapping agent.ErrUnavailable
+func (m *Module) Name() string
+func (m *Module) Start(ctx context.Context, emit agent.Emit) error
+func (m *Module) Health() module.Health
+```
+
+Behaviour of `Start` (all outcomes are `respond.action` events built with `event.New`, `Tag` `respond:<alert id>`; the action runs with `actions.WithTag(ctx, actions.Tag{Node: "respond:"+alertID})`):
+
+1. Subscribe `detect.alert` and `controller.fact` (buffer 256). A fact of type `gpo_finding` goes to `GPOFacts.Add`. A `detect.alert` is read with `ViewOf`; ignored unless `Mode == "act" && Tier == 0` and `ActEnabled`; matching recipes are `RecipeSet.For(rule)` restricted to `Tier0.Allowed`; recipes run one at a time in name order, alerts through a bounded queue (64; a full queue drops with `Dropped++`).
+2. A recipe with `RequiresSensors` whose local module is not `ok` in `env.Health.ModuleHealth()` is suspended: one `skipped_guard` event with `Before` = `suspended: sensor <name> not ok`. `UnscoredHostsOnly` with any scored `HostService` is `skipped_guard`.
+3. `Resolve` errors (missing entity, hostile value) are `skipped_guard` with the error in `Before`; the action is never called.
+4. For each step, in this order, a failing check ends the step with the named outcome: safe mode (`ae.Safe.On()`) `skipped_safe_mode`; breaker open for the action name `skipped_breaker`; loop open for the object `skipped_guard` (`Before` "loop open"); `Limiter.Allow` `skipped_rate`; the GPO check (`recipe.GPOSetting != ""`, Windows, and `Loop.Record` would be the third: `GPOFacts.Covers(setting)`) `skipped_gpo`; unknown local verdict (`Prober.Local` not Known) or, for `Probe` steps, unknown scorer verdict `skipped_guard` with `Health` `unknown:<why>`; red before-state `skipped_guard`.
+5. Execute: `ae.Execute(ctx, actions.Request{Action, Params, NodeID, Deadman: BreakerWindow + 30s})` with a 30 s lock wait (`context.WithTimeout`; a timeout is `skipped_lock`); `ErrScoringUnsafe` and `ErrNotReversible` are `skipped_guard`; other errors `failed`.
+6. After a successful execute: `Loop.Record(object)` (a returned `opened` emits `respond.loop` and `Lineage` from the alert's `parent.exe`/`exe` entities); then `Prober.Watch(window, 10 s, step.Probe)`. Green: `ae.Confirm(deadmanID)` and `applied` with `Health: green`. Red or unknown (for a `Probe` step): `ae.Rollback(deadmanID)`, `rolled_back`, `Breaker.Trip(action)` and one `respond.breaker` event (`Reenable`: "raise respond_reset_epoch in overrides.yml (Responses page, Re-enable)").
+7. State (breakers, loops) is saved with `env.Keep`; when `s.ResetEpoch` is greater than the kept epoch, all of it is cleared.
+8. `Health()`: `ok`; `disabled` detail `tier 0 off` when `ActEnabled` is false; `degraded` when a breaker is open, a recipe step names an action missing on this OS (gap per action) or a required sensor has a gap. `Info`: `recipes`, `breakers_open`, `loops_open`, `actions_last_hour`.
+`shortcut: the 30 s dead-man grace and the 10 s poll are fixed; make them settings only if a lab run needs it`.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAppliedWhenProbesGreen(t *testing.T) {
+	f := newRunnerFixture(t, withRecipe(fwRestoreRecipe), withAllowed("firewall_restore"), withActEnabled(), withGreenProbes())
+	f.alert("D10k.fw-exec-tamper", "act", 0, nil)
+	got := f.waitAction(t, "applied")
+	if got.Action != "fw.restore" || got.Recipe != "firewall_restore" || got.Health != "green" || f.fake.calls("fw.restore") != 1 || f.confirmed() != 1 { t.Fatalf("%+v", got) }
+}
+func TestRedProbeRollsBackAndOpensBreaker(t *testing.T) {
+	f := newRunnerFixture(t, withRecipe(fwRestoreRecipe), withAllowed("firewall_restore"), withActEnabled(), withProbe(failAfterApply()))
+	f.alert("D10k.fw-exec-tamper", "act", 0, nil)
+	got := f.waitAction(t, "rolled_back")
+	if f.fake.rolledBack() != 1 || f.waitKind(t, "respond.breaker").Fields["action"] != "fw.restore" { t.Fatalf("%+v", got) }
+	f.alert("D10k.fw-exec-tamper", "act", 0, nil)
+	f.clock.add(2 * time.Minute)
+	if f.waitAction(t, "skipped_breaker").Action != "fw.restore" { t.Fatal() }
+}
+func TestUnknownVerdictSkips(t *testing.T) { /* scored service without a health block: skipped_guard, Health "unknown:...", fake.calls == 0 (T74 respond half; also a Probe step with no scorer fact) */ }
+func TestParamMustBeAnEntity(t *testing.T) { /* recipe params_from path; alert without that entity: skipped_guard, fake.calls == 0 */ }
+func TestHostileEntityRefused(t *testing.T) { /* path "/etc/x\n/y": skipped_guard, no call */ }
+func TestActDisabledDoesNothing(t *testing.T) { /* ActEnabled false: no events, no calls; Health disabled */ }
+func TestRecipeNotInSignedConfigRefuses(t *testing.T) { /* alert for a rule whose recipe is not in s.Recipes: no calls */ }
+func TestAllowedListGates(t *testing.T) { /* recipe present but not in Tier0.Allowed: no calls */ }
+func TestSafeModeSkips(t *testing.T) { /* ae.Safe.Set(true): skipped_safe_mode; rollback of an earlier armed entry still permitted */ }
+func TestRateLimited(t *testing.T) { /* four alerts for four objects in a minute: three applied, the fourth skipped_rate */ }
+func TestLoopOpensOnThird(t *testing.T) { /* same object restored three times in ten minutes: respond.loop emitted with Count 3, the fourth alert is skipped_guard */ }
+func TestGPOStopsLoop(t *testing.T) { /* gpo_finding fact for firewall present, third restore: skipped_gpo, no respond.loop */ }
+func TestLockWaitSkips(t *testing.T) { /* hold the action's lock; the step ends skipped_lock after the wait (test shortens the wait) */ }
+func TestNotReversibleSkips(t *testing.T) { /* fake action with Rollback{} and Deadman > 0: skipped_guard */ }
+func TestRequiresSensorsSuspends(t *testing.T) { /* ModuleHealth()["audit"] degraded: skipped_guard "suspended" */ }
+func TestResetEpochClearsBreaker(t *testing.T) { /* trip, reconfigure with ResetEpoch+1: the next alert applies */ }
+func TestRespondConformance(t *testing.T) {
+	conformance.Agent(t, conformance.AgentCase{Factory: factoryNamed(t, "respond"), Default: respondCfg(t, 0), Reconfig: respondCfg(t, 1), KeepKey: "respond.state", Load: alertEvents()})
+}
+```
+
+`newRunnerFixture` builds a real `actions.Env` (`actions.NewEnv("h1", t.TempDir())` with `Registry: actions.NewRegistry()` holding only `fakeAction` instances and real `net.tcp_probe`), a deadman manager in `t.TempDir()`, an `agent.Harness` with the respond factory, and a controllable clock; `fakeAction` is an `actions.Action` that records calls, writes a file on `Apply` and restores it from `Capture` data on rollback.
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Applied|RedProbe|UnknownVerdict|ParamMust|HostileEntity|ActDisabled|SignedConfig|AllowedList|SafeMode|RateLimited|LoopOpens|GPOStops|LockWait|NotReversible|RequiresSensors|ResetEpoch|Conformance' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (one goroutine per recipe run, at most 4 at once).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/agent/... ./internal/module/...`. Expected: PASS, `respond` passing the agent conformance checks (link loss: tier 0 keeps running).
+- [ ] **Step 5: Commit.** `git commit -am "respond: tier-0 runner with guards, dead-man rollback, breaker and loop stop"`
+
+---
+
+### Task 28: Local tier-0 recipes and their plan templates
+
+**Files:**
+- Create: `rules/respond/{firewall_restore,defender_restore,sysmon_reinstall,persistence_disable,killlist,service_restart,webshell_quarantine}.yml`, `plans/respond/{restore_firewall,restore_defender,reinstall_sysmon,disable_task,disable_runkey,disable_unit,restart_service,quarantine_file}.yml`
+- Modify: `rules/detect/{linux_exec,windows,linux_persistence}.yml` (the trigger rules named below get `mode: act`; add any `entities:` key a recipe reads)
+- Test: `internal/respond/content_test.go`
+
+**Interfaces:**
+- Consumes: Task 24's `RecipeSet`, `Validator`; `controller.LoadModuleTemplate`-compatible template format (`id`, `module: respond`, `on_failure`, nodes with `${host}` and one `${name}` per parameter).
+- Produces (each recipe has `module: respond`, a `collect:` list, a `propose:` entry that is the click form of its tier-0 step, and tests with `want_tier0`, `want_propose`):
+
+| Recipe | Triggers (rules set to `mode: act`) | Tier-0 steps | gpo_setting / flags |
+| --- | --- | --- | --- |
+| `firewall_restore` | `D10k.*`, `D10k2.*` (`D10k3.*` joins in Task 19's unparking) | `fw.restore{from: declared}` | `firewall` |
+| `defender_restore` | `D10c.*` | `win.defender{ensure_realtime: true, keep: ["${agent_dir}"]}` | `defender` |
+| `sysmon_reinstall` | `D10e.*` | `sysmon.install{installer: "${sysmon_installer}", sha256: "${sysmon_sha256}", config: "${sysmon_config}"}` | `requires_sensors: [winevt]` is not set (the sensor is what is broken) |
+| `persistence_disable` | `D6q.*`, `D6r.*`, `D6t.*`, `D6t2.*`, `D6u.*`, `D6u2.*`, `D6u3.*` | optional `task.disable{path: entities.task}`, optional `runkey.remove{key: entities.key, value: entities.value}`, optional `wmi.subscription_remove{name: entities.subscription}` | `os: windows` on each |
+| `killlist` | `D3c.*`, `D3c2.*` | optional `unit.disable{unit: entities.unit}`, `task.disable`, `runkey.remove` (as above) | `unscored_hosts_only: true`; never kills a process |
+| `service_restart` | `D17c.*` | `service.state{unit: entities.unit, state: running}` with `probe: true, rollback: true` | |
+| `webshell_quarantine` | `D2a.*` | `yara.scan{path: entities.path}` with `gate: matches`, then `file.quarantine{path: entities.path}` with `probe: true, rollback: true` | until YARA is wired the gate step is pending and the recipe stays unallowed (`shortcut` comment) |
+
+Plan templates (`plans/respond/<name>.yml`, `module: respond`, one node `target: ${host}`, parameters exactly the `${}` set the proposals use): `restore_firewall` (`fw.restore`), `restore_defender` (`win.defender`; `${agent_dir}`), `reinstall_sysmon` (`sysmon.install`; three params), `disable_task`, `disable_runkey`, `disable_unit`, `restart_service` (`service.state`), `quarantine_file` (`file.quarantine`; `${path}`). Rule edits: the trigger rules above must list the entity keys the recipes read in `entities:` (for example `D6q` lists `task`; `D3c` lists `unit`); `mode: act` is set only on these rules (the D2a webshell rule stays `alert` until the YARA gate exists).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestEmbeddedRecipesValidate(t *testing.T) {
+	rs, err := LoadFS(respondrecipes.FS)
+	if err != nil { t.Fatal(err) }
+	v := Validator{Actions: actions.Core(), RuleIDs: ruleIDsFromTree(t), Templates: os.DirFS("../../plans/respond"), Modules: map[string]bool{"audit": true, "net": true, "winevt": true}}
+	for _, e := range rs.Validate(v) { t.Error(e) }
+	for _, r := range rs.RunTests() { if r.Err != nil { t.Errorf("%s/%s: %v", r.Recipe, r.Test, r.Err) } }
+}
+func TestTier0TriggerRulesAreAct(t *testing.T) { /* for the seven recipes: every rule matched by a tier0 recipe trigger has Mode act and Tier 0 in the rule file; a rule with Mode act has a recipe (this is the e2e cross-check of Task 39 run here for the recipes of this task) */ }
+func TestRecipeEntitiesAreCarriedByRules(t *testing.T) { /* each params_from entity key appears in the entities: list of every rule the recipe triggers on */ }
+func TestFirewallRestoreRecipeResolves(t *testing.T) { /* alert D10k.fw-exec-tamper tier 0 -> Resolve gives [fw.restore]; propose [restore_firewall] */ }
+func TestKilllistNeverKills(t *testing.T) { /* no step of killlist is proc.* */ }
+```
+
+Rule ids the triggers need come from `LoadTree`; `ruleIDsFromTree` includes `rules/pending`. Where a recipe action is in `PendingActions` the test passes through that path.
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Embedded|Tier0TriggerRules|RecipeEntities|FirewallRestoreRecipe|KilllistNever' -v`. Expected: FAIL.
+- [ ] **Step 3: Write the YAML** from the table and the rule edits; `bin/phylax rules test` must stay green.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test ./internal/respond/ ./internal/detect/ && bin/phylax rules registry`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: local tier-0 recipes, plan templates and the act-mode trigger rules"`
+
+---
+
+### Task 29: A-AUTO recipes: `source_block`, `session_evict`, `account_lock`, `palo_block`, `recycle_restore`, `gpo_unlink`
+
+**Files:**
+- Create: `rules/respond/{source_block,session_evict,account_lock,palo_block,recycle_restore,gpo_unlink}.yml`, `plans/respond/{unblock_source,evict_sessions,lock_account,palo_block,recycle_restore,gpo_unlink}.yml`
+- Modify: `internal/respond/runner.go` (the `block` step guards), `rules/detect/deception.yml` and `rules/detect/windows.yml` (entities, `mode: act`), `rules/pending/needs_producer.yml` (`D8r.red-gpo` on `ad.gpo_finding`, `needs: kind:ad.gpo_finding`)
+- Test: `internal/respond/block_test.go`, `internal/respond/content_aauto_test.go`
+
+**Interfaces:**
+- Produces recipes:
+
+| Recipe | Triggers | Steps |
+| --- | --- | --- |
+| `source_block` | `D15b.*`, `D15c.*`, `D15d.*`, `D15e.*` (set to `mode: act`; their `entities:` already carry `source`) | `fw.apply{op: block, ports: non_scored, reason: "confirmed red", owner: respond}` with `params_from {sources: entities.source}`, `block: true`, `rollback: true`; `propose` for a CIDR or scored-port block uses template `block_source` (Task 32) |
+| `session_evict` | same four | `session.terminate_predating{source: ..., before: "${now}"}` with `params_from {source: entities.source}`, `os` unset |
+| `account_lock` | `D15d.*`, `D15e.*` | optional `user.lock{user: entities.account}` (`os: linux`), optional `ad.account.disable{account: entities.account}` (`os: windows`); the scoring guard refuses scored accounts |
+| `palo_block` | `D15b.*`, `D15c.*`, `D15d.*` | no tier-0 steps; `auto: [palo_block]` (controller `RunAuto`, template node `palo.apply`; read the action's `Spec` for its parameters) |
+| `recycle_restore` | `D7h.*` (rule `mode: act`; add `target_sid` and `target_dn` to its `entities:`) | no tier-0 steps; `auto: [recycle_restore]` (template node `ad.recycle_restore{sid: ${sid}}` on the alert's agent, the DC) |
+| `gpo_unlink` | `D8r.*` | `auto: [gpo_unlink]` (template node `ad.gpo_unlink{guid: ${guid}, link: ${link}}`) |
+
+`block: true` guards (runner, before `Execute`): the `sources` value parses as one address (`netip.ParseAddr`; a CIDR or list is `skipped_guard`); it is not in `RespondSettings.NeverBlock` (addresses and CIDRs); fewer than `BlockMaxActive` blocks are active (`skipped_guard`, "max active"); the post-check is the normal probe; on `applied` the block is recorded in `StateDir/respond/blocks.json` (atomic) with its expiry (`BlockExpiresSec`) and a timer runs `fw.apply{op: unblock, sources}` at expiry (also on agent start for records already due); a red probe rolls the block back (the dead-man) and trips the breaker. A decoy touch (`D15a`) never triggers (`D15a` severity low, no recipe).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestSourceBlockRefusesOwnAddress(t *testing.T) { /* NeverBlock ["172.20.240.0/24"], source 172.20.240.10 -> skipped_guard, fake.calls == 0 */ }
+func TestSourceBlockRefusesCIDRAndList(t *testing.T) { /* sources "198.51.100.0/24" and "a,b" -> skipped_guard */ }
+func TestSourceBlockScoredPortsNeverTargeted(t *testing.T) { /* the call's params always carry ports: non_scored (assert on fake.lastParams) */ }
+func TestSourceBlockExpires(t *testing.T) { /* applied at t0 with BlockExpiresSec 3600; advance the clock: fw.apply op unblock called once, blocks.json empty; agent restart with a due record unblocks at start */ }
+func TestSourceBlockStopsAtMaxActive(t *testing.T) { /* BlockMaxActive 2: the third distinct source is skipped_guard */ }
+func TestSourceBlockRedProbeRemovesBlock(t *testing.T) { /* failing probe -> rolled_back, block record removed, breaker open */ }
+func TestAutoRecipesResolve(t *testing.T) { /* D7h alert -> Auto ["recycle_restore"], Tier0 empty; D15b alert -> Tier0 [fw.apply, session.terminate_predating, ...] and Auto ["palo_block"] */ }
+func TestAAutoRecipesValidate(t *testing.T) { /* the Task 28 validator on the full embedded set, templates exist, no click-only action under tier0 or auto, propose present */ }
+func TestD15aNeverActs(t *testing.T) { /* D15a is mode alert and matches no recipe trigger */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'SourceBlock|AutoRecipes|AAutoRecipes|D15aNever' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** the block guards and write the YAML. `${now}` handling is already in `Resolve` (Task 24).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/detect/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: A-AUTO recipes (source_block, session_evict, account_lock, palo_block, recycle_restore, gpo_unlink)"`
+
+---
+
+### Task 30: `respond` controller side: proposals, `RunAuto`, skipped tier-0 becomes a click
+
+**Files:**
+- Modify: `internal/respond/controller.go`, `internal/respond/testutil_test.go` (`fakeHost` records `Propose`, `RunAuto`)
+- Test: `internal/respond/controller_test.go`, `internal/respond/controller_conformance_test.go`
+
+**Interfaces:**
+- Consumes: `module.Host` (`Subscribe`, `Propose`, `RunAuto`, `Emit`, `Config`, `Logger`), `module.Proposal`, `module.EventRef`, `module.ErrProposed`, `module.Register`.
+- Produces:
+
+```go
+type Controller struct{ /* recipes, dedupe LRU, health */ }
+func (*Controller) Manifest() module.Manifest // Manifest()
+func (c *Controller) Start(ctx context.Context, h module.Host) error
+func (c *Controller) Health() module.Health
+func (*Controller) ConfigBlock() any // &Config{}
+func init() { module.Register(&Controller{}) }
+```
+
+Rules: `Start` loads `Content()` (embedded recipes) and subscribes to `detect.alert`, `respond.action`, `respond.breaker` (committed events, all agents). For each `detect.alert` seen once (dedupe by `agent|id`, LRU 4096):
+- every matching recipe's `propose` entries become `Host.Propose(Proposal{Title, Template, Params, Evidence: []EventRef{{Agent, Seq}}, Reason})` with `Reason` `tier 1` for an alert whose `Tier >= 1` or `Mode == "alert"`, and params `host` = the alert's agent plus the entries' `params` and resolved `params_from`; for an alert with `Mode == "act"` and `Tier == 0` no proposal is made yet (the agent acts) except that each `auto:` template is started with `Host.RunAuto(template, params)`; `module.ErrProposed` is not an error (the Host already created the click proposal).
+- a `respond.action` whose outcome is `skipped_rate`, `skipped_breaker`, `skipped_guard` or `skipped_lock`, or `failed`, creates the recipe's `propose` entries with `Reason` = the outcome and, for `skipped_guard` with unknown health, `unknown verdict`. `skipped_safe_mode` and `skipped_gpo` make none (safe mode is a deliberate stop; the GPO finding is raised by `ad`).
+- a proposal for a `proc.*` template is not created when `Protected.Exe(entities.exe)` is true or the exe is a scored service binary (`Config.ProtectedProcesses`, plus the rendered scored binaries the agent config carries are not visible here: `shortcut: the controller checks the built-in set and Config.ProtectedProcesses only; the agent action refuses scored trees anyway`).
+A recipe that fails `Resolve` for an alert is logged and skipped, never fatal.
+
+- [ ] **Step 1: Remove the skips:**
+
+```go
+func TestAlertBecomesProposals(t *testing.T) { // T03 shape
+	h := newFakeHost(t, "enabled: true\n")
+	go (&Controller{}).Start(h.ctx, h)
+	h.publish(alertEvent("web1", 42, "D1.service-spawns-shell", "alert", 1, map[string]string{"pid": "812", "path": "/var/www/html/x.php", "source": "198.51.100.7"}))
+	ps := h.waitProposals(t, 3)
+	titles := proposalTemplates(ps)
+	if !contains(titles, "kill_tree") || !contains(titles, "quarantine_file") || !contains(titles, "block_source") { t.Fatal(titles) }
+	if ps[0].Params["host"] != "web1" || ps[0].Evidence[0] != (module.EventRef{Agent: "web1", Seq: 42}) { t.Fatalf("%+v", ps[0]) }
+}
+func TestActAlertStartsAutoPlans(t *testing.T) { /* D7h act tier 0 -> RunAuto("recycle_restore", {host: dc1, sid: ...}) once; RunAuto returning ErrProposed is not logged as an error */ }
+func TestSkippedTier0BecomesProposal(t *testing.T) { // review focus 1, controller half
+	/* alert D10k tier 0 act (no proposals), then respond.action outcome skipped_guard with health unknown:no health block -> Propose restore_firewall with Reason "unknown verdict" */
+}
+func TestSafeModeAndGPOMakeNoProposal(t *testing.T) { /* skipped_safe_mode and skipped_gpo: zero proposals */ }
+func TestDedupeByAlertID(t *testing.T) { /* the same alert delivered twice: one set of proposals */ }
+func TestProtectedProcessGetsNoKillProposal(t *testing.T) { /* entities.exe C:\Windows\System32\lsass.exe -> no kill_tree proposal; other proposals still made */ }
+func TestControllerConformance(t *testing.T) {
+	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Now: time.Unix(1e9, 0)})
+}
+```
+
+(`web-compromise` and `block_source` are written in Task 32; this test is un-skipped there if run before it, so order the two commits with Task 32's recipe file first in a stacked pull request, or keep `TestAlertBecomesProposals` skipped here with `t.Skip("needs W4 Task 32")` and remove that line in Task 32.)
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'AlertBecomes|ActAlert|SkippedTier0|SafeModeAndGPO|Dedupe|ProtectedProcess|ControllerConformance' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/controller/ ./internal/module/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: controller side (proposals, RunAuto, skipped tier-0 becomes a click)"`
+
+---
+
+### Task 31: Auto-demotion of promoted rules and breaker re-enable
+
+**Files:**
+- Create: `internal/respond/demote.go`
+- Modify: `internal/respond/controller.go`, `internal/respond/ui.go`
+- Test: `internal/respond/demote_test.go`, `internal/controller/overrides_fingerprint_test.go`
+
+**Interfaces:**
+- Consumes: `manifest.AppendOverrides`, `manifest.RuleMode`, `Config.ManifestDir`, `Host.Query()`.
+- Produces:
+
+```go
+func ShouldDemote(breakers []time.Time, since time.Time) bool // two or more breaker times at or after since
+func (c *Controller) demote(ctx context.Context, rule string, since time.Time) error // AppendOverrides: RuleModes += {Rule, Mode: "alert", Reason: "breaker", Owner: "respond", Added: today}
+func (c *Controller) Reenable(ctx context.Context) error // AppendOverrides: RespondResetEpoch++ ; Config.ManifestDir required
+// UI action POST /m/respond/action/reenable (Task 33 wires the button); fleet-wide (shortcut: one epoch for all hosts and action types, upgrade to a per-host map if a lab run needs it)
+```
+
+Rules: on each `respond.breaker` event with a non-empty `rule`, count that rule's breaker events (store query by `Fields{"rule": rule}`) since `max(promotion added time, now-24h)`; the promotion time is looked up by reading the current `overrides.yml` through `manifest.LoadDir`'s overrides file (the controller module reads it via the same `ManifestDir`); two or more call `demote`, which is idempotent (an existing alert-mode record for the rule is not duplicated). With `ManifestDir` unset the module reports a health gap `auto-demotion off: manifest_dir not set` and does nothing. The controller's inputs fingerprint changes when `overrides.yml` changes (existing behaviour; the test pins it).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestShouldDemote(t *testing.T) { /* one breaker: false; two since the promotion: true; two but one before since: false */ }
+func TestSecondBreakerDemotesRule(t *testing.T) { // T79 demotion half
+	dir := manifestDirWithOverrides(t, `rule_modes: [{rule: D10k.fw-exec-tamper, mode: act, reason: lab, owner: lead, added: "2027-02-06"}]`)
+	h := newFakeHost(t, "enabled: true\nmanifest_dir: "+dir+"\n")
+	go (&Controller{}).Start(h.ctx, h)
+	h.publish(breakerEvent("web1", "D10k.fw-exec-tamper"))
+	h.publish(breakerEvent("db1", "D10k.fw-exec-tamper"))
+	waitFor(t, func() bool { return overridesMode(t, dir, "D10k.fw-exec-tamper") == "alert" })
+	if rm := lastRuleMode(t, dir); rm.Reason != "breaker" || rm.Owner != "respond" { t.Fatalf("%+v", rm) }
+}
+func TestDemotionIdempotent(t *testing.T) { /* a third breaker does not add a second record */ }
+func TestReenableBumpsEpoch(t *testing.T) { /* Reenable twice: RespondResetEpoch == 2; without ManifestDir: error */ }
+func TestNoManifestDirIsAGap(t *testing.T) { /* Health().Gaps contains "auto-demotion off" */ }
+// internal/controller
+func TestOverridesChangeChangesFingerprint(t *testing.T) { /* inputsFingerprint differs before and after AppendOverrides on the manifest dir */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ ./internal/controller/ -run 'Demote|Demotion|Reenable|NoManifestDir|OverridesChange' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/controller/ ./internal/manifest/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: auto-demotion after two breakers; breaker re-enable by reset epoch"`
+
+---
+
+### Task 32: Tier-1 and tier-2 recipes and templates
+
+**Files:**
+- Create: `rules/respond/{web_compromise,binary_modified,account_changes,zerologon,decoy_followup,c2_followup,credential_theft,scan_followup}.yml`, `plans/respond/{kill_tree,suspend_proc,block_source,isolate_host,restore_file,restore_binary,hunt_persistence,disable_account,secure_channel,close_port}.yml`
+- Modify: `internal/respond/controller_test.go` (remove the `t.Skip` of `TestAlertBecomesProposals`)
+- Test: `internal/respond/content_tier1_test.go`
+
+**Interfaces:**
+- Produces: recipes with no `tier0:` steps (so they need no `propose` duplication) unless stated; every `propose` entry names a template above or one from Tasks 28/29; `collect:` lists the design's collectors. Triggers are rule families expanded to the full ids present in the tree (a trigger that matches no rule fails Task 39).
+
+| Recipe | Triggers (families) | Propose / auto |
+| --- | --- | --- |
+| `web_compromise` | `D1.*`, `D1e.*`, `D1f.*`, `D17b.*`, `D17d.*` | `kill_tree{pid}`, `quarantine_file{path}`, `block_source{source}` (host block; the title says CIDR warns), `hunt_persistence{user: web}`; `requires_sensors: [audit, net]`; collect `trace_back, process_tree, content_changes, transactions_window_10m, freeze_ring` |
+| `binary_modified` | `D5d.*` | `restore_binary{path, source, service}`, `quarantine_file{path}`, `hunt_persistence`; alert only (D-1) |
+| `account_changes` | `D7a.*`, `D7b.*`, `D7c.*`, `D7d.*`, `D7e.*`, `D7g.*` | `disable_account{account}` (unscored accounts only; the guard refuses scored ones) |
+| `zerologon` | `D8b.*` | `auto: [secure_channel]` (nodes `ad.zerologon_check` then `ad.secure_channel{enforce: true}`, `deadman_sec: 120`); the patch reboot gate and krbtgt are not templates (tier 2 checklist text in the proposal `note`) |
+| `decoy_followup` | `D15a.*` | `hunt_persistence`; no automatic action |
+| `c2_followup` | `D12.*`, `D12b.*`, `D13b.*`, `D13b2.*`, `D13d.*`, `D13e.*`, `D13f.*` | `kill_tree{pid}`, `quarantine_file{path}`, `hunt_persistence`; the sinkhole capture is not collected |
+| `credential_theft` | `D8c.*`, `D8e.*`, `D8g.*` | `disable_account{account}`; krbtgt double reset is a tier-2 note |
+| `scan_followup` | `V2.*`, `V3.*` | `close_port{port}` |
+
+Templates: `kill_tree` (`proc.kill_tree`, params `pid`, `start_ticks`), `suspend_proc`, `block_source` (`fw.apply{op: block, sources: ${source}, reason, owner}` with no `ports` so a scored-port block of a known red address is allowed by the lint, the CIDR warning comes from `fw.apply`), `isolate_host` (`fw.quarantine`, auto-revert), `restore_file` (`file.restore`), `restore_binary` (`binary.restore_from_depot`), `hunt_persistence` (`hunt.persistence`), `disable_account` (`user.lock`/`ad.account.disable` by `os`), `secure_channel`, `close_port` (`fw.apply` with the device `palo.apply` variant left to `devices`). `proc.kill_tree` appears only under `propose:`.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestTier1RecipesValidate(t *testing.T) { /* the embedded set (all tasks so far) passes Validate and RunTests; every template referenced exists and its ${} set equals host plus the proposal's params */ }
+func TestWebCompromiseProposesTheFour(t *testing.T) { /* Resolve of a D1.service-spawns-shell tier 1 alert with pid, path, source: propose [kill_tree quarantine_file block_source hunt_persistence], Tier0 empty */ }
+func TestKillTreeOnlyUnderPropose(t *testing.T) { /* no recipe lists proc.* under tier0 or auto; no auto template contains proc.kill_tree (parse the template nodes) */ }
+func TestNoRecipeHasIRTemplate(t *testing.T) { /* strict parse already rejects; assert grep of rules/respond finds none */ }
+func TestAllTemplatesAreReferenced(t *testing.T) { /* every plans/respond/*.yml is named by some propose or auto entry (no dead templates) */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Tier1Recipes|WebCompromise|KillTreeOnly|NoRecipeHasIR|AllTemplates|AlertBecomes' -v`. Expected: FAIL.
+- [ ] **Step 3: Write the YAML** from the table.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ && bin/phylax rules registry`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "respond: tier-1 and tier-2 recipes and plan templates"`
+
+---
+
+### Task 33: `detect` and `respond` UI: Rules page, Responses page, recipe viewer, tiles
+
+**Files:**
+- Create: `internal/detect/ui.go`, `internal/respond/ui.go`, `internal/detect/ui_test.go`, `internal/respond/ui_test.go`
+- Modify: `internal/detect/controller.go`, `internal/respond/controller.go` (register through `h.UI()`)
+
+**Interfaces:**
+- Consumes: `ui.Registrar` (`Page`, `Tile`, `Action`), `html/template` (autoescape), `Engine.Exceptions`, `RuleSet.Rules`, `store.Reader`.
+- Produces: `detect` registers page `rules` ("Rules": file, id, mode with the effective mode after `rule_modes`, tier, inline test count, exceptions with reason, owner, added, expiry and expired highlighted) and tile `alerts` (alert counts by severity in the last hour, rules in `alert` mode versus `act` mode); `respond` registers page `responses` (`respond.action` events newest first, 200 rows, with outcome, host, action, recipe, health), page `recipes` (loaded recipes with triggers, steps, flags), tile `tier0` (state: off when no host has `act_enabled`, alert-only, or on; automatic actions in the last hour; breakers open; loops open) and action `reenable` (POST, calls `Reenable`; CSRF and auth are the shell's). Every event-derived string passes through `html/template`.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestRulesPageListsModesAndExpiredExceptions(t *testing.T) { /* fake registrar; GET the page: contains the rule id, "act" for a promoted rule, the exception reason, and an "expired" marker for an expired one */ }
+func TestResponsesPageEscapesHostileStrings(t *testing.T) { /* a respond.action whose target is `<script>alert(1)</script>`: the body contains &lt;script&gt; and no raw <script> */ }
+func TestTier0TileStates(t *testing.T) { /* no act_enabled host: "off"; act_enabled with no recipes: "alert-only"; with breakers: count shown */ }
+func TestReenableActionPostOnly(t *testing.T) { /* GET -> 405; POST -> Reenable called once */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/detect/ ./internal/respond/ -run 'RulesPage|ResponsesPage|Tier0Tile|ReenableAction' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (plain tables, no new JavaScript).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/detect/ ./internal/respond/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "detect, respond: Rules and Responses pages, recipe viewer, tiles"`
+
+---
+
+### Task 34: `content_guard`: golden store, path safety, `guard.snapshot`
+
+**Files:**
+- Modify: `internal/content_guard/golden.go`, `internal/content_guard/boot.go`, `internal/content_guard/config.go`, `internal/manifest/types.go` (`Content.Guard` is added by Task 1; wire validation here), `internal/manifest/validate.go` (a `guard` path must lie under one of the service's `roots` and satisfy `CleanGuardPath`)
+- Create: `internal/content_guard/actions.go`
+- Test: `internal/content_guard/golden_test.go`, `internal/content_guard/actions_test.go`, `internal/manifest/guard_test.go`
+
+**Interfaces:**
+- Consumes: `internal/atomicfile`, `actions.RegisterExtra(func() []actions.Action)` (W3), `actions.TagFrom`, `plan.ContentGuardSettings`.
+- Produces (package `contentguard`):
+
+```go
+type GoldenEntry struct {
+	Service, Path, SHA256, PlanTag string
+	Mode                           uint32
+	UID, GID                       int
+	XAttrs                         map[string]string // incl. security.selinux
+	Taken                          time.Time
+	Stale                          bool
+	Never                          bool // boot-critical account databases: never restored automatically
+}
+type Golden struct{ /* dir, index behind a mutex */ }
+func OpenGolden(dir string, maxBytes int64) (*Golden, error) // dir StateDir/content_guard/golden; index.json written atomically
+func (g *Golden) Put(e GoldenEntry, src io.Reader) error     // content addressed golden/<sha256>; error when Bytes()+size > maxBytes
+func (g *Golden) Entry(service, path string) (GoldenEntry, bool)
+func (g *Golden) Open(sha string) (io.ReadCloser, error)
+func (g *Golden) MarkStale(service, path string) error
+func (g *Golden) Bytes() int64
+func CleanGuardPath(p string) error // absolute, equals filepath.Clean(p), no NUL, none of * ? [ ], not a directory form (no trailing separator)
+func RegularNoFollow(p string) (os.FileInfo, error) // Lstat; a symlink, directory or device is an error
+// guard.snapshot{service string, paths []string (default: the service's list), boot bool}
+//   Spec Risk RiskService, Locks ["content:<service>"], Touches none; refuses (error) a path not on the service's configured list or a path that fails CleanGuardPath or RegularNoFollow;
+//   refuses to run without a non-zero actions.Tag (it must be a plan node); re-hashes after the copy; Rollback data restores the previous index entry.
+//   boot: resolves GuardBoot.Candidates for this host (distro from /etc/os-release ID, `resolve: initramfs` -> /boot/initramfs-$(uname -r).img or initrd.img-$(uname -r), existing files only) into literal paths first.
+func Active() *Module // set by the module on Start (Task 37); the actions read the settings through it
+```
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestGoldenPutEntryOpen(t *testing.T) { /* Put + Entry + Open round trip; reopen the dir: same index; a crash between blob write and index write leaves no half entry (write index last, atomic) */ }
+func TestGoldenDiskBudget(t *testing.T) { /* maxBytes 1 MiB, Put 2 MiB -> error, index unchanged */ }
+func TestSymlinkPathRefused(t *testing.T) { // review focus 5
+	dir := t.TempDir(); target := filepath.Join(dir, "real"); _ = os.WriteFile(target, []byte("x"), 0o644)
+	link := filepath.Join(dir, "index.php"); _ = os.Symlink(target, link)
+	if _, err := RegularNoFollow(link); err == nil { t.Fatal("symlink accepted") }
+}
+func TestGlobAndRelativePathsRefused(t *testing.T) { /* "/var/www/*.php", "/var/www/../x", "var/www/x", "/var/www/", "/x\x00y" -> CleanGuardPath error */ }
+func TestSnapshotRefusesUnlistedPath(t *testing.T) { /* service list [/var/www/html/index.php]; snapshot of /etc/passwd -> error, nothing stored (constraint 1) */ }
+func TestSnapshotNeedsPlanTag(t *testing.T) { /* Execute without a tag in ctx and NodeID "" -> error (constraint 2) */ }
+func TestSnapshotStoresHashModeOwner(t *testing.T) { /* 0640 file: entry.Mode 0640, SHA256 equals sha256 of content, PlanTag set from the tag, Stale false */ }
+func TestSnapshotBootResolvesLiteralPaths(t *testing.T) { /* fake root with /etc/fstab, /etc/passwd, /boot/grub/grub.cfg, no netplan: only existing files are snapshotted; passwd and shadow entries have Never true; a candidate containing * is refused */ }
+func TestManifestGuardPathMustBeUnderRoots(t *testing.T) { /* services.yml guard path outside roots -> manifest validation error */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/content_guard/ ./internal/manifest/ -run 'Golden|Symlink|GlobAndRelative|Snapshot|ManifestGuard' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. Copy owner, mode, xattrs and the SELinux label with the same helpers `file.restore` uses; as non-root the owner copy is skipped and the test asserts mode only (`t.Skip` with a reason for the xattr assertion).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/content_guard/ ./internal/manifest/ && GOOS=windows go vet ./internal/content_guard/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "content_guard: golden store, path safety, guard.snapshot"`
+
+---
+
+### Task 35: `content_guard`: watching, the hash sweep and constraints 1 to 3
+
+**Files:**
+- Modify: `internal/content_guard/watch.go`
+- Test: `internal/content_guard/watch_test.go`
+
+**Interfaces:**
+- Consumes: `event.FileChange` (`event.Decode[event.FileChange]`), `Golden`, `actions.Locks.TryAcquire` for the held-lock test, `event.Event.Tag`.
+- Produces:
+
+```go
+type Outcome struct {
+	Service, Path string
+	Decision      string // alert | restore | ignored_tag | ignored_plan_lock | (stop handled by Task 36)
+	Change        ChangeFields
+	Stop          *StopFields // set when the decision is golden_missing
+}
+type Watcher struct{ /* services, golden, locks, mode lookup, own-tag prefix "guard:" */ }
+func NewWatcher(s *plan.ContentGuardSettings, g *Golden, locks *actions.Locks, mode func(service string) string) *Watcher
+func (w *Watcher) OnFileChange(ev event.Event) []Outcome // constraints 1 to 3
+func (w *Watcher) Sweep(now time.Time) []Outcome        // hash every listed path against its golden; a missing file is a change with Op "delete"
+func (w *Watcher) Paths() []string                       // every listed path (for health and the audit/winevt watch registration)
+```
+
+Rules: (1) an event whose `Path` is not on a listed service's list (or the boot list when enabled) is ignored, nothing read or written; (2) a listed path with no golden entry yields `Stop{Reason: golden_missing}` and nothing else; (3) an event with non-empty `Tag` is `ignored_tag` and marks the golden entry stale, except tags with prefix `guard:` (the guard's own restore writes: ignored without marking); a change while `Locks.TryAcquire("content:"+service, lock)` reports busy is `ignored_plan_lock`; otherwise the decision is `restore` when the service mode is `act` and `alert` when it is `alert`. A boot-critical `Never` entry never yields `restore` (decision `alert`). `Sweep` uses `RegularNoFollow`; a symlink where a file was is a change (`Op: replace`, alert, and no restore follows it through the link: restore replaces the link with the file in Task 36). Sweep runs every 60 s, every 10 s while a `telemetry_gap` for the file watch is open (Task 37).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestUnlistedPathIgnored(t *testing.T) { /* constraint 1 */ }
+func TestNoGoldenStops(t *testing.T) { /* constraint 2: Stop golden_missing, no alert/restore decision */ }
+func TestTaggedChangeMarksStale(t *testing.T) { // review focus 5
+	/* change with Tag "plan:harden-web" -> ignored_tag and Entry.Stale true; Tag "guard:abc" -> ignored, Stale false */
+}
+func TestPlanLockHeldIgnored(t *testing.T) { /* hold content:web via Locks.Acquire: ignored_plan_lock */ }
+func TestModeDecidesAlertOrRestore(t *testing.T) { /* untagged change: mode alert -> "alert"; mode act -> "restore" */ }
+func TestAccountDatabaseNeverRestoresAutomatically(t *testing.T) { /* /etc/shadow Never entry in act mode -> "alert" */ }
+func TestDeletedFileRestored(t *testing.T) { // review focus 5
+	/* Sweep with the listed file missing, act mode: Outcome Decision restore, Change.Op "delete"; alert mode: alert */
+}
+func TestSweepCatchesMissedEvent(t *testing.T) { /* change the file without any event: Sweep reports it with current_sha256 != golden */ }
+func TestSymlinkReplacementIsAChange(t *testing.T) { /* replace the file by a symlink: Sweep outcome, Change.Op "replace" */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/content_guard/ -run 'Unlisted|NoGolden|TaggedChange|PlanLock|ModeDecides|AccountDatabase|DeletedFile|SweepCatches|SymlinkReplacement' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/content_guard/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "content_guard: watcher and hash sweep (constraints 1 to 3)"`
+
+---
+
+### Task 36: `content_guard`: `guard.restore`, probe and rollback, loop stop, the lint exception
+
+**Files:**
+- Modify: `internal/content_guard/restore.go`, `internal/content_guard/actions.go`, `internal/actions/guard.go` (`OpRestore`, `StaticGuard.RestorePaths`)
+- Create: `internal/content_guard/lint.go`
+- Test: `internal/content_guard/restore_test.go`, `internal/actions/guard_restore_test.go`, `internal/content_guard/lint_test.go`
+
+**Interfaces:**
+- Consumes: `Golden`, `Watcher` outcomes, `plan.HealthProbe`, `actions.Env.Execute`, `lint.Register`, `lint.Rule`, `lint.Ctx`.
+- Produces:
+
+```go
+const OpRestore = "restore" // actions.OpRestore, in internal/actions/guard.go (reuse if W5 already added it)
+// StaticGuard gains: RestorePaths []string // scored content paths a Restore touch may write (the services' content.guard lists)
+//   Allow: TouchPath with Op OpRestore passes iff t.Name is in RestorePaths; every other op on scored content is refused as before.
+// guard.restore{service, path} (Spec Risk RiskService; Locks ["content:<service>", "service:<service unit>"]; Touches [{TouchPath, path, OpRestore}]):
+//   Plan: golden present and hash verifies (else error); Apply: probe before (recorded, a red before-probe does not stop it),
+//   write the golden copy atomically with golden mode/owner/xattrs/label (a symlink or other non-regular file at the path is replaced, never followed),
+//   keep the replaced file under StateDir/content_guard/replaced/<id>, tag the write `guard:<id>`, probe again (one retry after 5 s, then fail);
+//   Verify: hash equals golden; a failed after-probe returns an error, so Execute rolls back to the replaced file.
+type Result struct{ Restored, RolledBack, ProbeFailed bool; ProbeBefore, ProbeAfter string }
+type Restorer struct{ /* env, golden, loop */ }
+func NewRestorer(ae *actions.Env, g *Golden, s *plan.ContentGuardSettings, now func() time.Time, probe func(ctx context.Context, svc string) (string, error)) *Restorer
+func (r *Restorer) Restore(ctx context.Context, svc, path string) (RestoreFields, *StopFields) // constraints 4 and 5
+// lint rule CG001 (lint.Register in init): a node of action guard.restore is accepted only when its path is on a service's content.guard list in the manifest
+//   and the plan class is click or auto; any other node touching scored content is rejected by the existing rules.
+```
+
+Constraint 5: `Loop{Count: LoopCount (2), Window: LoopWindowSec (600)}` keyed by path; the second restore inside the window is not performed: `StopFields{Reason: loop, Count: 2}` and the path is frozen until `ClearEpoch` rises. A failed after-probe returns `RestoreFields.Result = "probe_failed"` or `"rolled_back"` and `StopFields{Reason: probe_failed}` and demotes the service (Task 37).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestRestoreRollsBackWhenProbeFails(t *testing.T) { // constraint 4; uses the real actions.Env and the probe func fake
+	/* golden "good", file "deface"; probe: ok before, error after: file content is "deface" again, Result rolled_back, Stop probe_failed */
+}
+func TestFailedBeforeProbeDoesNotStopRestore(t *testing.T) { /* before probe error, after ok: restored, ProbeBefore records the error */ }
+func TestSecondRestoreWithinTenMinutesStops(t *testing.T) { /* two restores 5 min apart: the second returns Stop loop Count 2 and does not write */ }
+func TestLoopWindowExpires(t *testing.T) { /* second restore after 11 minutes proceeds */ }
+func TestRestoreReplacesSymlink(t *testing.T) { /* the listed path is a symlink to /etc/passwd copy: restored as a regular file with golden content; the link target file is untouched */ }
+func TestRestoreWriteCarriesGuardTag(t *testing.T) { /* the tag log records guard:<id> for the path */ }
+func TestStaticGuardAllowsRestoreOnlyOnListedPath(t *testing.T) { /* guard Paths [/var/www/html] RestorePaths [/var/www/html/index.php]: OpRestore on index.php allowed; OpModify on it refused; OpRestore on /var/www/html/other.php refused */ }
+func TestLintCG001(t *testing.T) { /* guard.restore for a path not in content.guard -> finding CG001; listed path in a click plan -> none */ }
+func TestRestorePreservesModeOwnerLabel(t *testing.T) { /* mode 0640 restored; xattr/owner assertions skip with a reason when not root */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/content_guard/ ./internal/actions/ -run 'RestoreRolls|FailedBefore|SecondRestore|LoopWindow|RestoreReplaces|GuardTag|StaticGuardAllows|LintCG001|RestorePreserves' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/content_guard/ ./internal/actions/ ./internal/plan/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "content_guard: guard.restore with probe rollback, loop stop and the scored-content restore exception"`
+
+---
+
+### Task 37: `content_guard` module: alert and act modes, promotion, boot-critical list, health, conformance
+
+**Files:**
+- Modify: `internal/content_guard/{modes.go,module.go,config.go,boot.go}`, `internal/agent/mods/content_guard.go`, `internal/module/conformance/allowed.go` (`ModulePackages["content_guard"]`)
+- Create: `rules/respond/boot_critical.yml`
+- Test: `internal/content_guard/module_test.go`, `internal/content_guard/modes_test.go`, `internal/content_guard/conformance_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 34 to 36; `agent.Env`; `module.Manifest`.
+- Produces:
+
+```go
+func Manifest() module.Manifest // Name "content_guard", Sides [agent], OS both, Privilege "root", Default false, Roles [], Consumes [file_change, process_start, telemetry_gap, controller.fact],
+	// Emits the four kinds, Budget{2, 8, 1, 10, 20 << 10, 64}, Actions [guard.snapshot, guard.restore], Content ["plans/hardening/guard.snapshot.yaml","rules/respond/boot_critical.yml"]
+type Config struct { // modules/content_guard.yml: the design YAML
+	module.Common `yaml:",inline"`
+	Mode          string `yaml:"mode"` // alert | act default for services
+	Promote       struct{ Auto bool `yaml:"auto"`; After time.Duration `yaml:"after"` } `yaml:"promote"`
+	Services      map[string]string `yaml:"services"` // service -> alert | act
+	BootCritical  struct{ Enabled bool `yaml:"enabled"`; Mode string `yaml:"mode"` } `yaml:"boot_critical"`
+	Loop          struct{ Count int `yaml:"count"`; Window time.Duration `yaml:"window"` } `yaml:"loop"`
+	ProbeTimeout  time.Duration `yaml:"probe_timeout"`
+}
+type Module struct{ /* watcher, restorer, golden, per-service state, counters */ }
+func NewModule(env agent.Env, s *plan.ContentGuardSettings) (*Module, error) // Actions() nil -> wraps agent.ErrUnavailable
+func (m *Module) Name() string
+func (m *Module) Start(ctx context.Context, emit agent.Emit) error
+func (m *Module) Health() module.Health
+```
+
+Behaviour: **Alert mode** (the default for every service): a change emits `content_guard.change` (`decision` alert) and records a *would-restore*: the golden hash is verified and the service probe result noted, nothing is written. **Act mode** needs `ActEnabled`, safe mode off, and the service in `act`: the restore runs (Task 36) and emits `content_guard.restore`; a `Stop` emits `content_guard.stop`. **Promotion** (`Promote.Auto`, default after 30 minutes): a service in `alert` becomes `act` and `content_guard.promoted` is emitted when the shadow period has run, its golden entries exist and are not stale, every would-restore verified, the probe is green now, and no stop is open; `Promote.Auto == false` pins it. A `content_guard.stop` or a failed restore demotes the service to `alert` until `ClearEpoch` rises (state kept with `env.Keep`). **Boot-critical**: only when `BootCritical.Enabled` and the host has a scored service (its probe is the gate); with no scored service the list is alert-only whatever the mode says. `rules/respond/boot_critical.yml` lists explicit candidates (no globs): `/etc/fstab`, grub config per distro (`/boot/grub2/grub.cfg` for rocky, `/boot/grub/grub.cfg` for debian and ubuntu), `/boot/efi/EFI/<vendor>/grub.cfg` resolved from the existing vendor directory, the running kernel's initramfs (`resolve: initramfs`), `/etc/ssh/sshd_config`, the network files per distro (netplan `00-installer-config.yaml`, `50-cloud-init.yaml` for ubuntu; `/etc/network/interfaces` for debian; NetworkManager `*.nmconnection` for rocky are listed by name from `hosts.yml` through the controller, Task 38), `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` with `never: true`; Windows: `\Boot\BCD` (restored by the pre-approved `bcdedit /import`, `shortcut: bcdedit instead of a native hive write, upgrade only if a DC lab run fails`). **Health**: `ok` when every listed file is watched and has a golden copy; `degraded` for a listed path without a golden copy, a watch gap forcing the sweep fallback (named), or a golden store over budget; `unavailable` with no listed paths; `Info` `files`, `act_services`, `loops_open`. The plan node `plans/hardening/guard.snapshot.yaml` (template, `module: content_guard`) is added for hardening plans to append.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestAlertModeEmitsAndNeverWrites(t *testing.T) { /* constraint 6: change -> content_guard.change alert; file content unchanged; would_restores incremented */ }
+func TestActModeRestoresLocallyWithLinkDown(t *testing.T) { /* act service, harness link down: restore event result restored, probe before/after recorded */ }
+func TestActEnabledAndSafeModeGate(t *testing.T) { /* ActEnabled false or safe mode on: act-mode service only alerts */ }
+func TestAutoPromotionAfterCleanShadow(t *testing.T) { // T79 content_guard half
+	/* fake clock 31 min after start with fresh golden, probe green: one content_guard.promoted (from alert to act); a stale golden or an open stop prevents it; Promote.Auto false pins */
+}
+func TestStopDemotesToAlert(t *testing.T) { /* a loop stop returns the service to alert until ClearEpoch rises */ }
+func TestBootCriticalAlertOnlyWithoutScoredService(t *testing.T) { /* no scored service: act mode still alert */ }
+func TestBootCriticalFstabRestoredInAct(t *testing.T) { /* T52 boot-critical half: fake root, delete /etc/fstab, act + scored service + green probe: restored; passwd change: alert only */ }
+func TestHealthStates(t *testing.T) { /* no paths unavailable; missing golden degraded naming the path; ok otherwise */ }
+func TestGoldenIndexSurvivesReconfiguration(t *testing.T) { /* reconfigure: Golden entries still present (Keep + on-disk index) */ }
+func TestContentGuardConformance(t *testing.T) {
+	conformance.Agent(t, conformance.AgentCase{Factory: factoryNamed(t, "content_guard"), Default: cgCfg(t, 0), Reconfig: cgCfg(t, 1), KeepKey: "content_guard.state", Load: fileChangeEvents()})
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/content_guard/ -run 'AlertMode|ActMode|ActEnabledAndSafe|AutoPromotion|StopDemotes|BootCritical|HealthStates|GoldenIndexSurvives|Conformance' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (sweep timer, change events, restores through the Restorer, promotion tick every 30 s).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/content_guard/ ./internal/agent/... ./internal/module/...`. Expected: PASS, `content_guard` passing the agent conformance checks.
+- [ ] **Step 5: Commit.** `git commit -am "content_guard: module with alert and act modes, auto promotion, boot-critical list, health"`
+
+---
+
+### Task 38: Controller rendering: signed config blocks, lists, overrides, reference module blocks
+
+**Files:**
+- Modify: `internal/controller/genconfig.go`, `internal/controller/agentconfig.go` (`ConfigInputs`: overrides already in `Manifest`), `internal/manifest/validate.go`
+- Create: `manifest/2027/modules/{detect,respond,content_guard}.yml`, `manifest/schema/modules/{detect,respond,content_guard}.schema.json` (via `-update`), `internal/controller/genconfig_w4_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 1, 5, 6, 9, 24, 27, 37; `respondrecipes.FS`; `module.Effective`; `manifest.ModuleBlock.Decode`.
+- Produces:
+
+```go
+func renderDetect(m *manifest.Manifest, host string, base *plan.DetectSettings) *plan.DetectSettings
+//   Lists: manifest.scored_users, manifest.admin_sources, manifest.scored_service_names, manifest.workstations, manifest.service_binaries.<service> for the host's services;
+//   Exceptions and RuleModes copied from m.Overrides (rule ids kept; expired exceptions dropped); Packs from the block; MaxKeys/Rate from the block.
+func renderRespond(m *manifest.Manifest, host string, cfg respond.Config, recipes fs.FS, vars map[string]string) (*plan.RespondSettings, []string)
+//   Services: this host's services from services.yml (Scored from the manifest; Health from the first manifest Health entry: tcp_connect -> net.tcp_probe{host: 127.0.0.1, port}, http_get -> net.http_probe{url, expect_status, expect_regex});
+//   NeverBlock: every host address, the controller, relays, the Kali, plus Overrides learned scorer ranges when present; Tier0 from cfg.Settings(); Protected; ResetEpoch = m.Overrides.RespondResetEpoch;
+//   Recipes: each recipe file with ${name} expanded from vars (agent_dir, sysmon_installer, sysmon_sha256, sysmon_config); a recipe with an unresolved variable is omitted and named in the returned warnings.
+func renderContentGuard(m *manifest.Manifest, host string, cfg contentguard.Config, boot []byte) (*plan.ContentGuardSettings, []string)
+//   Services: content.guard lists of the host's services with Mode from cfg.Services (default cfg.Mode), Health as above, Lock the service unit lock; BootCritical.Candidates parsed from boot_critical.yml (+ the host's NetworkManager connection names for rocky); ClearEpoch = m.Overrides.GuardClearEpoch.
+```
+
+Enablement is `module.Effective(host.Modules[name], block.Enabled, Manifest().Default)`; `respond` and `detect` default on, `content_guard` off. Reference blocks are the design's YAML (`respond.yml` with `act_enabled: false` and `tier0.recipes: []`; `content_guard.yml` with `enabled: false`, `mode: alert`, `promote: {auto: true, after: 30m}`; `detect.yml` with `packs` listing every pack file name).
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestRenderRespondScoredServiceWithoutHealthHasNilProbe(t *testing.T) { /* a scored service without health: HostService.Health nil (the runner then refuses tier 0 there) */ }
+func TestRenderRespondNeverBlockHasInfraAddresses(t *testing.T) { /* controller, a relay and the Kali address appear in NeverBlock */ }
+func TestRenderRespondDropsRecipeWithUnresolvedVar(t *testing.T) { /* vars lacks sysmon_sha256: sysmon_reinstall omitted, warning names it; other recipes present */ }
+func TestRenderDetectListsAndOverrides(t *testing.T) { /* manifest with two scored accounts: list manifest.scored_users has both; overrides with an exception (expired one dropped) and a rule_mode appear in the settings */ }
+func TestRenderContentGuardOnlyListedPaths(t *testing.T) { /* a service with content.guard [/var/www/html/index.php] and roots [/var/www/html]: Paths exactly that one; host without such a service: Services empty and BootCritical disabled */ }
+func TestReferenceBlocksDecodeStrictly(t *testing.T) { /* each manifest/2027/modules/{detect,respond,content_guard}.yml decodes into its Config with unknown fields rejected; respond act_enabled false; content_guard enabled false */ }
+func TestEndToEndConfigCarriesRecipesAndRules(t *testing.T) { /* BuildAgentConfig for a Linux web host: Modules.Detect has rules from the tree, Modules.Respond has >= 7 recipes, Modules.ContentGuard nil unless enabled */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run 'RenderRespond|RenderDetect|RenderContentGuard|ReferenceBlocks|EndToEndConfig' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified; run `go test ./internal/module/all -run Schema -update` for the three schema files.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: render detect, respond and content_guard blocks; reference module blocks"`
+
+---
+
+### Task 39: End-to-end fixtures and cross-module checks (T74 respond half, T75 rule half, T79 rule promotion)
+
+**Files:**
+- Create: `internal/e2e/detect_respond_test.go`, `internal/e2e/testdata/alert_stream.json`
+- Modify: `cmd/phylax/rules.go` (the `promote` checks use the real recipes), `internal/module/conformance/allowed.go` (nothing is left in `PreContract` for W4's three modules)
+
+**Interfaces:**
+- Consumes: everything above. `internal/e2e` may import any package.
+- Produces tests only.
+
+- [ ] **Step 1: Write the tests:**
+
+```go
+func TestRecipeTriggersAreRealRules(t *testing.T) { /* every trigger of every embedded recipe matches at least one id in LoadTree + pending (Matches); an unmatched trigger is an error naming recipe and trigger */ }
+func TestActRulesHaveRecipesAndBack(t *testing.T) {
+	/* every rule with Mode act has a recipe trigger with tier0 or auto steps; every rule matched by a recipe trigger that has tier0 or auto steps is mode act and tier 0 (except rules parked in pending, which are listed in a comment) */
+}
+func TestRecipeEntitiesAreRuleEntities(t *testing.T) { /* each params_from entity key of each recipe test alert appears in the entities: list of the rule it names */ }
+func TestRecordedAlertStreamOutcomes(t *testing.T) { // fixture replay
+	/* testdata/alert_stream.json: a recorded list of detect.alert and controller.fact events with relative times (D10k fw tamper x4 in 90 s, D17c service stop, D15b decoy login from an own address, a D2a webroot change, a gpo_finding fact);
+	   feed it to a harness running the real respond module over fake actions; the exact outcome list is asserted:
+	   [applied fw.restore, applied fw.restore, skipped_rate fw.restore, skipped_guard (D17c, unknown verdict), skipped_guard (source_block own address), no event for D2a] */
+}
+func TestUnknownFactProposesTier1(t *testing.T) { // T74 respond half
+	/* agent side: tier-0 recipe with a Probe step and no scorer fact -> skipped_guard; feed that respond.action to the controller module with a fake Host: Propose called with Reason "unknown verdict"; after a fresh scorer_probe fact, the same alert applies */
+}
+func TestReplayedBackscanTriggersNothing(t *testing.T) { // review focus 3
+	/* a harness with detect and respond: 20 process_start events flagged replay:true that match D1 and D3c: zero detect.alert, zero respond.action */
+}
+func TestRulePromotionPass(t *testing.T) { // T79 rule promotion
+	/* rule in alert mode: alert emitted, respond does nothing. promote through cmd/phylax rules promote (AppendOverrides), rebuild the config (BuildAgentConfig), apply to the harness: same event now acts. demote with --mode alert: stops. Promotion of a rule whose recipe has no tier-0 steps is refused. */
+}
+func TestCanaryExemptByFieldNotTag(t *testing.T) { // T75 rule half
+	/* net.egress_denied with canary true and empty Tag: D12 does not fire, V3 does; with canary false: D12 fires */
+}
+func TestNonCanonicalFieldRejectedByLoader(t *testing.T) { /* T75: a rule naming src_ip fails LoadTree with Declared; also covered in Task 3, asserted here against the shipped corpus loader options */ }
+func TestAuditHashAlertReachesQueue(t *testing.T) { /* end to end through a controller: D10.audit-rules-changed alert from agent.health events lands in the operator alert queue */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/e2e/ -run 'RecipeTriggers|ActRulesHave|RecipeEntities|RecordedAlertStream|UnknownFactProposes|ReplayedBackscan|RulePromotionPass|CanaryExempt|NonCanonical|AuditHashAlert' -v`. Expected: FAIL (or skipped by the seams until implemented).
+- [ ] **Step 3: Fix what the tests find** in the recipes, rules and code of earlier tasks (each fix in the file that owns it, same commit).
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS; `grep -rn 'unimplemented: W4' internal | wc -l` prints 0.
+- [ ] **Step 5: Commit.** `git commit -am "e2e: detect and respond fixtures; recipe, rule and promotion cross-checks"`
+
+---
+
+### Task 40: Lab (stronger agent or David)
+
+Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra, the "ccdc27" lab) and GOAD for the AD rows. Records every result in `docs/impl/lab/w4-detection-response.md` (date, commit, VMIDs, test id, pass or fail, measured values, what was not run) and opens an issue per failure. This task does not block the merge; a module's catalogue Status becomes "lab-proven" only from this record.
+
+- [ ] **Step 1: Prepare.** Build the branch, enable `detect` and `respond` with `act_enabled: false` first (the alert-only stage), `content_guard` off; snapshot the VMs.
+- [ ] **Step 2: Run these lab tests** (ids from the design's Test matrix):
+  - T02: a systemd timer disables the host firewall every minute. Tier 0 restores it; measure restore latency (alert to applied); the loop opens on the third restore and names the timer in `Lineage`.
+  - T03: PHP webshell upload, command, file change. `D1.*` and `D17b` fire; the Alerts page shows the four proposals; kill-tree is a click.
+  - T11: stop Sysmon; `D10e` fires; `sysmon_reinstall` reinstalls it (Windows member); a log clear fires `D10d`.
+  - T16: a hardening plan that breaks a scored page is caught by the probe and rolled back; a forced `fw.restore` on a host whose scored service goes red trips the breaker and rolls back.
+  - T17: link drop during a firewall-enforce plan; tier 0 and the dead-man do not fight.
+  - T20: Quotient plus Orange traffic for 60 minutes with no red steps, `act_enabled: false`: at most 5 false-positive alerts per hour; record counts by rule.
+  - T36: Phylax hardening with no red steps and `act_enabled: true` for the tier-0 recipes: zero untagged alerts and zero tier-0 actions on our own tagged work.
+  - T52: content guard under its six constraints (planted OpenCart index defacement and an SMB SOP file: alert mode proposes, act mode restores and the scorer regex passes; a hand edit under a `phylax claim` window is ignored; a second restore within 10 minutes stops; `rm /etc/fstab` restores in act mode and proposes in alert mode); T63 Docker volume watch.
+  - T38 rows that belong to `detect`: Zerologon, hidden accounts, `chattr +i`, unit capabilities, PHP overrides, OpenCart admin rows, GPO and ACL changes each raise their alert.
+  - A-AUTO live rows: a decoy login from a non-own address blocks it on non-scored ports and expires; D7h deletion of a scored test user in AD restores it from the Recycle Bin and the next scorer login passes; a red GPO is unlinked.
+  - Re-enable: open a breaker with a red probe, raise the reset epoch in the Responses page, the next alert applies.
+  - Windows runs of Task 21 (`proc.*` on a Windows member: kill-tree, suspend, dump) and the Windows firewall/Defender/audit recipes under an Enforced GPO (`skipped_gpo`).
+- [ ] **Step 3: Record, open issues, and send the hand-offs below to their owners.**
+
+**Hand-offs (to be confirmed by the owners; none blocks W4's merge):**
+- W7 (`checks`): `scorer_probe_result` fact: id `scorer_probe:<service>`, `Data{"service": string, "ok": bool}`, ttl at least two round delays, sent to the agent of the host that serves the service.
+- W5 (`ad`): `gpo_finding` fact `Data` carries `Affects`, `Section`, `Item` and `Enforced`; respond reads them case-insensitively. W5 also registers the pending actions `ad.recycle_restore`, `ad.gpo_unlink`, `unit.disable`, `task.disable`, `runkey.remove`, `wmi.subscription_remove`, `binary.restore_from_depot`, `hunt.persistence`, `yara.scan`; each registration deletes its `PendingActions` entry.
+- W6 (`firewall`): `fw.restore`, `fw.apply` (`op: block|unblock`, `sources`, `ports: non_scored`, `reason`, `owner`) and `fw.quarantine`; the unparked `firewall.drift` rule `D10k3`.
+- W2: `session.terminate_predating{source, before}` (Tier B); respond's `session_evict` calls it with `before: ${now}`.
+- W8 (`traceback`): declare `traceback.label` (with `source_label`) so `rules/pending/pass_the_hash.yml` can be unparked, and make `deps` use ids `DEP1` to `DEP3` (the rules are renamed here).
+- W9 (`decoys`, `honeytokens`): the D15 rules live in `rules/detect/deception.yml` until W9 moves them; `respond.loop` is consumed by `hunt` (W5) for the targeted hunt.
+- W10: an Alerts-page "silence" button that calls `manifest.AppendOverrides` with a `RuleException`; the Content guard page and host-grid column (gap 21); `backup.failed` for a scored user deleted with no Recycle Bin entry.
+- W11: the chunk transfer of `evidence.blob` items.
+
+---
+
+## Self-review
+
+**1. Spec coverage.** `detect`: evaluator on the contract (Task 2); `lists`, `exceptions`, `rate` (5, 6, 8); `replay` and receive-time windows (7); `jitter` (9); mode promotion, `rule_modes`, demotion (9, 31); controller-scope evaluation (10); the `agent.health` rules-hash rule (11); collectors and `evidence.blob` (12); corpus move, registry, DEP rename (13, bug 2); ATT&CK pinned data (14); `phylax rules` and `THIRD_PARTY_RULES.md` (15); catalogue additions N4.2 to N4.6, D327/D332/D333/D337 items, D7h, hand-ported rules, pass-the-hash (16 to 19); `ir_template` (4, bug 22); canonical fields (3, T75). `respond`: tier table and guards (24 to 27), recipes (28, 29, 32), controller side (30, 31), pages (33), processes family and `dir.snapshot` (20 to 23), A-AUTO tier-0 set (27, 29, 38). `content_guard`: six constraints and boot-critical list (34 to 37). Config rendering (38). Tests T02, T03, T16, T20, T36, T52 in the lab (40); T74 respond half, T75 rule half, T79 rule promotion in CI form (39); T65 bug 2 and bug 22 regressions (13, 4). Deliberate gaps, all recorded above: controller collectors and `freeze_capture` (gap 5), pass-the-hash pack parked (gap 16), content_guard page (gap 21), Windows runs of `proc.*` (lab).
+
+**2. Step scan.** Every code step names a file, an exact signature and the spec values; test steps give names and assertions. Content tasks (16 to 19, 28, 29, 32) give the rule or recipe table and tests that pin tiers, modes and ids; the YAML bodies are left to the implementer on purpose.
+
+**3. Type consistency.** `AlertFields` (Task 1) is used by Tasks 2, 10, 12; `AlertView` (Task 24) is respond's own view and never imports `detect`. `Tier0Settings` field names (`MaxPerHostPerMin`, `BreakerWindowSec`, `LoopCount`, `LoopWindowSec`, `BlockExpiresSec`, `BlockMaxActive`, `Allowed`) are the design's and are read by Tasks 27, 29, 38. `Step` flags (Task 24) are the ones Tasks 27 and 29 act on. `plan.HostService` / `HealthProbe` are produced in Task 1, read by 26 and 38. `ClearEpoch` and `ResetEpoch` come from `Overrides.GuardClearEpoch` and `RespondResetEpoch` (Task 1) and are folded in Task 38.
+
+**4. Review Focus.** Unknown verdict: Tasks 26, 27, 30, 39. Hostile parameters: Tasks 24, 27. Replay: Tasks 7, 9, 39. Restorer fights: Tasks 25, 26, 27. Guarded file tricks: Tasks 34, 35, 36.
+
+**5. Proportion.** The design sections W4 owns are about 600 lines; this plan is larger because it carries 40 tasks with tests, as W1 and W3 do. Bodies are signatures and test names; no function body is transcribed.
