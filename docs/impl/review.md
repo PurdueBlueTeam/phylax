@@ -666,3 +666,6 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 
 ### Area 8 (2026-10-31)
 - All calls accepted. N8.1: the service doctor collect plan runs on the first failed check of a scored service (read-only; once per failure streak, re-run on demand).
+
+### Area 9 (2026-10-31)
+- All calls accepted. A9.Q1: keep the built extra decoys (D383 = KEEP), LAN-only, opt-in per host in decoys.yml. D389 public decoys cut.
