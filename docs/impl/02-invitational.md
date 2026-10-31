@@ -43,7 +43,7 @@
 | Safe mode on at start | **Needs code** | state is only the file `<state>/safe_mode`, created by the UI after connect (`WebOps.SetSafeMode`) or by hand. Tasks 2 and 3 add `Bundle.Safe`. |
 | Enrollment of a host | **Needs code** | `Controller.MintToken` is called only from tests; no command writes a bootstrap bundle. Tasks 2, 3 and 5. |
 | Safe mode keeps checks working (design: "checks and rollbacks still work") | **Needs code** | `internal/actions/env.go` returns `ErrSafeMode` for every non-dry-run action including `ReadOnly` ones, and `executor_test.go` pins that for `file.hash`. Task 13. |
-| Decoys and honeytokens (Tier A) | **Usable, left off** | role `decoys` plus `decoys.yml`; they open listeners and plant files, which the data doc's observe-only rule forbids. The generator drops them; `--decoys` keeps them. Decided: on (Open questions 1). |
+| Decoys and honeytokens (Tier A) | **Usable, on** | role `decoys` plus `decoys.yml`, LAN only. They open listeners and plant files; David decided they run in observe mode (Open questions 1). The generator keeps them; `--no-decoys` drops them. |
 | Canary probes from every Linux host | **Usable, left off** | `genconfig.go` turns `policy.egress.canary_ports` into outbound dials; the generator empties the list. |
 | External checks, scorer-mimic (C9, Tier A) | **Library exists, start path unverified** | `internal/checks`, `internal/vantage`, `controller/checks_hub.go`; whether the UI starts rounds is checked in the rehearsal (Task 15). |
 | Hunts, ledger, YARA (Tier A) | **Linux only, ledger unverified** | `integrity` module is registered for non-Windows hosts; a ledger comes from `phylax depot`. Checked in the rehearsal. |
@@ -252,11 +252,11 @@ git commit -m "serve: write enrollment bundles; agent starts in safe mode from t
 func TestObserveManifest(t *testing.T) // skips on windows or without sh
 // Run `sh ../../tools/invitational/make-observe-manifest.sh ../../manifest/2027 <tmp>/obs`, then:
 // m := manifest.LoadDir(obs); rules via LoadConfigInputs(Config{ManifestPath: obs, RulesPath: "../../rules"}).
-// For every host: no HasRole(manifest.RoleDecoys); BuildAgentConfig succeeds; Detect != nil && !Detect.ActEnabled; Deception == nil;
+// For every host: BuildAgentConfig succeeds; Detect != nil && !Detect.ActEnabled; hosts with RoleDecoys in the source still have it and Deception != nil (decoys stay by default);
 // Linux hosts: Net != nil && len(Net.Canaries) == 0; Windows hosts: Winevt != nil.
 // Compared with the source manifest's rocky-ecom config, Net.Canaries is non-empty there (proves the generator changed something).
-func TestObserveManifestWithDecoys(t *testing.T)
-// With "--decoys": rocky-ecom has Deception != nil, Net.Canaries still empty, Detect.ActEnabled still false.
+func TestObserveManifestNoDecoys(t *testing.T)
+// With "--no-decoys": no host HasRole(manifest.RoleDecoys); every Deception == nil; Net.Canaries still empty; Detect.ActEnabled still false.
 func TestObserveManifestRefusesNonEmptyDest(t *testing.T)
 ```
 
@@ -265,7 +265,7 @@ func TestObserveManifestRefusesNonEmptyDest(t *testing.T)
 Run: `go test ./internal/controller/ -run TestObserveManifest -count=1`
 Expected: FAIL (`make-observe-manifest.sh: No such file`).
 
-- [ ] **Step 3: Implement the script** with `cp -r`, the four `sed` rules above and the guards. It edits only the copy in `DST` (mark those lines `# inv:ro: edits the copy`).
+- [ ] **Step 3: Implement the script** with `cp -r`, the canary `sed` rule (always) and the three decoy `sed` rules (only with `--no-decoys`), and the guards. It edits only the copy in `DST` (mark those lines `# inv:ro: edits the copy`).
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -675,7 +675,7 @@ git commit -m "actions: safe mode permits read-only actions"
    10. Last 15 minutes: `c1-capture.sh stop` on every capture host; `c3-logs.sh end`; `c2-facts` again (for the T70 before/after diff); stop `phylax serve`; `tar czf` the controller data dir.
 4. **Exports** (table): per collector, the file pattern, where it is, size order, and the Nextcloud folder (`C4` and `c3` Windows Security logs in the private folder; scribe files upload from the outside machine): `*-c1-*` is `$INV_ROOT/pcap/*.pcap*` (upload scored-port files first), `<host>-c2-<stamp>.tar.gz`, `<host>-c3-<label>-<stamp>.tar.gz`, `<host>-c4-<stamp>-SENSITIVE.zip`, `<host>-c5-<stamp>.tar.gz`, `timeline.txt`, `scribe.csv` plus screenshots, `sampler.csv`, controller data dir tarball, network exports. Upload by hand in quiet moments; fallback: leave on the controller disk.
 5. **Fallbacks:** the agent fails to enroll on a host: continue with C1, C2, C3 only (they need nothing from Phylax); Defender blocks a script: record the time and message (O4), no exclusion unless the Captain approves; no Nextcloud: keep everything on the controller host.
-6. **Not done at the event** (so nobody improvises): no firewall change, no decoys unless David chose `--decoys`, no hardening except Tier B/C, no reboot.
+6. **Not done at the event** (so nobody improvises): no firewall change, decoys stay as configured (LAN only), no hardening except Tier B/C, no reboot.
 
 - [ ] **Step 2: Check every command in the runbook against the scripts**
 
