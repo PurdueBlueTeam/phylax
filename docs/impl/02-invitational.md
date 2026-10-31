@@ -43,7 +43,7 @@
 | Safe mode on at start | **Needs code** | state is only the file `<state>/safe_mode`, created by the UI after connect (`WebOps.SetSafeMode`) or by hand. Tasks 2 and 3 add `Bundle.Safe`. |
 | Enrollment of a host | **Needs code** | `Controller.MintToken` is called only from tests; no command writes a bootstrap bundle. Tasks 2, 3 and 5. |
 | Safe mode keeps checks working (design: "checks and rollbacks still work") | **Needs code** | `internal/actions/env.go` returns `ErrSafeMode` for every non-dry-run action including `ReadOnly` ones, and `executor_test.go` pins that for `file.hash`. Task 13. |
-| Decoys and honeytokens (Tier A) | **Usable, left off** | role `decoys` plus `decoys.yml`; they open listeners and plant files, which the data doc's observe-only rule forbids. The generator drops them; `--decoys` keeps them. **Decision for David** (Open questions). |
+| Decoys and honeytokens (Tier A) | **Usable, left off** | role `decoys` plus `decoys.yml`; they open listeners and plant files, which the data doc's observe-only rule forbids. The generator drops them; `--decoys` keeps them. Decided: on (Open questions 1). |
 | Canary probes from every Linux host | **Usable, left off** | `genconfig.go` turns `policy.egress.canary_ports` into outbound dials; the generator empties the list. |
 | External checks, scorer-mimic (C9, Tier A) | **Library exists, start path unverified** | `internal/checks`, `internal/vantage`, `controller/checks_hub.go`; whether the UI starts rounds is checked in the rehearsal (Task 15). |
 | Hunts, ledger, YARA (Tier A) | **Linux only, ledger unverified** | `integrity` module is registered for non-Windows hosts; a ledger comes from `phylax depot`. Checked in the rehearsal. |
@@ -54,8 +54,8 @@
 
 ## Open questions (placeholders, not decisions)
 
-1. Decoys and honeytokens in observe mode: design Tier A lists them, the data doc's ground rules say observe only. This plan ships them off (generator default) and on with `--decoys`. David decides.
-2. Which host is the "canary host" for Tier B and C: every host in `manifest/2027` is scored except `ubuntu-wkst` (the controller), `win11-wkst` and `kali`. David names it.
+1. Decided (David, 2026-10-31): decoys (LAN-only) and honeytokens run in observe mode. The generator keeps them by default; `--no-decoys` drops them.
+2. Decided (David, 2026-10-31): the canary host for Tier B is `win11-wkst`.
 3. Where the kit lands on the controller host: this plan assumes Nextcloud, reachable from `ubuntu-wkst`'s browser (design: expected writable from inside). If not, the kit travels by whatever the packet allows.
 
 ---
@@ -244,7 +244,7 @@ git commit -m "serve: write enrollment bundles; agent starts in safe mode from t
 
 **Interfaces:**
 - Consumes: `manifest.LoadDir`, `LoadConfigInputs(Config{ManifestPath, RulesPath})`, `BuildAgentConfig(ConfigInputs, host)`, `manifest.RoleDecoys`, `Host.HasRole`, fields `cfg.Modules.Detect.ActEnabled`, `cfg.Modules.Deception`, `cfg.Modules.Net.Canaries`.
-- Produces: `sh make-observe-manifest.sh SRC DST [--decoys]` copies the manifest directory `SRC` to `DST`, then (default) deletes `decoys.yml`, removes `decoys` from every host's `roles` in `hosts.yml`, and sets `canary_ports: []` in `policy.yml`; with `--decoys` it keeps decoys and still empties canaries. Refuses a non-empty `DST`. Prints `observe manifest: DST`. `phylax manifest load --dir DST` and `lint` report 0 errors (verified by hand on 2026-10-31 with the sed rules `s/, decoys\]/]/`, `s/\[decoys, /[/`, `s/roles: \[decoys\]/roles: []/`, `s/canary_ports: \[[^]]*\]/canary_ports: []/`).
+- Produces: `sh make-observe-manifest.sh SRC DST [--no-decoys]` copies the manifest directory `SRC` to `DST` and sets `canary_ports: []` in `policy.yml`; decoys stay by default; with `--no-decoys` it deletes `decoys.yml` and removes `decoys` from every host's `roles` in `hosts.yml`. Refuses a non-empty `DST`. Prints `observe manifest: DST`. `phylax manifest load --dir DST` and `lint` report 0 errors (verified by hand on 2026-10-31 with the sed rules `s/, decoys\]/]/`, `s/\[decoys, /[/`, `s/roles: \[decoys\]/roles: []/`, `s/canary_ports: \[[^]]*\]/canary_ports: []/`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -660,7 +660,7 @@ git commit -m "actions: safe mode permits read-only actions"
 
 - [ ] **Step 1: Write the runbook with these sections, in this order**
 
-1. **Before the event (by 2026-11-06), on the dev machine:** `make build build-windows`; `sh tools/invitational/make-observe-manifest.sh manifest/2027 /tmp/obs` (David's decision on `--decoys`); edit `topology.yml` team number and any packet differences; `./bin/phylax manifest lint --dir /tmp/obs` (0 errors); the kit tree `kit/` = `bin/phylax`, `bin/phylax-windows-amd64.exe` (as `phylax.exe`), `rules/`, `plans/`, the observe manifest, `tools/invitational/`, a controller config JSON (`data_dir`, `manifest_path`, `rules_path`, `plans_path`, `ui_listen` `127.0.0.1:8080`, `agent_listen` `0.0.0.0:7443`, `team`); `tar czf kit.tgz -C tools invitational`; upload `kit/` and `kit.tgz` to Nextcloud; print the O2 checklist and this runbook.
+1. **Before the event (by 2026-11-06), on the dev machine:** `make build build-windows`; `sh tools/invitational/make-observe-manifest.sh manifest/2027 /tmp/obs` (decoys on by default); edit `topology.yml` team number and any packet differences; `./bin/phylax manifest lint --dir /tmp/obs` (0 errors); the kit tree `kit/` = `bin/phylax`, `bin/phylax-windows-amd64.exe` (as `phylax.exe`), `rules/`, `plans/`, the observe manifest, `tools/invitational/`, a controller config JSON (`data_dir`, `manifest_path`, `rules_path`, `plans_path`, `ui_listen` `127.0.0.1:8080`, `agent_listen` `0.0.0.0:7443`, `team`); `tar czf kit.tgz -C tools invitational`; upload `kit/` and `kit.tgz` to Nextcloud; print the O2 checklist and this runbook.
 2. **Roles and who types what** (table: step, role, machine, command, mark text).
 3. **Order of operations**, each step with its command and the `m.sh` mark (the Platform driver or Captain keeps the timeline on the controller host):
    1. Drop flag: scribe starts `scribe.sh init`, reads the scoreboard every round for 20 minutes then every 5 minutes (C7); Captain runs `sh m.sh drop flag`.
@@ -671,7 +671,7 @@ git commit -m "actions: safe mode permits read-only actions"
    6. Network: C8 by hand, read-only: Palo `Device > Setup > Operations > Export named configuration snapshot`, `Monitor` log exports (traffic, system, config), licence page screenshot; VyOS `show configuration commands`, `show interfaces`, `show nat source rules`; save to the controller host under `/var/tmp/phylax-inv/network/`. Never enter configuration mode.
    7. +1 h and +3 h: the O12 checklist: `c1-capture.sh status` on every capture host (drop counters), Platform page (gaps, last event per module), `sh m.sh o12 ok|problem`.
    8. +2 h: `c3-logs.sh mid` on every host; the second half starts only if the Captain approves.
-   9. Tier B (Captain's call, second half or earlier, only on the canary host): the Platform driver turns safe mode off for that host in the UI after a verbal callout, then approves plans from `plans/first-hour` one at a time (dead-man on); mark each. Tier C: one scored-password change on the one scored user's host and one hardening pack on one scored server, per design Operations; time the PCR typing (O8) and have the scribe record S13.
+   9. Tier B (Captain's call, second half or earlier, only on the canary host `win11-wkst`): the Platform driver turns safe mode off for that host in the UI after a verbal callout, then approves plans from `plans/first-hour` one at a time (dead-man on); mark each. Tier C: one scored-password change on the one scored user's host and one hardening pack on one scored server, per design Operations; time the PCR typing (O8) and have the scribe record S13.
    10. Last 15 minutes: `c1-capture.sh stop` on every capture host; `c3-logs.sh end`; `c2-facts` again (for the T70 before/after diff); stop `phylax serve`; `tar czf` the controller data dir.
 4. **Exports** (table): per collector, the file pattern, where it is, size order, and the Nextcloud folder (`C4` and `c3` Windows Security logs in the private folder; scribe files upload from the outside machine): `*-c1-*` is `$INV_ROOT/pcap/*.pcap*` (upload scored-port files first), `<host>-c2-<stamp>.tar.gz`, `<host>-c3-<label>-<stamp>.tar.gz`, `<host>-c4-<stamp>-SENSITIVE.zip`, `<host>-c5-<stamp>.tar.gz`, `timeline.txt`, `scribe.csv` plus screenshots, `sampler.csv`, controller data dir tarball, network exports. Upload by hand in quiet moments; fallback: leave on the controller disk.
 5. **Fallbacks:** the agent fails to enroll on a host: continue with C1, C2, C3 only (they need nothing from Phylax); Defender blocks a script: record the time and message (O4), no exclusion unless the Captain approves; no Nextcloud: keep everything on the controller host.
