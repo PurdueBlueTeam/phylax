@@ -686,3 +686,12 @@ Architecture, principles, trust, wire protocol, spool, enrollment, manifest, mod
 - A10.Q2: yes (tentative): generic restore of a service's golden backup onto a different declared host, no hot-site plans; the backup tooling (area 11) should make the hot-site injects much easier.
 - A10.Q3: yes, evidence run and inject queries fold into `probe.run`.
 - All other area-10 calls accepted.
+
+### Area 11 (2026-10-31)
+- Phylax cannot reach the inject portal, the scoreboard or anything behind Authentik from inside the environment. So: cut N11.2 (event archive/export) and D480 (inject board) from Phylax; inject tracking is out of scope ("Phylax is not a Jira board of inject-related things"). Inject boards, scoreboard screenshots and submission records live outside Phylax.
+- A11.Q2: yes, services' own dump tools; Go reimplementations are also acceptable where simpler.
+- A11.Q3: yes, `say` and `claim` only.
+- A11.Q4: yes, session recording stays cut.
+- A11.Q5: yes, with the inject-board removal above: the host x step grid (N11.4+N11.6) and one Platform page stay.
+- Pending clarification: which "q1" David dislikes (multi-viewer UI D494?).
+- New: the Invitational is largely for instrumenting the environment and collecting data; list of open questions it can answer is in docs/impl/invitational-data.md (in progress).
