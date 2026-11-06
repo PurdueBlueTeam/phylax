@@ -258,7 +258,7 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	st.hb.SafeMode, st.hb.Drops = hb.SafeMode, hb.Drops
 	acked := st.acked
 	st.mu.Unlock()
-	a.sess.TrySend(link.PrioCritical, &link.Ack{Seq: acked}) // keepalive; a full queue means a newer ack is coming
+	a.sess.TrySend(link.PrioCritical, &link.Ack{Seq: acked, HB: hb.ID}) // keepalive and RTT echo; a full queue means a newer ack is coming
 	a.c.noteConfigStatus(st, hb)
 	return nil
 }

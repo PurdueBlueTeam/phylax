@@ -99,6 +99,13 @@ type Session struct {
 	errOnce sync.Once
 	err     error
 
+	// Heartbeat round-trip bookkeeping: hbID is the id of the newest queued
+	// heartbeat, hbSent when it was queued, rtt the last measured trip.
+	hbMu   sync.Mutex
+	hbID   uint64
+	hbSent time.Time
+	rtt    time.Duration
+
 	bucket tokenBucket
 }
 
@@ -135,6 +142,41 @@ func (s *Session) fail(err error) {
 
 // Close ends the session.
 func (s *Session) Close() { s.fail(ErrClosed) }
+
+// RTT returns the round trip of the last echoed heartbeat: heartbeat send to
+// the ack that carried its id back. 0 until one is echoed.
+func (s *Session) RTT() time.Duration {
+	s.hbMu.Lock()
+	defer s.hbMu.Unlock()
+	return s.rtt
+}
+
+// stampHeartbeat gives hb its id and the last measured round trip, and records
+// when it was queued so the matching ack can time the trip. Caller must not
+// hold hbMu.
+func (s *Session) stampHeartbeat(hb *Heartbeat) {
+	s.hbMu.Lock()
+	s.hbID++
+	hb.ID = s.hbID
+	if us := s.rtt.Microseconds(); us > 0 {
+		hb.RTTUs = uint32(min(us, 1<<32-1))
+	}
+	s.hbSent = time.Now()
+	s.hbMu.Unlock()
+}
+
+// onHBEcho times the round trip when ack id answers the newest heartbeat. An
+// echo of a superseded heartbeat is ignored: its send time is gone.
+func (s *Session) onHBEcho(id uint64) {
+	if id == 0 {
+		return
+	}
+	s.hbMu.Lock()
+	if id == s.hbID {
+		s.rtt = time.Since(s.hbSent)
+	}
+	s.hbMu.Unlock()
+}
 
 // Acked returns the highest event sequence the peer has acknowledged and
 // whether any ack has arrived yet.
@@ -210,6 +252,9 @@ func (s *Session) enqueueLocked(p Priority, it item) {
 func (s *Session) prepare(p Priority, m Message) (item, error) {
 	if p >= NumPriorities {
 		return item{}, fmt.Errorf("link: bad priority %d", p)
+	}
+	if hb, ok := m.(*Heartbeat); ok {
+		s.stampHeartbeat(hb)
 	}
 	t, body, err := Marshal(m)
 	if err != nil {
@@ -361,10 +406,11 @@ func (s *Session) readLoop(ctx context.Context, urgent, normal chan<- Message) {
 		switch v := m.(type) {
 		case *Ack:
 			s.onAck(v.Seq)
+			s.onHBEcho(v.HB)
 			continue
 		case *Heartbeat:
 			if s.o.AckFunc != nil {
-				s.TrySend(PrioCritical, &Ack{Seq: s.o.AckFunc()}) // full queue: a newer ack follows
+				s.TrySend(PrioCritical, &Ack{Seq: s.o.AckFunc(), HB: v.ID}) // full queue: a newer ack follows
 			}
 		}
 		q := normal

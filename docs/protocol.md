@@ -127,12 +127,12 @@ error and closes the connection.
 | --- | --- | --- | --- |
 | 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only), `binary_sha256` (sha256 hex of the running agent binary; absent when unreadable), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
 | 0x18 | `welcome` | controller to agent | `proto`, `minor`, `enrolled` (bool), `config` (optional signed config) |
-| 0x02 | `heartbeat` | agent to controller | `seq`, `host_clock` (RFC 3339), `spool_depth`, `congestion` (`ok`/`warning`/`full`/`flood`/`recovered`), `modules{name:status}`, `safe_mode`, `drops` |
+| 0x02 | `heartbeat` | agent to controller | `seq`, `host_clock` (RFC 3339), `spool_depth`, `congestion` (`ok`/`warning`/`full`/`flood`/`recovered`), `modules{name:status}`, `safe_mode`, `drops`, `id` (per-session counter), `rtt_us` (last heartbeat round trip, microseconds) |
 | 0x03 | `events` | agent to controller | `events[]`: `internal/event` records (`agent`, `seq`, `time`, `kind`, `prio`, `fields`, `prev`, `hash`), 1..5000 per batch |
 | 0x04 | `step_result` | agent to controller | `v`, `plan`, `node`, `host`, `epoch`, `seq`, `phase` (`check`/`apply`/`verify`/`rollback`), `status`, `error`, `step_digest`, `rollback_data_hash`, `before_digest`, `after_digest`, `started_ms`, `finished_ms`, `detail`, `sig` |
 | 0x05 | `chunk` | both | `sha256` (object digest, hex), `offset`, `total`, `data` (base64, 1..262144 bytes) |
 | 0x06 | `chunk_have` | both | `sha256`, `ranges[]` of `[offset,end)` the receiver already holds |
-| 0x10 | `ack` | controller to agent | `seq`: highest contiguous event sequence stored |
+| 0x10 | `ack` | controller to agent | `seq`: highest contiguous event sequence stored; `hb`: the `heartbeat.id` this ack answers (echoed so the agent can time the round trip) |
 | 0x11 | `step` | controller to agent | `v`, `plan`, `plan_hash`, `node`, `host`, `action`, `phase`, `params`, `risk`, `approval{by,at,note}`, `rollback_policy`, `rollback_digest`, `secrets_digest`, `epoch`, `seq`, `not_before`, `not_after`, `deadman`, `secrets` (base64), `sig` (base64) |
 | 0x12 | `config` | controller to agent | `version`, `epoch`, `body`, `sig` |
 | 0x13 | `fetch` | controller to agent | `id`, `kind` (`pcap`/`file`/`telemetry`), `args` |
@@ -200,10 +200,11 @@ content: changing any field fails verification.
 
 // heartbeat
 {"seq":18361,"host_clock":"2026-10-18T14:03:12.441Z","spool_depth":12,
- "congestion":"ok","modules":{"link":"ok","proc":"ok"},"safe_mode":false,"drops":0}
+ "congestion":"ok","modules":{"link":"ok","proc":"ok"},"safe_mode":false,"drops":0,
+ "id":42,"rtt_us":38000}
 
-// ack
-{"seq":18361}
+// ack (answering heartbeat id 42)
+{"seq":18361,"hb":42}
 ```
 
 ### Session establishment (`phylax/agent`)
@@ -216,7 +217,10 @@ content: changing any field fails verification.
    (0 on first contact). The first `ack` tells the agent where to resume.
 4. Agent streams `events` from `ack+1`, sends `heartbeat` every 5 s.
 5. Controller answers each `heartbeat` with an `ack` (the controller-to-agent
-   keepalive too). Silence for the read-idle window (20 s) ends the session.
+   keepalive too), carrying the heartbeat's `id` in `hb`. The agent times send
+   to echo, keeps the result as the link's round trip and reports it in the
+   next heartbeat's `rtt_us`; an echo of a superseded heartbeat is ignored.
+   Silence for the read-idle window (20 s) ends the session.
 
 ### Versioning
 

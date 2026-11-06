@@ -212,6 +212,12 @@ type Heartbeat struct {
 	Health     map[string]module.Health `json:"health,omitempty"`
 	SafeMode   bool                     `json:"safe_mode"`
 	Drops      uint64                   `json:"drops"`
+	// ID is a per-session counter, set by Session when the heartbeat is
+	// queued; the controller's ack carries it back as `ack.hb`.
+	ID uint64 `json:"id,omitempty"`
+	// RTTUs is the round trip of the last echoed heartbeat in microseconds,
+	// set by Session; 0 until one is echoed.
+	RTTUs uint32 `json:"rtt_us,omitempty"`
 }
 
 func (*Heartbeat) MsgType() Type { return TypeHeartbeat }
@@ -446,6 +452,9 @@ func (m *Control) Validate() error {
 // Ack acknowledges the highest contiguous event sequence stored.
 type Ack struct {
 	Seq uint64 `json:"seq"`
+	// HB echoes the Heartbeat.ID this ack answers, so an agent can measure the
+	// heartbeat round trip; 0 when the ack does not answer a heartbeat.
+	HB uint64 `json:"hb,omitempty"`
 }
 
 func (*Ack) MsgType() Type   { return TypeAck }
