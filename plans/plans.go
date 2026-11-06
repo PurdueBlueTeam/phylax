@@ -22,6 +22,7 @@ var FS embed.FS
 // one node per list element; `${host}` is the element, `${var}` any variable.
 type Template struct {
 	ID        string             `yaml:"id"`
+	Module    string             `yaml:"module"`
 	Name      string             `yaml:"name"`
 	OnFailure plan.FailurePolicy `yaml:"on_failure"`
 	Vars      map[string]any     `yaml:"vars"`
@@ -121,13 +122,11 @@ func Load(path string) (*Template, error) {
 	if err != nil {
 		return nil, err
 	}
-	var t Template
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&t); err != nil {
+	t, err := Parse(b)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &t, nil
+	return t, nil
 }
 
 // Paths lists every template file.

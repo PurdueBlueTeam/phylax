@@ -19,6 +19,7 @@ func StepToWire(s *Step) *link.Step {
 		Phase: s.Phase, Params: append(json.RawMessage(nil), s.Params...), Risk: string(s.Risk), RollbackPolicy: s.RollbackPolicy,
 		RollbackDigest: s.RollbackDigest, SecretsDigest: s.SecretsDigest, Epoch: s.Epoch, Seq: s.Seq,
 		NotBefore: s.NotBefore, NotAfter: s.NotAfter, DeadmanS: s.DeadmanSec,
+		Class: string(s.Class), ExpiresAfterS: s.ExpiresAfterSec,
 		Secrets: append([]byte(nil), s.Secrets...), Sig: append([]byte(nil), s.Sig...)}
 	if s.Approval != nil {
 		w.Approval = &link.Approval{By: s.Approval.By, At: s.Approval.At, Note: s.Approval.Note}
@@ -32,7 +33,8 @@ func StepFromWire(w *link.Step) *Step {
 	s.StepBody = StepBody{V: w.V, PlanID: w.Plan, PlanHash: w.PlanHash, NodeID: w.Node, Host: w.Host, Action: w.Action,
 		Phase: w.Phase, Params: append(json.RawMessage(nil), w.Params...), Risk: Risk(w.Risk), RollbackPolicy: w.RollbackPolicy,
 		RollbackDigest: w.RollbackDigest, SecretsDigest: w.SecretsDigest, Epoch: w.Epoch, Seq: w.Seq,
-		NotBefore: w.NotBefore, NotAfter: w.NotAfter, DeadmanSec: w.DeadmanS}
+		NotBefore: w.NotBefore, NotAfter: w.NotAfter, DeadmanSec: w.DeadmanS,
+		Class: ApprovalClass(w.Class), ExpiresAfterSec: w.ExpiresAfterS}
 	if w.Approval != nil {
 		s.Approval = &Approval{By: w.Approval.By, At: w.Approval.At, Note: w.Approval.Note}
 	}

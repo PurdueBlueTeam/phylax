@@ -45,24 +45,26 @@ const (
 // StepBody is everything the signature covers. Adding a field here covers it
 // automatically; the tamper test iterates over every field by reflection.
 type StepBody struct {
-	V              int             `json:"v"`
-	PlanID         string          `json:"plan_id"`
-	PlanHash       string          `json:"plan_hash"`
-	NodeID         string          `json:"node_id"`
-	Host           string          `json:"host"`
-	Action         string          `json:"action"`
-	Phase          string          `json:"phase"`
-	Params         json.RawMessage `json:"params"`
-	Risk           Risk            `json:"risk"`
-	Approval       *Approval       `json:"approval"`
-	RollbackPolicy string          `json:"rollback_policy"`
-	RollbackDigest string          `json:"rollback_digest"` // sha256 hex of rollback data, "" if none
-	SecretsDigest  string          `json:"secrets_digest"`  // sha256 hex of Secrets, "" if none
-	Epoch          uint64          `json:"epoch"`
-	Seq            uint64          `json:"seq"`
-	NotBefore      int64           `json:"not_before"` // unix seconds
-	NotAfter       int64           `json:"not_after"`
-	DeadmanSec     int             `json:"deadman_sec"`
+	V               int             `json:"v"`
+	PlanID          string          `json:"plan_id"`
+	PlanHash        string          `json:"plan_hash"`
+	NodeID          string          `json:"node_id"`
+	Host            string          `json:"host"`
+	Action          string          `json:"action"`
+	Phase           string          `json:"phase"`
+	Params          json.RawMessage `json:"params"`
+	Risk            Risk            `json:"risk"`
+	Approval        *Approval       `json:"approval"`
+	RollbackPolicy  string          `json:"rollback_policy"`
+	RollbackDigest  string          `json:"rollback_digest"` // sha256 hex of rollback data, "" if none
+	SecretsDigest   string          `json:"secrets_digest"`  // sha256 hex of Secrets, "" if none
+	Epoch           uint64          `json:"epoch"`
+	Seq             uint64          `json:"seq"`
+	NotBefore       int64           `json:"not_before"` // unix seconds
+	NotAfter        int64           `json:"not_after"`
+	DeadmanSec      int             `json:"deadman_sec"`
+	Class           ApprovalClass   `json:"class,omitempty"`
+	ExpiresAfterSec int             `json:"expires_after_sec,omitempty"`
 }
 
 // Step is the wire message. Secrets is the per-host secrets blob; it is not
@@ -382,7 +384,7 @@ func (s *Signer) Issue(p *Plan, run *Run, nodeID string, o IssueOpts) (*Step, er
 		Action: n.Action, Phase: o.Phase, Params: praw, Risk: eff, Approval: &appr,
 		RollbackPolicy: pol, RollbackDigest: digest(o.RollbackData), SecretsDigest: digest(o.Secrets),
 		Epoch: s.Epoch, Seq: seq, NotBefore: now.Unix(), NotAfter: now.Add(val).Unix(),
-		DeadmanSec: EffectiveDeadmanSec(n, eff),
+		DeadmanSec: EffectiveDeadmanSec(n, eff), Class: p.Class, ExpiresAfterSec: n.ExpiresAfterSec,
 	}
 	return st, s.sign(st)
 }

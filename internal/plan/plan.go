@@ -88,6 +88,23 @@ type Node struct {
 	Gate       bool           `json:"gate,omitempty"`
 	DeadmanSec int            `json:"deadman_sec,omitempty"`
 	Note       string         `json:"note,omitempty"`
+	// ExpiresAfterSec time-boxes an applied node; 0 means no expiry.
+	ExpiresAfterSec int `json:"expires_after_sec,omitempty"`
+	// Until turns a gate into gate: auto with its conditions.
+	Until *GateUntil `json:"until,omitempty"`
+}
+
+// GateUntil is the condition set of a gate: auto node.
+type GateUntil struct {
+	AfterSec int      `json:"after_sec,omitempty"` // seconds after the gate's last dependency finished
+	Probe    string   `json:"probe,omitempty"`     // scored service name, or "*" for every scored service on the plan's targets
+	NoEvent  *NoEvent `json:"no_event,omitempty"`
+}
+
+// NoEvent fails a gate when an event of Kind (and Fields) appears.
+type NoEvent struct {
+	Kind   string            `json:"kind"`
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // Plan is an immutable plan definition; runtime state lives in Run.
@@ -96,6 +113,10 @@ type Plan struct {
 	Name      string        `json:"name,omitempty"`
 	OnFailure FailurePolicy `json:"on_failure"`
 	Nodes     []Node        `json:"nodes"`
+	Class     ApprovalClass `json:"class,omitempty"`
+	Module    string        `json:"module,omitempty" yaml:"module,omitempty"`
+	Template  string        `json:"template,omitempty" yaml:"template,omitempty"`
+	Approver  string        `json:"approver,omitempty" yaml:"approver,omitempty"`
 }
 
 var idRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)

@@ -296,6 +296,8 @@ type Step struct {
 	NotBefore      int64           `json:"not_before"`
 	NotAfter       int64           `json:"not_after"`
 	DeadmanS       int             `json:"deadman,omitempty"`
+	Class          string          `json:"class,omitempty"`
+	ExpiresAfterS  int             `json:"expires_after_sec,omitempty"`
 	Secrets        []byte          `json:"secrets,omitempty"` // this host's secrets only; covered by SecretsDigest
 	Sig            []byte          `json:"sig"`
 }

@@ -27,9 +27,9 @@ type errTest string
 func (e errTest) Error() string { return string(e) }
 
 func samplePlan() *Plan {
-	return &Plan{ID: "harden", Nodes: []Node{
+	return &Plan{ID: "harden", Class: ClassAuto, Nodes: []Node{
 		{ID: "baseline", Action: "collect.inventory", Target: "h1"},
-		{ID: "fw_shadow", Action: "fw.apply", Target: "h1", Risk: RiskLockout, Needs: []string{"baseline"}, Params: map[string]any{"mode": "shadow"}},
+		{ID: "fw_shadow", Action: "fw.apply", Target: "h1", Risk: RiskLockout, Needs: []string{"baseline"}, ExpiresAfterSec: 1800, Params: map[string]any{"mode": "shadow"}},
 		{ID: "review", Gate: true, Needs: []string{"fw_shadow"}},
 		{ID: "fw_enf", Action: "fw.apply", Target: "h1", Risk: RiskLockout, Needs: []string{"review"}, DeadmanSec: 90, Params: map[string]any{"mode": "enforce"}},
 		{ID: "php", Action: "file.template", Target: "h1", Risk: RiskService, Params: map[string]any{"path": "/etc/php.ini"}},
