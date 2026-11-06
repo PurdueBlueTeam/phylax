@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -115,4 +116,82 @@ func shedHas(s event.StoreQuota, class string) bool {
 		}
 	}
 	return false
+}
+
+// newQuotaController builds a controller whose data-disk usage is pct, so a
+// test can drive the installed quota without filling a filesystem.
+func newQuotaController(t *testing.T, pct *float64) *Controller {
+	t.Helper()
+	cfg := Config{AgentListen: "127.0.0.1:0", DataDir: filepath.Join(t.TempDir(), "data")}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(context.Background(), cfg, Options{QuotaUsed: func() (float64, error) { return *pct, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
+}
+
+// The controller installs its quota in the store: at the bulk level a bulk
+// event is chain-verified and acknowledged past but not stored (one
+// quota_skips row), while an alert-class event is always stored.
+func TestQuotaInstalledAndSkipsBulk(t *testing.T) {
+	ctx := context.Background()
+	pct := 50.0
+	c := newQuotaController(t, &pct)
+	if err := c.Store().EnrollAgent(ctx, "h1", []byte("key-h1")); err != nil {
+		t.Fatal(err)
+	}
+	pct = 91
+	if lvl, changed := c.quota.Sample(); lvl != store.QuotaBulk || !changed {
+		t.Fatalf("sample: %v changed=%v", lvl, changed)
+	}
+	at := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
+	bulk := event.Event{Agent: "h1", Time: at, Kind: "agent.health", Priority: event.PriorityBulk,
+		Fields: map[string]any{"host": "h1"}}
+	if err := bulk.Seal(0, ""); err != nil {
+		t.Fatal(err)
+	}
+	alert := event.Event{Agent: "h1", Time: at.Add(time.Second), Kind: "agent.silent", Priority: event.PriorityHigh,
+		Fields: map[string]any{"host": "h1"}}
+	if err := alert.Seal(bulk.Seq, bulk.Hash); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := c.Store().Ingest(ctx, "h1", []event.Event{bulk, alert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Seq != 2 || ack.Accepted != 1 || ack.Skipped != 1 {
+		t.Fatalf("ack %+v", ack)
+	}
+	evs, err := c.Store().Events(ctx, store.Query{Agent: "h1", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Seq != 2 || evs[0].Kind != "agent.silent" {
+		t.Fatalf("stored %+v", evs)
+	}
+	gaps, err := c.Store().Gaps(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 1 || gaps[0].From != 1 || gaps[0].To != 1 || gaps[0].Reason != "controller quota" {
+		t.Fatalf("quota_skips rows %+v", gaps)
+	}
+}
+
+// The first sample happens at start, not one interval later.
+func TestQuotaFirstSampleImmediate(t *testing.T) {
+	pct := 91.0
+	c := newQuotaController(t, &pct)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.clk = newFakeClock(time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC))
+	go c.startQuota(ctx, time.Hour)
+	got := waitQuotaEvents(t, c, 1)
+	if last := got[len(got)-1]; last.Level != "bulk" || !shedHas(last, "bulk") {
+		t.Fatalf("first sample: %+v", last)
+	}
 }

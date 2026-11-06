@@ -74,6 +74,10 @@ type Options struct {
 	// EnrollTimer arms the enrollment window timer (WatchEnrollment); default
 	// time.AfterFunc. Tests drive it so no test waits a real window.
 	EnrollTimer func(d time.Duration, f func()) (stop func())
+	// QuotaUsed reports the data disk's used percentage; nil reads the
+	// filesystem holding DataDir. Tests install a fixed value to drive the
+	// shed levels.
+	QuotaUsed func() (usedPct float64, err error)
 }
 
 const alertRing = 256
@@ -180,7 +184,12 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
-	c.quota = store.NewQuota(func() (float64, error) { return diskUsedPct(cfg.DataDir) })
+	used := opt.QuotaUsed
+	if used == nil {
+		used = func() (float64, error) { return diskUsedPct(cfg.DataDir) }
+	}
+	c.quota = store.NewQuota(used)
+	st.SetQuota(c.quota)
 	c.checks = newChecksHub(c)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()

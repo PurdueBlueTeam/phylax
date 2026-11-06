@@ -25,6 +25,16 @@ func (c *Controller) startQuota(ctx context.Context, every time.Duration) {
 	if clk == nil {
 		clk = realClock{}
 	}
+	sample := func() {
+		lvl, changed := c.quota.Sample()
+		if !changed {
+			return
+		}
+		if err := c.emitQuota(ctx, lvl); err != nil {
+			c.log.Warn("cannot emit store.quota", "level", lvl.String(), "err", err)
+		}
+	}
+	sample()
 	t := clk.NewTicker(every)
 	defer t.Stop()
 	for {
@@ -33,13 +43,7 @@ func (c *Controller) startQuota(ctx context.Context, every time.Duration) {
 			return
 		case <-t.C():
 		}
-		lvl, changed := c.quota.Sample()
-		if !changed {
-			continue
-		}
-		if err := c.emitQuota(ctx, lvl); err != nil {
-			c.log.Warn("cannot emit store.quota", "level", lvl.String(), "err", err)
-		}
+		sample()
 	}
 }
 
