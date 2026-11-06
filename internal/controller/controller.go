@@ -182,8 +182,9 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
 	enr, err := enroll.New(enroll.Options{
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
-		PlanKey:   pk.Public().(ed25519.PublicKey),
-		HostKnown: opt.HostKnown, Emit: c.EmitController, Alert: c.alert,
+		PlanKey:    pk.Public().(ed25519.PublicKey),
+		ReleaseDir: cfg.ReleaseDir,
+		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.alert,
 		Connected: func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
 	})
 	if err != nil {
@@ -330,6 +331,7 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 		// hello handler decides. An unenrolled key is never treated as authenticated.
 		Check:         func(link.Pin) error { return nil },
 		Handlers:      map[string]link.Handler{link.ALPNAgent: c.handleAgent},
+		Bootstrap:     c.enr.Bootstrap(),
 		MaxHandshakes: c.cfg.MaxHandshakes,
 		MaxConns:      c.cfg.MaxConns,
 		Logger:        c.log,

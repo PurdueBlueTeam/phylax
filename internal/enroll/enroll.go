@@ -39,6 +39,12 @@ type Enroller struct {
 	mu      sync.Mutex // serialises enrollment decisions and revocation
 	tokens  *Tokens
 	revoked *revokedKeys
+
+	relMu    sync.Mutex
+	releases map[string]*releaseFile
+
+	failMu sync.Mutex
+	fails  map[string][]time.Time
 }
 
 // New opens the token and revocation files under o.DataDir.
@@ -58,7 +64,12 @@ func New(o Options) (*Enroller, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Enroller{opt: o, tokens: tokens, revoked: revoked}, nil
+	e := &Enroller{opt: o, tokens: tokens, revoked: revoked,
+		releases: map[string]*releaseFile{}, fails: map[string][]time.Time{}}
+	// Hash the release files now; release() refreshes them when they move.
+	_, _, _ = e.release(OSLinux)
+	_, _, _ = e.release(OSWindows)
+	return e, nil
 }
 
 // Tokens returns the token file for peeking and consuming.

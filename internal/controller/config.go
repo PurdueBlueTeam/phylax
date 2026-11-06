@@ -73,6 +73,7 @@ type Config struct {
 	ReorderWindow     uint64   `json:"reorder_window"`      // sequences ahead of the ack accepted (default 65536)
 	MaxBufferedEvents int      `json:"max_buffered_events"` // per-agent reorder buffer cap (default 16384)
 	MaxLiveTokens     int      `json:"max_live_tokens"`     // default 1024
+	ReleaseDir        string   `json:"release_dir"`         // phylax-linux-amd64 and phylax-windows-amd64.exe
 }
 
 func (c *Config) applyDefaults() {

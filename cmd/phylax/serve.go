@@ -39,6 +39,7 @@ func runServe(ctx context.Context, args []string) error {
 	bundleSafe := fs.Bool("bundle-safe", false, "start the bundled agents in safe mode")
 	servedDir := fs.String("served-dir", "", "directory the web root serves; phylax and phylax.exe are hashed for the enrollment watch")
 	enrollWindow := fs.Duration("enroll-window", 0, "how long enrollment stays open (default -bundle-ttl)")
+	releaseDir := fs.String("release-dir", "", "directory holding phylax-linux-amd64 and phylax-windows-amd64.exe for bootstrap downloads")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,6 +67,9 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	if *plansDir != "" {
 		cfg.PlansPath = *plansDir
+	}
+	if *releaseDir != "" {
+		cfg.ReleaseDir = *releaseDir
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("%w (use -config or -data-dir)", err)
