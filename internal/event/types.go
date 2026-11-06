@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -153,6 +154,21 @@ func decodeFields(dst any, fields map[string]any) error {
 	return nil
 }
 
+// extraKey matches the key a producer-only field may use.
+var extraKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
 // WithExtra returns a copy of e carrying a producer-only field under the x_
 // prefix. Decode and Validate ignore such fields.
-func (e Event) WithExtra(key string, v any) Event { panic("unimplemented: W1 Task 3a") }
+func (e Event) WithExtra(key string, v any) Event {
+	if !extraKey.MatchString(key) {
+		panic("event: bad extra key " + key)
+	}
+	fields := make(map[string]any, len(e.Fields)+1)
+	for k, fv := range e.Fields {
+		fields[k] = fv
+	}
+	fields["x_"+key] = v
+	out := e
+	out.Fields = fields
+	return out
+}

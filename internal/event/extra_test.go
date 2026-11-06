@@ -6,7 +6,6 @@ import (
 )
 
 func TestWithExtraCopiesAndPrefixes(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3a")
 	e, _ := New("ttest.one", tPayload{A: "x"})
 	f := e.WithExtra("raw_line", "su: failed")
 	if f.Fields["x_raw_line"] != "su: failed" {
@@ -25,7 +24,6 @@ func TestWithExtraCopiesAndPrefixes(t *testing.T) {
 }
 
 func TestWithExtraBadKeyPanics(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3a")
 	e, _ := New("ttest.one", tPayload{A: "x"})
 	defer func() {
 		if recover() == nil {
@@ -36,7 +34,6 @@ func TestWithExtraBadKeyPanics(t *testing.T) {
 }
 
 func TestWithExtraSurvivesJSONRoundTrip(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3a")
 	e, _ := New("ttest.one", tPayload{A: "x"})
 	e = e.WithExtra("n", 3)
 	raw, err := json.Marshal(e)
