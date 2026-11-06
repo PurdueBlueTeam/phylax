@@ -14,6 +14,7 @@ Rules for the plan:
 - Retrofit = move the module onto the contract (package per Appendix D, delete old paths), keep behaviour, keep/port tests; then new features; then the module's known bugs; then its rules/plans/check content.
 - Owner rules: small commits, message `area: summary`, NO attribution lines; Go 1.27.2 via mise; CGO_ENABLED=0 for builds, CGO_ENABLED=1 for `-race`; `make build build-windows vet test race` passes every commit; real tests, no mocks of the code under test; bounded everything; atomic writes; ponytail (smallest complete change; `shortcut: <limit>, <when to upgrade>` comments).
 - Proportion: signatures, tests and decisions, not transcribed function bodies.
+- Simplification pass (2026-11-06, S1-S4 in `docs/impl/design-review-2026-11-06.md`): plan the design as it now reads. No per-module act ladders, rule modes or breakers (the engine's `autonomy` setting and attempt ledger), no per-module operator-edit kinds (`operator.edit`), `act_enabled` only on acting modules, one `deception` module, trace-back inside `chains`, saved queries as report generators. Grep the design for each name before using it.
 - Self-review per the skill before replying.
 
 Reply under 200 words: plan file(s), task counts, anything W1 lacked that you added to your seams task, design gaps you hit.
