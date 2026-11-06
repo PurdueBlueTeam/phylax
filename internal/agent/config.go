@@ -182,7 +182,7 @@ func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 	defer a.holdEnd()
 	res := map[string]string{}
 	degraded := false
-	for _, f := range registered(a.cfg.Factories) {
+	for _, f := range a.reconcileFactories() {
 		if ctx.Err() != nil {
 			return
 		}

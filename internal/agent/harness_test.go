@@ -111,7 +111,6 @@ func (m emitMod) Start(ctx context.Context, emit Emit) error {
 }
 
 func TestHarnessRunsFactory(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 15")
 	h, err := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {
 		return ModuleSpec{Module: oneShot{}}, nil
 	})}})
@@ -135,7 +134,6 @@ func TestHarnessRunsFactory(t *testing.T) {
 }
 
 func TestHarnessUnavailable(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 15")
 	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {
 		return ModuleSpec{}, fmt.Errorf("%w: needs linux", ErrUnavailable)
 	})}})
@@ -147,7 +145,6 @@ func TestHarnessUnavailable(t *testing.T) {
 }
 
 func TestHarnessEmitErr(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 15")
 	got := make(chan error, 1)
 	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), EmitErr: func() error { return errors.New("link down") },
 		Factories: []Factory{harnessFactory(func(Env, *plan.AgentConfig) (ModuleSpec, error) {

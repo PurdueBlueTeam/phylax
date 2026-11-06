@@ -72,18 +72,21 @@ type Agent struct {
 	planKey ed25519.PublicKey
 
 	// config handling (see config.go)
-	cfgKick   chan struct{}
-	desired   *plan.AgentConfig // guarded by mu
-	cfgStat   ConfigStatus      // guarded by mu
-	managed   map[string]string // module -> settings fingerprint; configLoop only
-	kept      sync.Map
-	tapMu     sync.Mutex
-	taps      []*tap
-	held      []event.Event // published while a subscriber was starting; guarded by tapMu
-	subWait   int
-	holds     int
-	holdUntil time.Time
-	execWG    sync.WaitGroup
+	cfgKick chan struct{}
+	desired *plan.AgentConfig // guarded by mu
+	cfgStat ConfigStatus      // guarded by mu
+	managed map[string]string // module -> settings fingerprint; configLoop only
+	kept    sync.Map
+	sink    Emit // harness event sink when there is no spool
+	// factoriesOnly makes reconcile use cfg.Factories alone (test harness).
+	factoriesOnly bool
+	tapMu         sync.Mutex
+	taps          []*tap
+	held          []event.Event // published while a subscriber was starting; guarded by tapMu
+	subWait       int
+	holds         int
+	holdUntil     time.Time
+	execWG        sync.WaitGroup
 	// runCtx is the agent's run context; steps execute under it, not under
 	// the (per-connection) handler context.
 	runCtx context.Context
@@ -154,6 +157,12 @@ func (a *Agent) Pin() link.Pin { return a.id.Pin }
 // emit appends to the spool without touching the network.
 func (a *Agent) emit(e event.Event) error {
 	a.publish(e)
+	if a.sp == nil {
+		if a.sink != nil {
+			return a.sink(e)
+		}
+		return nil
+	}
 	_, err := a.sp.Append(e)
 	if err == nil {
 		select {

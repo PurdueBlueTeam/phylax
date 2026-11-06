@@ -123,6 +123,18 @@ func RegisterFactory(f Factory) {
 // Registered returns the process-wide factory registry, sorted by name.
 func Registered() []Factory { return registered(nil) }
 
+// reconcileFactories is the factory list the reconciler walks. It is the
+// process-wide registry in production and exactly the harness's Factories in
+// tests, so a test never starts a production module by accident.
+func (a *Agent) reconcileFactories() []Factory {
+	if !a.factoriesOnly {
+		return registered(a.cfg.Factories)
+	}
+	out := append([]Factory(nil), a.cfg.Factories...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // moduleManifests returns the manifests of the agent's factories, for hello.
 func (a *Agent) moduleManifests() []module.Manifest {
 	var out []module.Manifest
