@@ -109,7 +109,6 @@ func (h *moduleHost) UpdateOverrides(fn func(*manifest.Overrides) error) error {
 	h.c.cfgs.mu.Lock()
 	if h.c.cfgs.in != nil {
 		h.c.cfgs.in.Manifest = m
-		h.c.cfgs.gen++
 	}
 	h.c.cfgs.mu.Unlock()
 	return nil

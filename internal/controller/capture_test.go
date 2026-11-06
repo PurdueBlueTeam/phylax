@@ -208,8 +208,11 @@ func TestCaptureScorerSourcesAreExcluded(t *testing.T) {
 		}
 		// and it survives a rule reload
 		c2.cfgs.mu.Lock()
-		c2.cfgs.gen++
+		in := *c2.cfgs.in
 		c2.cfgs.mu.Unlock()
+		if err := c2.SetConfigInputs(context.Background(), in); err != nil {
+			t.Fatal(err)
+		}
 		feed(c2, evs)
 		if got := alertRules(t, c2); len(got) != 0 {
 			t.Fatalf("after reload: %v", got)

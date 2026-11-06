@@ -481,6 +481,7 @@ type HealthView struct {
 	Platform []KV
 	Store    []KV
 	Agents   []HealthAgent
+	Modules  []ModuleRow // from Ops.Modules
 }
 
 // HealthAgent is one agent's health line.
@@ -527,6 +528,9 @@ func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.fail(w, r, err)
 		return
+	}
+	if op, ok := s.cfg.Ops.(Ops); ok {
+		v.Modules = op.Modules(r.Context())
 	}
 	s.render(w, r, http.StatusOK, "health", pageData{Title: "Platform health", Nav: "health", Data: v})
 }

@@ -11,9 +11,11 @@ import (
 	"sync"
 	"time"
 
+	agentmod "github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/chains"
 	"github.com/PurdueBlueTeam/phylax/internal/detect"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -142,6 +144,57 @@ func (o *WebOps) alertRow(a store.AlertRow) ui.AlertRow {
 }
 
 // ---- dashboard ----
+
+// Modules lists every module's health for the Platform page: each agent's
+// modules from their latest heartbeat and the controller's own modules from the
+// runner. A module with no manifest in either registry is not yet on the
+// contract. (The agent factories are registered in this process too: the one
+// binary imports every module package.)
+func (o *WebOps) Modules(ctx context.Context) []ui.ModuleRow {
+	c := o.c
+	var rows []ui.ModuleRow
+	hosts := c.AgentHosts()
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		rows = append(rows, moduleRows(h, c.AgentHealth(h))...)
+	}
+	rows = append(rows, moduleRows(ControllerAgent, c.ModuleHealth())...)
+	return rows
+}
+
+// moduleRows turns one agent's health map into sorted rows.
+func moduleRows(agentName string, health map[string]module.Health) []ui.ModuleRow {
+	names := make([]string, 0, len(health))
+	for n := range health {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	rows := make([]ui.ModuleRow, 0, len(names))
+	for _, n := range names {
+		h := health[n]
+		row := ui.ModuleRow{Agent: agentName, Module: n, State: string(h.State), Detail: h.Detail,
+			PreContract: !moduleOnContract(n)}
+		for _, g := range h.Gaps {
+			row.Gaps = append(row.Gaps, g.What+": "+g.Why)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// moduleOnContract reports whether a module registered with a manifest, on
+// either side of the link.
+func moduleOnContract(name string) bool {
+	if m, ok := module.Lookup(name); ok && m.Manifest().Name != "" {
+		return true
+	}
+	for _, f := range agentmod.Registered() {
+		if f.Name == name {
+			return f.Manifest.Name != ""
+		}
+	}
+	return false
+}
 
 func (o *WebOps) Overview(ctx context.Context) (ui.OpsDashboard, error) {
 	var d ui.OpsDashboard

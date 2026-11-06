@@ -156,7 +156,8 @@ func TestServeEnrollWindowFlags(t *testing.T) {
 		t.Fatalf("err = %v, want an error naming -bundles", err)
 	}
 
-	// With both flags serve starts the watch over the manifest hosts.
+	// With both flags serve writes the bundles and starts the watch; the
+	// window then withdraws them, which proves -enroll-window took effect.
 	web := filepath.Join(tmp, "web")
 	if err := os.MkdirAll(web, 0o700); err != nil {
 		t.Fatal(err)
@@ -170,34 +171,44 @@ func TestServeEnrollWindowFlags(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	type started struct {
-		hosts  []string
-		window time.Duration
+	bundles := filepath.Join(tmp, "bundles")
+	bundleCount := func() int {
+		entries, err := os.ReadDir(bundles)
+		if err != nil {
+			return 0
+		}
+		n := 0
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				n++
+			}
+		}
+		return n
 	}
-	got := make(chan started, 1)
-	prev := enrollWatchStarted
-	enrollWatchStarted = func(hosts []string, window time.Duration) { got <- started{hosts, window} }
-	defer func() { enrollWatchStarted = prev }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- commands["serve"].run(ctx, []string{"-config", cfgPath, "-bundles", filepath.Join(tmp, "bundles"),
-			"-advertise", "172.20.240.5:7443", "-served-dir", web, "-enroll-window", "30m"})
+		done <- commands["serve"].run(ctx, []string{"-config", cfgPath, "-bundles", bundles,
+			"-advertise", "172.20.240.5:7443", "-served-dir", web, "-enroll-window", "2s"})
 	}()
-	select {
-	case s := <-got:
-		if len(s.hosts) != 8 {
-			t.Errorf("watch hosts = %v, want the 8 manifest hosts", s.hosts)
+	waitCount := func(want int, what string) {
+		t.Helper()
+		deadline := time.Now().Add(30 * time.Second)
+		for bundleCount() != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("bundles: %s did not happen (have %d)", what, bundleCount())
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("serve stopped before %s: %v", what, err)
+			case <-time.After(20 * time.Millisecond):
+			}
 		}
-		if s.window != 30*time.Minute {
-			t.Errorf("window = %v, want 30m", s.window)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("enrollment watch did not start")
 	}
+	waitCount(8, "the 8 manifest host bundles")
+	waitCount(0, "the enrollment window to withdraw every bundle")
 	cancel()
 	select {
 	case err := <-done:

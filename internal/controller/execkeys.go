@@ -61,14 +61,18 @@ func loadPlanKey(path string) (ed25519.PrivateKey, error) {
 	return priv, nil
 }
 
-// storeSeq allocates per-host step sequence numbers from the store, durably.
-type storeSeq struct{ st *store.Store }
-
-func (s storeSeq) Next(host string, _ uint64) (uint64, error) {
-	return s.st.NextStepSeq(context.Background(), host)
+// seqAlloc allocates per-host sequence numbers from the store, durably. The
+// prefix keeps the control sequence separate from the step sequence.
+type seqAlloc struct {
+	st     *store.Store
+	prefix string
 }
 
-var _ plan.SeqAllocator = storeSeq{}
+func (s seqAlloc) Next(host string, _ uint64) (uint64, error) {
+	return s.st.NextStepSeq(context.Background(), s.prefix+host)
+}
+
+var _ plan.SeqAllocator = seqAlloc{}
 
 // registryCatalog adapts the action registry to the plan engine's catalog.
 // Locks are the static (parameter-independent) named locks; parameter-dependent
@@ -93,13 +97,3 @@ func (r registryCatalog) Action(name string) (plan.ActionSpec, bool) {
 	return plan.ActionSpec{Name: spec.Name, Risk: plan.Risk(spec.Risk), Locks: locks,
 		ValidateParams: func(m map[string]any) error { _, err := spec.Validate(m); return err }}, true
 }
-
-// ctlSeq allocates the per-host control sequence from the store, durably. It is
-// a counter separate from the step sequence.
-type ctlSeq struct{ st *store.Store }
-
-func (s ctlSeq) Next(host string, _ uint64) (uint64, error) {
-	return s.st.NextStepSeq(context.Background(), "control/"+host)
-}
-
-var _ plan.SeqAllocator = ctlSeq{}

@@ -43,7 +43,7 @@ func needsConsoleAck(reg *actions.Registry, name string) bool {
 // nodes. It returns the Directory (for rotations that must drop pooled
 // adapters).
 func (c *Controller) EnableDeviceExec(opt DeviceExecOptions) (*Directory, error) {
-	x := c.dx.Load()
+	x := c.dx
 	if x == nil {
 		return nil, errors.New("controller: the executor is not installed")
 	}
@@ -132,7 +132,7 @@ func (c *Controller) AckConsole(ctx context.Context, planID, nodeID, operator st
 	if err := recordAck(ctx, c.st, c.now(), planID, nodeID, dev, operator, "controller"); err != nil {
 		return err
 	}
-	if x := c.dx.Load(); x != nil {
+	if x := c.dx; x != nil {
 		x.mu.Lock()
 		x.acks[ackKey(planID, nodeID)] = true
 		x.mu.Unlock()

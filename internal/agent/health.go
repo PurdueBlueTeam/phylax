@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"fmt"
-	"github.com/PurdueBlueTeam/phylax/internal/plan"
+	"os"
+	"runtime"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
 
@@ -46,6 +50,24 @@ func NewHealthModule(src HealthSource, interval time.Duration) Module {
 }
 
 func (h *healthModule) Name() string { return "health" }
+
+// Health reports the module's own state. The module needs root because it
+// reads the supervisor of a root agent, so a non-root run reports the
+// privilege gap instead of claiming full coverage (conformance check 4).
+func (h *healthModule) Health() module.Health {
+	info := map[string]string{"modules": strconv.Itoa(len(h.src.Modules()))}
+	if runningAsRoot() {
+		return module.Health{State: module.StateOK, Info: info}
+	}
+	return module.Health{State: module.StateDegraded, Info: info,
+		Gaps: []module.Gap{{What: "privilege", Why: "the health module reads the supervisor of a root agent"}}}
+}
+
+// runningAsRoot reports whether this process holds the privilege the module's
+// manifest claims. Windows agents run as SYSTEM, which os.Geteuid cannot see.
+func runningAsRoot() bool {
+	return runtime.GOOS == "windows" || os.Geteuid() == 0
+}
 
 func (h *healthModule) Start(ctx context.Context, emit Emit) error {
 	h.last = time.Now()
@@ -111,9 +133,23 @@ func gap(source, reason string, count uint64, from, to string) event.Event {
 
 const healthDefaultFP = "default"
 
+// mustType returns the declared event type of a kind the module emits; an
+// undeclared kind is a programming error, not a missing event.
+func mustType(kind string) event.Type {
+	ty, ok := event.Lookup(kind)
+	if !ok {
+		panic("agent: health emits undeclared kind " + kind)
+	}
+	return ty
+}
+
 func init() {
 	RegisterFactory(Factory{
 		Name: "health",
+		Manifest: module.Manifest{
+			Name: "health", Sides: []module.Side{module.SideAgent}, Privilege: "root", Default: true,
+			Emits: []event.Type{mustType("agent.health"), mustType(event.KindTelemetryGap)},
+		},
 		Section: func(c *plan.AgentConfig) (string, bool) {
 			h := c.Modules.Health
 			if h != nil && !h.Enabled {

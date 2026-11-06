@@ -25,17 +25,7 @@ import (
 const (
 	releaseLinux   = "phylax-linux-amd64"
 	releaseWindows = "phylax-windows-amd64.exe"
-
-	// maxFailAddrs bounds the in-memory failed-token map.
-	maxFailAddrs = 4096
 )
-
-// releaseFile is one cached release hash, refreshed when size or mtime moves.
-type releaseFile struct {
-	size int64
-	mod  time.Time
-	sha  string
-}
 
 // release returns the path and sha256 of the agent binary for osName.
 func (e *Enroller) release(osName string) (string, string, error) {
@@ -59,11 +49,6 @@ func (e *Enroller) release(osName string) (string, string, error) {
 	if fi.Size() > 64<<20 {
 		return "", "", fmt.Errorf("enroll: release file %s is larger than 64 MiB", path)
 	}
-	e.relMu.Lock()
-	defer e.relMu.Unlock()
-	if r := e.releases[osName]; r != nil && r.size == fi.Size() && r.mod.Equal(fi.ModTime()) {
-		return path, r.sha, nil
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", fmt.Errorf("enroll: release file %s: %w", path, err)
@@ -74,7 +59,6 @@ func (e *Enroller) release(osName string) (string, string, error) {
 		return "", "", fmt.Errorf("enroll: release file %s: %w", path, err)
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
-	e.releases[osName] = &releaseFile{size: fi.Size(), mod: fi.ModTime(), sha: sha}
 	return path, sha, nil
 }
 
@@ -305,38 +289,22 @@ func (e *Enroller) limited(ip string) bool {
 	e.failMu.Lock()
 	defer e.failMu.Unlock()
 	f := e.fails[ip]
-	keep := f[:0]
-	for _, t := range f {
-		if now.Sub(t) < time.Minute {
-			keep = append(keep, t)
-		}
+	if f.since.IsZero() || now.Sub(f.since) >= time.Minute {
+		delete(e.fails, ip)
+		return false
 	}
-	e.fails[ip] = keep
-	return len(keep) >= 20
+	return f.n >= 20
 }
 
 func (e *Enroller) noteFailure(ip string) {
 	now := e.opt.Now()
 	e.failMu.Lock()
 	defer e.failMu.Unlock()
-	if _, exists := e.fails[ip]; !exists && len(e.fails) >= maxFailAddrs {
-		oldestIP := ""
-		var oldest time.Time
-		for k, v := range e.fails {
-			var t time.Time
-			if len(v) > 0 {
-				t = v[len(v)-1]
-			}
-			if oldestIP == "" || t.Before(oldest) {
-				oldestIP, oldest = k, t
-			}
-		}
-		delete(e.fails, oldestIP)
+	f := e.fails[ip]
+	if f.since.IsZero() || now.Sub(f.since) >= time.Minute {
+		f = failEntry{since: now}
 	}
-	f := append(e.fails[ip], now)
-	if len(f) > 20 {
-		f = f[len(f)-20:]
-	}
+	f.n++
 	e.fails[ip] = f
 }
 

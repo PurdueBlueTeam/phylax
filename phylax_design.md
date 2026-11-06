@@ -297,7 +297,7 @@ A module is:
 8. **Content before code.** Rules, plans and checks are YAML under the module's content directories; a capability that content over existing actions can deliver gets no new Go.
 9. **Off unless the manifest enables it,** except the modules the catalogue marks core-default, which run wherever their OS and role conditions hold.
 
-**Core packages** a module may import: `internal/event`, `internal/module`, `internal/agent` (agent side: `Env`, `Emit`, `RegisterFactory`), `internal/link` (message types only), `internal/plan` (config and step types), the root `plans` package (plan template parsing, for modules that validate packs), `internal/actions` (the action framework: `Action`, `Env`, `Register`, locks, tags, guard), `internal/store` (the read-only query API and the module table migration hook), `internal/manifest` and `internal/manifest/render` (types, and the renderers that turn the manifest into firewall policy, agent configs and plan targets), `internal/deadman` (the dead-man and expiry journal types, for actions that arm one), `internal/ui` (the registrar), `internal/vault` (scoped secret reader). `internal/enroll` (first contact and enrollment) is core and is not importable by modules.
+**Core packages** a module may import: `internal/event`, `internal/module`, `internal/agent` (agent side: `Env`, `Emit`, `RegisterFactory`), `internal/link` (message types only), `internal/plan` (config and step types), the root `plans` package (plan template parsing, for modules that validate packs), `internal/actions` (the action framework: `Action`, `Env`, `Register`, locks, tags, guard), `internal/store` (the read-only query API and the module table migration hook), `internal/manifest` and `internal/manifest/render` (types, and the renderers that turn the manifest into firewall policy, agent configs and plan targets), `internal/deadman` (the dead-man and expiry journal types, for actions that arm one), `internal/ui` (the registrar), `internal/vault` (scoped secret reader), `internal/bench` (the comms recorder's histogram types, which `internal/store` imports, so it reaches every module that queries the store). `internal/enroll` (first contact and enrollment) is core and is not importable by modules.
 
 **Shared stateless libraries are allowed; importing another module's package is not.** A shared library is a package that holds no state between calls, emits no events, registers nothing at run time and starts no goroutine that outlives a call. Any module may import it, because it is a function library and not a module: it has no manifest, no config block and no health. The allowed set is a closed list kept in the CI check (`go list -deps` per module package); adding a package to the list is a design change recorded here. The list:
 
@@ -422,9 +422,9 @@ One table lists every event kind, who emits it and who consumes it. It is the si
 | `listener` | common | 1 | - | `net` | `detect`, `traceback`, `deps`, `report` |
 | `auth_event` | common | 1 | - | `winevt`, `logs` | `detect`, `scorer`, `traceback`, `chains`, `report`, `splunk` |
 | `dns_query` | common | 1 | - | `winevt` (Windows only; Linux has no DNS source) | `detect`, `deps`, `deception` |
-| `telemetry_gap` | common | 1 | - | `audit`, `winevt`, `net`, `logs`, `inventory`, `integrity`, `content_guard`, `wazuh`, `splunk` (the sensor and module state records: reasons `sysmon_degraded`, `sensor_degraded`, `ledger_unavailable`, `golden_missing`, `golden_stale`, `wazuh_degraded`, `forwarder_failing`) | `detect`, `content_guard`, `integrity`, `checks`, `traceback`, `chains`, `hardening` |
+| `telemetry_gap` | common | 1 | - | `audit`, `winevt`, `net`, `logs`, `inventory`, `health`, `integrity`, `content_guard`, `wazuh`, `splunk` (the sensor and module state records: reasons `sysmon_degraded`, `sensor_degraded`, `ledger_unavailable`, `golden_missing`, `golden_stale`, `wazuh_degraded`, `forwarder_failing`) | `detect`, `content_guard`, `integrity`, `checks`, `traceback`, `chains`, `hardening` |
 | `agent.start` | core | 1 | - | agent supervisor | none (stored, shown in the UI) |
-| `agent.health` | core | 1 | - | agent supervisor | `detect` |
+| `agent.health` | core | 1 | - | agent supervisor, `health` | `detect` |
 | `agent.step` | core | 1 | - | agent executor | none (stored, shown in the UI) |
 | `agent.step_result` | core | 1 | - | agent executor and controller executor | `report`, `backup`, `creds` |
 | `agent.step_refused` | core | 1 | - | agent executor | none (stored, shown in the UI) |
@@ -789,12 +789,12 @@ Content lives in the repository under `rules/`, `plans/` and `checks/`, one subd
 
 `internal/module/conformance` runs against every registered module in CI (review N1.2, N13.1). A module fails CI unless it:
 
-1. **Starts with no config:** `Section` reports disabled, or `Build` returns `ErrUnavailable`, never a crash.
-2. **Starts with its default config** on a fixture host and reaches `ok` or `unavailable` within 10 s.
+1. **Starts with no config:** `Section` reports disabled, or `Build` returns `ErrUnavailable`, never a crash. A core-default module (`Manifest.Default`) runs on its default settings instead.
+2. **Starts with its default config** on a fixture host and reaches a settled state (`ok`, `unavailable`, or the gap this host cannot close such as a root module on a non-root host) within 10 s.
 3. **Stops cleanly:** returns within 5 s of context cancel and leaves no goroutines (checked with a goroutine leak detector).
 4. **Reports health** within one heartbeat interval, with a non-empty `Gaps` entry for every declared OS or privilege it lacks.
 5. **Emits only declared kinds,** every event decoding strictly against its declared schema version.
-6. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s.
+6. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s, keeping any gap this host cannot close.
 7. **Survives reconfiguration:** a changed config replaces it without losing `Keep` state.
 8. **Has no sibling imports** and **rejects unknown config fields**, while decoding `enabled` (every block) and `act_enabled` and `autonomy` (acting modules only; any other module rejects them).
 9. **Passes `go test -race`** for its package.

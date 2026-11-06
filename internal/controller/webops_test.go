@@ -16,7 +16,6 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/detect"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
-	"github.com/PurdueBlueTeam/phylax/internal/ui"
 )
 
 type uiClient struct {
@@ -62,7 +61,7 @@ func newUITest(t *testing.T, plansDir string) (*Controller, *WebOps, *uiClient, 
 	t.Helper()
 	c := newBareController(t, filepath.Join(t.TempDir(), "data"))
 	t.Cleanup(func() { c.Close() })
-	srv, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", PlansDir: plansDir, Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", PlansDir: plansDir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +227,7 @@ func TestUIAlertTraceAndDashboard(t *testing.T) {
 func TestUIAccountsPersistInStore(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "data")
 	c := newBareController(t, dir)
-	srv, _, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv, _, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +238,7 @@ func TestUIAccountsPersistInStore(t *testing.T) {
 	c.Close()
 	c2 := newBareController(t, dir)
 	defer c2.Close()
-	srv2, _, _ := c2.NewUI(UIOptions{Addr: "127.0.0.1:8443", Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv2, _, _ := c2.NewUI(UIOptions{Addr: "127.0.0.1:8443"})
 	if _, created, _ := srv2.EnsureAdmin(context.Background()); created {
 		t.Fatal("a second admin was created on restart")
 	}

@@ -180,7 +180,7 @@ func (c *Controller) signer(ctx context.Context) (*plan.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &plan.Signer{Key: c.planKey, Epoch: ep, Seqs: storeSeq{c.st}, Now: c.now}, nil
+	return &plan.Signer{Key: c.planKey, Epoch: ep, Seqs: seqAlloc{st: c.st}, Now: c.now}, nil
 }
 
 // CreatePlan validates a typed plan against the action catalog and stores it
@@ -550,7 +550,7 @@ func (c *Controller) sendControl(ctx context.Context, ag *agentConn, host, kind 
 	if err != nil {
 		return err
 	}
-	sg := &plan.ControlSigner{Key: c.planKey, Epoch: ep, Seqs: ctlSeq{c.st}, Now: c.now, Validity: c.opt.ControlValidity}
+	sg := &plan.ControlSigner{Key: c.planKey, Epoch: ep, Seqs: seqAlloc{st: c.st, prefix: "control/"}, Now: c.now, Validity: c.opt.ControlValidity}
 	ctl, err := sg.Issue(host, kind, on, args)
 	if err != nil {
 		return err

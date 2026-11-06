@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "act_enabled": {
+      "type": "boolean"
+    },
+    "auto": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "burst": {
+      "type": "integer"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "interval_sec": {
+      "type": "integer"
+    },
+    "rate_per_sec": {
+      "type": "number"
+    }
+  },
+  "required": [
+    "enabled",
+    "act_enabled"
+  ],
+  "title": "HealthSettings",
+  "type": "object"
+}

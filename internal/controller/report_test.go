@@ -26,7 +26,6 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/report"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
-	"github.com/PurdueBlueTeam/phylax/internal/ui"
 )
 
 // newReportUITest is newUITest with the team and numbering configured.
@@ -42,7 +41,7 @@ func newReportUITest(t *testing.T) (*Controller, *WebOps, *uiClient, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
-	srv, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +266,7 @@ func TestUIIRDraftFillValidateDownload(t *testing.T) {
 func TestUIIRNeedsTeamAndSplitsNumbers(t *testing.T) {
 	c := newBareController(t, filepath.Join(t.TempDir(), "data"))
 	defer c.Close()
-	_, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	_, ops, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443"})
 	if err != nil {
 		t.Fatal(err)
 	}

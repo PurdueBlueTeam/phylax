@@ -135,7 +135,6 @@ func runServe(ctx context.Context, args []string) error {
 			if err := c.WatchEnrollment(*bundlesDir, hosts, served, window); err != nil {
 				return err
 			}
-			enrollWatchStarted(hosts, window)
 			log.Info("enrollment watch started", "dir", *bundlesDir, "hosts", len(hosts), "window", window)
 		}
 	}
@@ -181,10 +180,6 @@ func manifestHosts(m *manifest.Manifest) []string {
 	sort.Strings(hosts)
 	return hosts
 }
-
-// enrollWatchStarted observes a started enrollment watch; tests replace it to
-// see the flags take effect instead of waiting on the alerts themselves.
-var enrollWatchStarted = func(hosts []string, window time.Duration) {}
 
 // servedBinaries lists the agent binaries a web root serves. A missing
 // phylax.exe is normal on a Linux-only kit; a web root with neither binary is

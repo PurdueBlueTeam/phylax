@@ -46,21 +46,13 @@ type cfgRec struct {
 }
 
 type cfgState struct {
-	mu    sync.Mutex
-	in    *ConfigInputs
-	gen   uint64
-	recs  map[string]cfgRec
-	cache map[string]cfgCached
-}
-
-type cfgCached struct {
-	gen   uint64
-	epoch uint64
-	msg   *link.Config
+	mu   sync.Mutex
+	in   *ConfigInputs
+	recs map[string]cfgRec
 }
 
 func (c *Controller) loadConfigRecs() error {
-	c.cfgs.recs, c.cfgs.cache = map[string]cfgRec{}, map[string]cfgCached{}
+	c.cfgs.recs = map[string]cfgRec{}
 	b, err := os.ReadFile(filepath.Join(c.cfg.DataDir, configVersFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -93,7 +85,6 @@ func (c *Controller) SetConfigInputs(ctx context.Context, in ConfigInputs) error
 	c.cfgs.mu.Lock()
 	cp := in
 	c.cfgs.in = &cp
-	c.cfgs.gen++
 	c.cfgs.mu.Unlock()
 	c.pushAll(ctx)
 	return nil
@@ -120,9 +111,6 @@ func (c *Controller) AgentConfigFor(ctx context.Context, host string) (*link.Con
 	epoch, err := c.st.Epoch(ctx)
 	if err != nil {
 		return nil, err
-	}
-	if ca, ok := c.cfgs.cache[host]; ok && ca.gen == c.cfgs.gen && ca.epoch == epoch {
-		return ca.msg, nil
 	}
 	in := *c.cfgs.in
 	in.Tokens = c.honeyTokens()
@@ -158,7 +146,6 @@ func (c *Controller) AgentConfigFor(ctx context.Context, host string) (*link.Con
 	if err != nil {
 		return nil, err
 	}
-	c.cfgs.cache[host] = cfgCached{gen: c.cfgs.gen, epoch: epoch, msg: msg}
 	return msg, nil
 }
 

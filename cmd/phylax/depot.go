@@ -255,7 +255,7 @@ func runDepot(ctx context.Context, args []string, in io.Reader, out, errw io.Wri
 			return err
 		}
 		if code != 0 {
-			exitFn(code)
+			os.Exit(code)
 		}
 		return nil
 
@@ -269,15 +269,13 @@ func runDepot(ctx context.Context, args []string, in io.Reader, out, errw io.Wri
 			return err
 		}
 		if code != 0 {
-			exitFn(code)
+			os.Exit(code)
 		}
 		return nil
 	}
 	fmt.Fprint(errw, depotUsage)
 	return errUsage
 }
-
-var exitFn = os.Exit
 
 func loadPub(s string) (ed25519.PublicKey, error) {
 	if s == "" {

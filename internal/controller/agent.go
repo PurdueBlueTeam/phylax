@@ -257,7 +257,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		return err
 	}
 	if err := c.enr.Announce(ctx, h.Host, pin, res); err != nil {
-		return err
+		c.log.Error("agent.announce", "host", h.Host, "err", err)
 	}
 	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: ag.LastSeq}); err != nil {
 		return err

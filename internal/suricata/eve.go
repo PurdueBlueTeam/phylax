@@ -17,10 +17,6 @@ import (
 
 const (
 	maxLine = 1 << 20 // longer lines are skipped and counted
-	// KindAlert, KindZeekConn, KindZeekDNS are event kinds.
-	KindAlert    = "suricata.alert"
-	KindZeekConn = "zeek.conn"
-	KindZeekDNS  = "zeek.dns"
 )
 
 // ReadStats counts what the readers skipped.
@@ -106,10 +102,12 @@ func nilEOF(err error) error {
 
 // ReadEVE reads EVE JSON and returns an event per alert (and, if includeDNS,
 // per dns/http record as context). Events are sorted by time. A malformed line
-// is skipped and counted, never fatal.
+// is skipped and counted, never fatal. The agent is left empty: the Host that
+// emits these stores them under "controller".
 func ReadEVE(r io.Reader, includeContext bool) ([]event.Event, ReadStats, error) {
 	var st ReadStats
 	var out []event.Event
+	var newErr error
 	err := lines(r, &st, func(b []byte) {
 		var rec eveRecord
 		if json.Unmarshal(b, &rec) != nil {
@@ -125,27 +123,42 @@ func ReadEVE(r io.Reader, includeContext bool) ([]event.Event, ReadStats, error)
 		if cid == "" {
 			cid = CommunityID(rec.SrcIP, rec.DestIP, uint16(rec.SrcPort), uint16(rec.DestPort), rec.Proto)
 		}
-		f := map[string]any{"src_ip": rec.SrcIP, "src_port": rec.SrcPort, "dest_ip": rec.DestIP, "dest_port": rec.DestPort,
-			"proto": rec.Proto, "community_id": cid, "flow_id": rec.FlowID}
+		var e event.Event
 		switch {
 		case rec.EventType == "alert" && rec.Alert != nil:
-			f["signature_id"] = rec.Alert.SignatureID
-			f["signature"] = rec.Alert.Signature
-			f["category"] = rec.Alert.Category
-			f["severity"] = rec.Alert.Severity
-			f["action"] = rec.Alert.Action
-			out = append(out, event.Event{Agent: "suricata", Time: t, Kind: KindAlert, Priority: prio(rec.Alert.Severity), Fields: f})
+			e, newErr = event.New(KindAlert, Alert{
+				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
+				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
+				SignatureID: rec.Alert.SignatureID, Signature: rec.Alert.Signature,
+				Category: rec.Alert.Category, Severity: rec.Alert.Severity, Action: rec.Alert.Action})
+			if newErr != nil {
+				return
+			}
+			e.Priority = prio(rec.Alert.Severity) // the kind's default is normal
 		case includeContext && rec.EventType == "dns" && rec.DNS != nil:
-			f["rrname"], f["rrtype"] = rec.DNS.RRName, rec.DNS.RRType
-			out = append(out, event.Event{Agent: "suricata", Time: t, Kind: "suricata.dns", Priority: event.PriorityBulk, Fields: f})
+			e, newErr = event.New(KindDNS, DNS{
+				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
+				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
+				RRName: rec.DNS.RRName, RRType: rec.DNS.RRType})
 		case includeContext && rec.EventType == "http" && rec.HTTP != nil:
-			f["hostname"], f["url"], f["method"] = rec.HTTP.Hostname, rec.HTTP.URL, rec.HTTP.Method
-			out = append(out, event.Event{Agent: "suricata", Time: t, Kind: "suricata.http", Priority: event.PriorityBulk, Fields: f})
+			e, newErr = event.New(KindHTTP, HTTP{
+				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
+				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
+				Hostname: rec.HTTP.Hostname, URL: rec.HTTP.URL, Method: rec.HTTP.Method})
 		default:
 			st.Skipped++
+			return
 		}
+		if newErr != nil {
+			return
+		}
+		e.Time = t
+		out = append(out, e)
 	})
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	if newErr != nil {
+		return nil, st, newErr
+	}
 	return out, st, err
 }
 

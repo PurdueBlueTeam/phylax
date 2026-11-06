@@ -117,8 +117,8 @@ type Controller struct {
 	ctlMu   sync.Mutex // serialises control signing and queueing
 	chainMu sync.Mutex // serialises the controller-origin event chain (chain.go)
 	closed  atomic.Bool
-	cfgs    cfgState                // agent config generation (agentconfig.go)
-	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
+	cfgs    cfgState // agent config generation (agentconfig.go)
+	dx      *devExec // controller-side device/Splunk execution (devexec_run.go)
 	checks  *ChecksHub
 
 	enrWatchMu sync.Mutex
@@ -224,7 +224,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	c.enr = enr
 	// The controller-side executor exists from the start, so a module action
 	// runs without EnableDeviceExec; that call only adds the device directory.
-	c.dx.Store(newDevExec(c, opt))
+	c.dx = newDevExec(c, opt)
 	used := opt.QuotaUsed
 	if used == nil {
 		used = func() (float64, error) { return diskUsedPct(cfg.DataDir) }

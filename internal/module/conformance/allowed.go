@@ -6,7 +6,7 @@ import "time"
 // shrinks. The list is the factories the agent registers today; the deception
 // family registers one factory per capability (decoys, honeywatch, akiascan)
 // until the deception module tasks fold them behind one manifest.
-var PreContract = []string{"akiascan", "audit", "capture", "decoys", "detect", "health", "honeywatch", "integrity", "net", "winevt"}
+var PreContract = []string{"akiascan", "audit", "capture", "decoys", "detect", "honeywatch", "integrity", "net", "winevt"}
 
 // AllowedLibraries is the closed list of shared stateless libraries.
 var AllowedLibraries = []string{
@@ -19,10 +19,13 @@ var AllowedLibraries = []string{
 	"github.com/PurdueBlueTeam/phylax/internal/sockets",
 }
 
-// CoreImports is the core packages a module may import.
+// CoreImports is the core packages a module may import. internal/bench is on
+// the list because internal/store (core, importable) uses the bench recorder's
+// histogram types.
 var CoreImports = []string{
 	"github.com/PurdueBlueTeam/phylax/internal/actions",
 	"github.com/PurdueBlueTeam/phylax/internal/agent",
+	"github.com/PurdueBlueTeam/phylax/internal/bench",
 	"github.com/PurdueBlueTeam/phylax/internal/deadman",
 	"github.com/PurdueBlueTeam/phylax/internal/event",
 	"github.com/PurdueBlueTeam/phylax/internal/link",

@@ -32,12 +32,11 @@ type taggedProc struct {
 	tag   string
 }
 
-func NewTagScope(loggers ...*slog.Logger) *TagScope {
-	s := &TagScope{procs: map[int]taggedProc{}, log: slog.Default()}
-	if len(loggers) > 0 && loggers[0] != nil {
-		s.log = loggers[0]
+func NewTagScope(log *slog.Logger) *TagScope {
+	if log == nil {
+		log = slog.Default()
 	}
-	return s
+	return &TagScope{procs: map[int]taggedProc{}, log: log}
 }
 
 // Register adds the step's own child process (pid and start time) under the
