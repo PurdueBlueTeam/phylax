@@ -8,7 +8,6 @@ import (
 )
 
 func TestCommonKindsDeclared(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4")
 	want := map[string]any{KindProcessStart: ProcessStart{}, KindProcessExit: ProcessExit{}, KindFileChange: FileChange{},
 		KindConn: Conn{}, KindListener: Listener{}, KindAuthEvent: AuthEvent{}, KindDNSQuery: DNSQuery{}, KindTelemetryGap: TelemetryGap{}}
 	for k, f := range want {
@@ -20,7 +19,6 @@ func TestCommonKindsDeclared(t *testing.T) {
 }
 
 func TestConnCanonicalNames(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4")
 	e, err := New(KindConn, Conn{Op: "opened", Dir: "inbound", Proto: "tcp", LAddr: "10.0.0.1", LPort: 80, RAddr: "10.0.0.9", RPort: 5555, Source: "net"})
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +30,6 @@ func TestConnCanonicalNames(t *testing.T) {
 }
 
 func TestLegacyFieldNamesRejected(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4")
 	for _, f := range []map[string]any{
 		{"op": "opened", "dir": "out", "proto": "tcp", "source": "net", "src_ip": "1.2.3.4"},
 		{"op": "opened", "dir": "inbound", "proto": "tcp", "source": "net", "dst_port": 22},
@@ -47,7 +44,6 @@ func TestLegacyFieldNamesRejected(t *testing.T) {
 }
 
 func TestProcessStartParentObject(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4")
 	e, _ := New(KindProcessStart, ProcessStart{PID: 2, Exe: "/bin/sh", Source: "audit", Parent: &ProcessParent{Exe: "/usr/sbin/httpd", Service: "ecom-http"}})
 	p, ok := e.Fields["parent"].(map[string]any)
 	if !ok || p["exe"] != "/usr/sbin/httpd" || p["service"] != "ecom-http" {

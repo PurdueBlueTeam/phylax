@@ -156,3 +156,17 @@ type TelemetryGap struct {
 	To     string `json:"to,omitempty"`
 	Detail string `json:"detail,omitempty"`
 }
+
+// The common kinds are declared at schema 1 with the priorities today's
+// emitters give them. None of them alerts on its own: an alert is a rule's
+// verdict, not a kind.
+func init() {
+	Declare(Type{Kind: KindProcessStart, Schema: 1, Priority: PriorityHigh, Fields: ProcessStart{}})
+	Declare(Type{Kind: KindProcessExit, Schema: 1, Priority: PriorityNormal, Fields: ProcessExit{}})
+	Declare(Type{Kind: KindFileChange, Schema: 1, Priority: PriorityHigh, Fields: FileChange{}})
+	Declare(Type{Kind: KindConn, Schema: 1, Priority: PriorityNormal, Fields: Conn{}})
+	Declare(Type{Kind: KindListener, Schema: 1, Priority: PriorityHigh, Fields: Listener{}})
+	Declare(Type{Kind: KindAuthEvent, Schema: 1, Priority: PriorityHigh, Fields: AuthEvent{}})
+	Declare(Type{Kind: KindDNSQuery, Schema: 1, Priority: PriorityBulk, Fields: DNSQuery{}})
+	Declare(Type{Kind: KindTelemetryGap, Schema: 1, Priority: PriorityHigh, Fields: TelemetryGap{}})
+}
