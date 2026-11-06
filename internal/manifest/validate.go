@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Validate checks structure and cross-references. Rule-level problems (things
@@ -468,12 +469,46 @@ func (m *Manifest) Validate() error {
 	if pw := m.Policy.PatchWindows; pw.MaxMinutes != 0 && pw.DefaultMinutes > pw.MaxMinutes {
 		e.Addf("policy: patch_windows.default_minutes exceeds max_minutes")
 	}
-	for _, a := range m.Overrides.AcceptedFindings {
+	validateOverrides(m.Overrides, &e)
+	return e.Err()
+}
+
+// validateOverrides checks overrides.yml, both on load and before
+// AppendOverrides writes it.
+func validateOverrides(o Overrides, e *ErrorList) {
+	for _, a := range o.AcceptedFindings {
 		if a.ID == "" || a.Subject == "" || a.Reason == "" {
 			e.Addf("overrides: accepted_findings need id, subject and reason")
 		}
 	}
-	return e.Err()
+	type listenerKey struct {
+		host, proto string
+		port        uint16
+	}
+	seen := map[listenerKey]int{}
+	for i, l := range o.LearnedListeners {
+		subj := fmt.Sprintf("overrides: learned_listeners[%d]", i)
+		if l.Host == "" {
+			e.Addf("%s: host is required", subj)
+		}
+		if l.Proto != "tcp" && l.Proto != "udp" {
+			e.Addf("%s: proto %q must be tcp or udp", subj, l.Proto)
+		}
+		if l.Port == 0 {
+			e.Addf("%s: port must be 1-65535", subj)
+		}
+		if l.Reason == "" {
+			e.Addf("%s: reason is required", subj)
+		}
+		if _, err := time.Parse(time.RFC3339, l.Observed); err != nil {
+			e.Addf("%s: observed %q must be RFC 3339", subj, l.Observed)
+		}
+		k := listenerKey{l.Host, l.Proto, l.Port}
+		if prev, dup := seen[k]; dup {
+			e.Addf("%s: %s/%s/%d is already learned_listeners[%d]", subj, k.host, k.proto, k.port, prev)
+		}
+		seen[k] = i
+	}
 }
 
 // relayedSegmentsWithoutPath lists segments (other than the controller's) with
