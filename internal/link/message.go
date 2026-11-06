@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 )
 
 // ProtoVersion is the wire protocol major version carried in hello/welcome.
@@ -183,13 +184,14 @@ func (m *Welcome) Validate() error {
 // Heartbeat is sent every 5 s by agents. HostClock is the agent's clock
 // reading, used only to measure display offset.
 type Heartbeat struct {
-	Seq        uint64            `json:"seq"`
-	HostClock  time.Time         `json:"host_clock"`
-	SpoolDepth uint64            `json:"spool_depth"`
-	Congestion string            `json:"congestion,omitempty"` // ok|warning|full|flood|recovered
-	Modules    map[string]string `json:"modules,omitempty"`
-	SafeMode   bool              `json:"safe_mode"`
-	Drops      uint64            `json:"drops"`
+	Seq        uint64                   `json:"seq"`
+	HostClock  time.Time                `json:"host_clock"`
+	SpoolDepth uint64                   `json:"spool_depth"`
+	Congestion string                   `json:"congestion,omitempty"` // ok|warning|full|flood|recovered
+	Modules    map[string]string        `json:"modules,omitempty"`
+	Health     map[string]module.Health `json:"health,omitempty"`
+	SafeMode   bool                     `json:"safe_mode"`
+	Drops      uint64                   `json:"drops"`
 }
 
 func (*Heartbeat) MsgType() Type { return TypeHeartbeat }

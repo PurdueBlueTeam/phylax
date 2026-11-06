@@ -11,6 +11,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 )
 
 // Emit hands one event to the agent. It never blocks on the network: events go
@@ -18,6 +19,9 @@ import (
 // (rate limited, shed, spool full) means the event was dropped; the spool
 // announces shedding with gap records and the supervisor counts the rest.
 type Emit func(event.Event) error
+
+// HealthReporter is implemented by a module with its own health detail.
+type HealthReporter interface{ Health() module.Health }
 
 // Module is one supervised unit of agent functionality.
 type Module interface {
@@ -212,6 +216,11 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 // Snapshot returns every module's status.
+// Health returns a module's merged supervisor and reporter health.
+func (s *Supervisor) Health(name string) (module.Health, bool) {
+	panic("unimplemented: W1 Task 13")
+}
+
 func (s *Supervisor) Snapshot() map[string]ModuleStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()

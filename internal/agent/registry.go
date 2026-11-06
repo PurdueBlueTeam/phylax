@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -32,11 +33,15 @@ type Env struct {
 	a *Agent
 }
 
-// Subscribe returns a bounded stream of every event the agent's modules emit
-// (after their rate limit, before the spool, so spool shedding cannot blind a
-// consumer). A full channel drops events rather than blocking the emitter.
-// Call the returned function to unsubscribe.
-func (e Env) Subscribe(buf int) (<-chan event.Event, func()) { return e.a.subscribe(buf) }
+// Subscribe returns a bounded stream of the agent's module events. With kinds,
+// only those kinds are delivered. A full channel drops events rather than
+// blocking the emitter. Call the returned function to unsubscribe.
+func (e Env) Subscribe(buf int, kinds ...string) (<-chan event.Event, func()) {
+	return e.a.subscribe(buf)
+}
+
+// Fact returns a controller fact by id; false when never received or expired.
+func (e Env) Fact(id string) (event.ControllerFact, bool) { panic("unimplemented: W1 Task 31") }
 
 // Keep stores a value that survives the module being replaced by a
 // reconfiguration (for example learned detection baselines).
@@ -49,6 +54,8 @@ func (e Env) Kept(key string) any { v, _ := e.a.kept.Load(key); return v }
 // register their factory from init (platform build tags decide which exist).
 type Factory struct {
 	Name string
+	// Manifest is the module's capability manifest; zero for a pre-contract module.
+	Manifest module.Manifest
 	// Section reports the fingerprint of the module's settings in cfg and
 	// whether the module should run. An unchanged fingerprint leaves the
 	// running module alone; a changed one replaces it.
@@ -76,6 +83,9 @@ func RegisterFactory(f Factory) {
 	}
 	factories[f.Name] = f
 }
+
+// Registered returns the process-wide factory registry, sorted by name.
+func Registered() []Factory { return registered(nil) }
 
 // registered returns the factories sorted by name, with extra overriding.
 func registered(extra []Factory) []Factory {
