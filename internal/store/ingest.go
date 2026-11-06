@@ -94,18 +94,19 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	var last *event.Event      // previous event in this batch, for link checks
 	var newly []event.Event    // events this transaction stored, for the ingest hook
 	q := s.quota.Load()
-	level := QuotaOK
+	pct := 0.0
 	if q != nil {
-		level = q.Level() // once per batch
+		pct = q.UsedPct() // once per batch
 	}
 	var skipFrom, skipTo uint64
+	var skipClass string
 	flushSkips := func() error {
 		if skipTo == 0 {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO quota_skips(agent, from_seq, to_seq, reason, at) VALUES (?,?,?,?,?)`,
-			agent, skipFrom, skipTo, "controller quota", time.Now().UnixNano())
-		skipFrom, skipTo = 0, 0
+		_, err := tx.ExecContext(ctx, `INSERT INTO gaps(agent, from_seq, to_seq, reason, class, count, time_ns) VALUES (?,?,?,?,?,?,?)`,
+			agent, skipFrom, skipTo, "controller_quota", skipClass, skipTo-skipFrom+1, time.Now().UnixNano())
+		skipFrom, skipTo, skipClass = 0, 0, ""
 		return err
 	}
 	for i := range evs {
@@ -210,7 +211,7 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 		}
 		ty, declared := event.Lookup(ev.Kind)
 		alert := declared && ty.Alert && (ev.Priority == event.PriorityHigh || ev.Priority == event.PriorityCritical)
-		if q != nil && !level.Admit(ev.Priority, alert) {
+		if q != nil && !Admit(pct, ev.Priority, alert) {
 			if skipTo != 0 && ev.Seq != skipTo+1 {
 				if err := flushSkips(); err != nil {
 					return start, err
@@ -218,6 +219,9 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 			}
 			if skipFrom == 0 {
 				skipFrom = ev.Seq
+				skipClass = ev.Priority.String()
+			} else if skipClass != ev.Priority.String() {
+				skipClass = "mixed" // one run, one gap record: no record per class switch
 			}
 			skipTo = ev.Seq
 			curSeq, curHash = ev.Seq, ev.Hash
@@ -324,9 +328,7 @@ type Gap struct {
 // Gaps lists an agent's recorded gaps in order.
 func (s *Store) Gaps(ctx context.Context, agent string) ([]Gap, error) {
 	rows, err := s.r.QueryContext(ctx, `SELECT agent, from_seq, to_seq, reason, class, count, time_ns FROM gaps WHERE agent=?
-UNION ALL
-SELECT agent, from_seq, to_seq, reason, '', to_seq-from_seq+1, at FROM quota_skips WHERE agent=?
-ORDER BY from_seq, to_seq`, agent, agent)
+ORDER BY from_seq, to_seq`, agent)
 	if err != nil {
 		return nil, err
 	}

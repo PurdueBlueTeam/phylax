@@ -185,9 +185,9 @@ func (a *agentConn) handle(ctx context.Context, m link.Message) error {
 		return nil
 	case *link.Chunk:
 		// The transfer receiver is W11's. Until it lands, every chunk an
-		// agent sends is evidence-class (fetch results); a refused chunk is
+		// agent sends is a bulk transfer (fetch results); a refused chunk is
 		// logged and dropped, and the sender retries it when space returns.
-		if ok, code := a.c.admitChunk("evidence"); !ok {
+		if ok, code := a.c.admitChunk(event.PriorityBulk); !ok {
 			a.c.log.Warn("chunk refused by quota", "host", st.host, "sha256", v.SHA256, "code", code)
 		}
 		return nil

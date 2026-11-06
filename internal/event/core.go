@@ -237,9 +237,9 @@ type ControllerLocked struct {
 	Stopped []string `json:"stopped,omitempty"` // what is not running
 }
 
-// StoreQuota is raised when the controller disk crosses a quota level.
+// StoreQuota is raised when a class starts (or stops) being refused by the
+// controller disk quota.
 type StoreQuota struct {
-	Level   string   `json:"level"` // "ok", "bulk", "evidence", "critical"
 	UsedPct int      `json:"used_pct"`
 	Shed    []string `json:"shed,omitempty"` // classes now refused
 }

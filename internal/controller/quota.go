@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -12,8 +13,9 @@ import (
 // quotaSampleEvery is how often the controller re-reads the data disk's usage.
 const quotaSampleEvery = 30 * time.Second
 
-// startQuota samples the controller data disk until ctx ends. A level change
-// emits store.quota; the critical level raises the event's priority.
+// startQuota samples the controller data disk until ctx ends. A change in the
+// set of refused classes emits store.quota; refusing the high class raises the
+// event's priority.
 func (c *Controller) startQuota(ctx context.Context, every time.Duration) {
 	if c.quota == nil {
 		return
@@ -25,13 +27,18 @@ func (c *Controller) startQuota(ctx context.Context, every time.Duration) {
 	if clk == nil {
 		clk = realClock{}
 	}
+	var prev []event.Priority
 	sample := func() {
-		lvl, changed := c.quota.Sample()
-		if !changed {
+		if err := c.quota.Sample(); err != nil {
 			return
 		}
-		if err := c.emitQuota(ctx, lvl); err != nil {
-			c.log.Warn("cannot emit store.quota", "level", lvl.String(), "err", err)
+		refused := store.Refused(c.quota.UsedPct())
+		if slices.Equal(refused, prev) {
+			return
+		}
+		prev = refused
+		if err := c.emitQuota(ctx, refused); err != nil {
+			c.log.Warn("cannot emit store.quota", "refused", quotaShed(refused), "err", err)
 		}
 	}
 	sample()
@@ -47,18 +54,17 @@ func (c *Controller) startQuota(ctx context.Context, every time.Duration) {
 	}
 }
 
-func (c *Controller) emitQuota(ctx context.Context, lvl store.QuotaLevel) error {
+func (c *Controller) emitQuota(ctx context.Context, refused []event.Priority) error {
 	prio := event.PriorityHigh
-	switch lvl {
-	case store.QuotaOK:
+	switch {
+	case len(refused) == 0:
 		prio = event.PriorityNormal
-	case store.QuotaCritical:
+	case slices.Contains(refused, event.PriorityHigh):
 		prio = event.PriorityCritical
 	}
 	e, err := event.New(event.KindStoreQuota, event.StoreQuota{
-		Level:   lvl.String(),
 		UsedPct: int(math.Round(c.quota.UsedPct())),
-		Shed:    quotaShed(lvl),
+		Shed:    quotaShed(refused),
 	})
 	if err != nil {
 		return err
@@ -68,23 +74,22 @@ func (c *Controller) emitQuota(ctx context.Context, lvl store.QuotaLevel) error 
 	return err
 }
 
-func quotaShed(lvl store.QuotaLevel) []string {
-	switch lvl {
-	case store.QuotaBulk:
-		return []string{"bulk"}
-	case store.QuotaEvidence:
-		return []string{"bulk", "evidence"}
-	case store.QuotaCritical:
-		return []string{"bulk", "evidence", "normal"}
+func quotaShed(refused []event.Priority) []string {
+	if len(refused) == 0 {
+		return nil
 	}
-	return nil
+	out := make([]string, len(refused))
+	for i, p := range refused {
+		out[i] = p.String()
+	}
+	return out
 }
 
 // admitChunk applies the quota to a content-addressed transfer class. code is
 // the wire error code the sender retries on later ("quota"); empty means the
 // chunk may be accepted.
-func (c *Controller) admitChunk(class string) (bool, string) {
-	if c.quota == nil || c.quota.Level().AdmitChunk(class) {
+func (c *Controller) admitChunk(prio event.Priority) (bool, string) {
+	if c.quota == nil || c.quota.AdmitChunk(prio) {
 		return true, ""
 	}
 	return false, "quota"

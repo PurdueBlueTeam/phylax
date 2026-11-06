@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,6 +44,15 @@ func waitQuotaEvents(t *testing.T, c *Controller, n int) []event.StoreQuota {
 	}
 }
 
+func lastQuotaPriority(t *testing.T, c *Controller) event.Priority {
+	t.Helper()
+	evs, err := c.Store().Events(context.Background(), store.Query{Agent: ControllerAgent, Kind: event.KindStoreQuota, Limit: 10})
+	if err != nil || len(evs) == 0 {
+		t.Fatalf("store.quota events: %v %v", evs, err)
+	}
+	return evs[len(evs)-1].Priority
+}
+
 func TestQuotaEmitsOnCrossing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -50,72 +60,112 @@ func TestQuotaEmitsOnCrossing(t *testing.T) {
 	defer c.Close()
 	clk := newFakeClock(time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC))
 	c.clk = clk
-	pct := 50.0
+	pct := 40.0
 	c.quota = store.NewQuota(func() (float64, error) { return pct, nil })
 	go c.startQuota(ctx, time.Second)
 	clk.waitOps(t, 1)
+	if got := quotaEvents(t, c); len(got) != 0 {
+		t.Fatalf("event at start with nothing refused: %+v", got)
+	}
+
+	pct = 51
+	clk.Advance(time.Second)
+	got := waitQuotaEvents(t, c, 1)
+	if last := got[len(got)-1]; !slices.Equal(last.Shed, []string{"bulk"}) {
+		t.Fatalf("bulk crossing: %+v", last)
+	}
+	if prio := lastQuotaPriority(t, c); prio != event.PriorityHigh {
+		t.Fatalf("bulk priority: %v", prio)
+	}
+
+	pct = 76
+	clk.Advance(time.Second)
+	got = waitQuotaEvents(t, c, 2)
+	if last := got[len(got)-1]; !slices.Equal(last.Shed, []string{"bulk", "normal"}) {
+		t.Fatalf("normal crossing: %+v", last)
+	}
+	if prio := lastQuotaPriority(t, c); prio != event.PriorityHigh {
+		t.Fatalf("normal priority: %v", prio)
+	}
 
 	pct = 91
 	clk.Advance(time.Second)
-	got := waitQuotaEvents(t, c, 1)
-	if last := got[len(got)-1]; last.Level != "bulk" || !shedHas(last, "bulk") {
-		t.Fatalf("bulk crossing: %+v", last)
+	got = waitQuotaEvents(t, c, 3)
+	if last := got[len(got)-1]; !slices.Equal(last.Shed, []string{"bulk", "normal", "high"}) {
+		t.Fatalf("high crossing: %+v", last)
 	}
-	evs, err := c.Store().Events(ctx, store.Query{Agent: ControllerAgent, Kind: event.KindStoreQuota, Limit: 10})
-	if err != nil || len(evs) == 0 || evs[len(evs)-1].Priority != event.PriorityHigh {
-		t.Fatalf("bulk priority: %+v %v", evs, err)
+	if prio := lastQuotaPriority(t, c); prio != event.PriorityCritical {
+		t.Fatalf("high priority: %v", prio)
 	}
 
-	pct = 98.5
+	pct = 98
 	clk.Advance(time.Second)
-	got = waitQuotaEvents(t, c, 2)
-	if last := got[len(got)-1]; last.Level != "critical" || !shedHas(last, "normal") {
+	got = waitQuotaEvents(t, c, 4)
+	if last := got[len(got)-1]; !slices.Equal(last.Shed, []string{"bulk", "normal", "high", "critical"}) {
 		t.Fatalf("critical crossing: %+v", last)
 	}
-	evs, _ = c.Store().Events(ctx, store.Query{Agent: ControllerAgent, Kind: event.KindStoreQuota, Limit: 10})
-	if evs[len(evs)-1].Priority != event.PriorityCritical {
-		t.Fatalf("critical priority: %+v", evs[len(evs)-1])
+	if prio := lastQuotaPriority(t, c); prio != event.PriorityCritical {
+		t.Fatalf("critical priority: %v", prio)
 	}
 
 	pct = 10
 	clk.Advance(time.Second)
-	got = waitQuotaEvents(t, c, 3)
-	if last := got[len(got)-1]; last.Level != "ok" || len(last.Shed) != 0 {
+	got = waitQuotaEvents(t, c, 5)
+	if last := got[len(got)-1]; len(last.Shed) != 0 {
 		t.Fatalf("recovery: %+v", last)
 	}
-	evs, _ = c.Store().Events(ctx, store.Query{Agent: ControllerAgent, Kind: event.KindStoreQuota, Limit: 10})
-	if evs[len(evs)-1].Priority != event.PriorityNormal {
-		t.Fatalf("recovery priority: %+v", evs[len(evs)-1])
+	if prio := lastQuotaPriority(t, c); prio != event.PriorityNormal {
+		t.Fatalf("recovery priority: %v", prio)
 	}
 }
 
-func TestChunkRefusedAtEvidenceLevel(t *testing.T) {
+func TestChunkRefusedAtClassLimits(t *testing.T) {
 	c := newTestController(t)
 	defer c.Close()
-	pct := 96.0
+	pct := 60.0
 	c.quota = store.NewQuota(func() (float64, error) { return pct, nil })
-	c.quota.Sample()
-	for _, class := range []string{"evidence", "bulk"} {
-		if ok, code := c.admitChunk(class); ok || code != "quota" {
-			t.Errorf("%s at evidence level: %v %q", class, ok, code)
+	if err := c.quota.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []struct {
+		prio event.Priority
+		want bool
+	}{
+		{event.PriorityBulk, false},
+		{event.PriorityNormal, true},
+		{event.PriorityHigh, true},
+		{event.PriorityCritical, true},
+	} {
+		if ok, code := c.admitChunk(k.prio); ok != k.want || (k.want && code != "") || (!k.want && code != "quota") {
+			t.Errorf("%v at 60%%: %v %q", k.prio, ok, code)
+		}
+	}
+	pct = 80
+	if err := c.quota.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []struct {
+		prio event.Priority
+		want bool
+	}{
+		{event.PriorityBulk, false},
+		{event.PriorityNormal, false},
+		{event.PriorityHigh, true},
+		{event.PriorityCritical, true},
+	} {
+		if ok, _ := c.admitChunk(k.prio); ok != k.want {
+			t.Errorf("%v at 80%%: %v", k.prio, ok)
 		}
 	}
 	pct = 10
-	c.quota.Sample()
-	for _, class := range []string{"evidence", "bulk"} {
+	if err := c.quota.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []event.Priority{event.PriorityBulk, event.PriorityNormal, event.PriorityHigh, event.PriorityCritical} {
 		if ok, code := c.admitChunk(class); !ok || code != "" {
-			t.Errorf("%s at ok level: %v %q", class, ok, code)
+			t.Errorf("%v at ok level: %v %q", class, ok, code)
 		}
 	}
-}
-
-func shedHas(s event.StoreQuota, class string) bool {
-	for _, c := range s.Shed {
-		if c == class {
-			return true
-		}
-	}
-	return false
 }
 
 // newQuotaController builds a controller whose data-disk usage is pct, so a
@@ -134,9 +184,9 @@ func newQuotaController(t *testing.T, pct *float64) *Controller {
 	return c
 }
 
-// The controller installs its quota in the store: at the bulk level a bulk
-// event is chain-verified and acknowledged past but not stored (one
-// quota_skips row), while an alert-class event is always stored.
+// The controller installs its quota in the store: at the bulk class limit a
+// bulk event is chain-verified and acknowledged past but not stored (one gap
+// with reason controller_quota), while an alert-class event is always stored.
 func TestQuotaInstalledAndSkipsBulk(t *testing.T) {
 	ctx := context.Background()
 	pct := 50.0
@@ -144,9 +194,12 @@ func TestQuotaInstalledAndSkipsBulk(t *testing.T) {
 	if err := c.Store().EnrollAgent(ctx, "h1", []byte("key-h1")); err != nil {
 		t.Fatal(err)
 	}
-	pct = 91
-	if lvl, changed := c.quota.Sample(); lvl != store.QuotaBulk || !changed {
-		t.Fatalf("sample: %v changed=%v", lvl, changed)
+	pct = 60
+	if err := c.quota.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Refused(c.quota.UsedPct()); !slices.Equal(got, []event.Priority{event.PriorityBulk}) {
+		t.Fatalf("refused at 60%%: %v", got)
 	}
 	at := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
 	bulk := event.Event{Agent: "h1", Time: at, Kind: "agent.health", Priority: event.PriorityBulk,
@@ -177,8 +230,8 @@ func TestQuotaInstalledAndSkipsBulk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gaps) != 1 || gaps[0].From != 1 || gaps[0].To != 1 || gaps[0].Reason != "controller quota" {
-		t.Fatalf("quota_skips rows %+v", gaps)
+	if len(gaps) != 1 || gaps[0].From != 1 || gaps[0].To != 1 || gaps[0].Reason != "controller_quota" || gaps[0].Class != "bulk" {
+		t.Fatalf("gaps %+v", gaps)
 	}
 }
 
@@ -191,7 +244,7 @@ func TestQuotaFirstSampleImmediate(t *testing.T) {
 	c.clk = newFakeClock(time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC))
 	go c.startQuota(ctx, time.Hour)
 	got := waitQuotaEvents(t, c, 1)
-	if last := got[len(got)-1]; last.Level != "bulk" || !shedHas(last, "bulk") {
+	if last := got[len(got)-1]; !slices.Contains(last.Shed, "high") {
 		t.Fatalf("first sample: %+v", last)
 	}
 }

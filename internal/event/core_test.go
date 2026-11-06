@@ -39,7 +39,7 @@ func TestNewCoreKindsValidate(t *testing.T) {
 		KindInventoryRow:         InventoryRow{Table: "accounts", Epoch: 2, Op: "added", Key: "bob", Row: map[string]any{"name": "bob"}, CollectedAt: "2026-11-07T14:00:00Z"},
 		KindInventoryProbeResult: InventoryProbeResult{Probe: "accounts_uid0", Host: "h1", Columns: []string{"name"}, CollectedAt: "2026-11-07T14:00:00Z"},
 		KindControllerLocked:     ControllerLocked{Since: "2026-11-07T14:00:00Z", Stopped: []string{"auto plans"}},
-		KindStoreQuota:           StoreQuota{Level: "bulk", UsedPct: 91, Shed: []string{"bulk"}},
+		KindStoreQuota:           StoreQuota{UsedPct: 91, Shed: []string{"bulk"}},
 	} {
 		e, err := New(kind, v)
 		if err != nil || Validate(e) != nil {

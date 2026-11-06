@@ -24,6 +24,26 @@ const (
 	PriorityBulk                     // flows, sweeps, inventory
 )
 
+// String returns the class name the spool and the controller quota use for the
+// priority.
+func (p Priority) String() string {
+	if p > PriorityBulk {
+		return "unknown"
+	}
+	return [...]string{"critical", "high", "normal", "bulk"}[p]
+}
+
+// AdmitPercent is the share of its cap a class may fill before its events are
+// shed: critical 97%, high 90%, normal 75%, bulk 50%. The agent's spool and the
+// controller's quota use the same table (design: Event store and vault,
+// Storage).
+func (p Priority) AdmitPercent() int64 {
+	if p > PriorityBulk {
+		return 0
+	}
+	return [...]int64{97, 90, 75, 50}[p]
+}
+
 // Event is one record from one agent. Seq and the hashes are assigned by the
 // agent's spool when the event is appended.
 type Event struct {

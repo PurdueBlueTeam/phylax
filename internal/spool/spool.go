@@ -38,11 +38,6 @@ var (
 	ErrClosed = errors.New("spool: closed")
 )
 
-// admitPercent is the share of MaxBytes that unacknowledged data may reach
-// before events of each priority are dropped. Higher classes keep headroom,
-// so a flood of bulk telemetry can never crowd out alerts.
-var admitPercent = [...]int64{97, 90, 75, 50}
-
 // Options configures a spool.
 type Options struct {
 	Agent        string        // default Agent for events that carry none
@@ -224,17 +219,13 @@ func asUint(v any) uint64 {
 	return 0
 }
 
-func priorityName(p event.Priority) string {
-	return [...]string{"critical", "high", "normal", "bulk"}[p]
-}
-
 // flushRun writes the gap record for the pending dropped run. It bypasses the
 // admission limits (a gap record is a few hundred bytes).
 func (r *pending) className() string {
 	if r.label != "" {
 		return r.label
 	}
-	return priorityName(r.class)
+	return r.class.String()
 }
 
 func (s *Spool) flushRun() error {
@@ -325,7 +316,7 @@ func (s *Spool) admit(c event.Priority, n int64) error {
 	if n > s.opts.MaxBytes {
 		return ErrFull
 	}
-	if s.unacked()+n > s.opts.MaxBytes*admitPercent[c]/100 {
+	if s.unacked()+n > s.opts.MaxBytes*c.AdmitPercent()/100 {
 		return ErrFull
 	}
 	return s.reclaim(n)

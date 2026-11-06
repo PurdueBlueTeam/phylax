@@ -272,4 +272,10 @@ CREATE TABLE standing_approvals (
 );
 CREATE INDEX standing_expires ON standing_approvals(expires_ns);
 `,
+	// 10: controller quota skips are gap records now (S3). A refused run is
+	// recorded in gaps with reason controller_quota, so the separate table
+	// goes.
+	`
+DROP TABLE IF EXISTS quota_skips;
+`,
 }

@@ -3,50 +3,63 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
-func TestQuotaLevelAdmit(t *testing.T) {
-	type c struct {
-		l     QuotaLevel
-		prio  event.Priority
-		alert bool
-		want  bool
-	}
-	for i, k := range []c{
-		{QuotaOK, event.PriorityBulk, false, true},
-		{QuotaBulk, event.PriorityBulk, false, false},
-		{QuotaBulk, event.PriorityNormal, false, true},
-		{QuotaEvidence, event.PriorityNormal, false, true},
-		{QuotaCritical, event.PriorityNormal, false, false},
-		{QuotaCritical, event.PriorityHigh, false, true},
-		{QuotaCritical, event.PriorityCritical, false, true},
-		{QuotaCritical, event.PriorityBulk, true, true}, // an alert is never shed
-	} {
-		if got := k.l.Admit(k.prio, k.alert); got != k.want {
-			t.Errorf("case %d: %v", i, got)
+func TestAdmitAtClassLimits(t *testing.T) {
+	for _, p := range []event.Priority{event.PriorityCritical, event.PriorityHigh, event.PriorityNormal, event.PriorityBulk} {
+		limit := float64(p.AdmitPercent())
+		if !Admit(limit-0.1, p, false) {
+			t.Errorf("%v just below its limit is refused", p)
 		}
-	}
-	if QuotaBulk.AdmitChunk("bulk") || !QuotaBulk.AdmitChunk("evidence") || QuotaEvidence.AdmitChunk("evidence") {
-		t.Fatal("chunk classes")
+		if Admit(limit, p, false) {
+			t.Errorf("%v at its limit is admitted", p)
+		}
+		if !Admit(100, p, true) {
+			t.Errorf("%v: an alert is never shed", p)
+		}
 	}
 }
 
-func TestQuotaSampleHysteresis(t *testing.T) {
-	pct := 50.0
-	q := NewQuota(func() (float64, error) { return pct, nil })
+func TestRefusedClasses(t *testing.T) {
 	for _, s := range []struct {
 		pct  float64
-		want QuotaLevel
-	}{{89, QuotaOK}, {90, QuotaBulk}, {95, QuotaEvidence}, {98, QuotaCritical}, {97, QuotaCritical}, {95.9, QuotaCritical},
-		{95.5, QuotaCritical}, {95, QuotaEvidence}, {92.5, QuotaEvidence}, {87.9, QuotaOK}} {
-		pct = s.pct
-		if got, _ := q.Sample(); got != s.want {
-			t.Errorf("%.1f: got %v want %v", s.pct, got, s.want)
+		want []event.Priority
+	}{
+		{0, nil},
+		{49.9, nil},
+		{50, []event.Priority{event.PriorityBulk}},
+		{75, []event.Priority{event.PriorityBulk, event.PriorityNormal}},
+		{90, []event.Priority{event.PriorityBulk, event.PriorityNormal, event.PriorityHigh}},
+		{97, []event.Priority{event.PriorityBulk, event.PriorityNormal, event.PriorityHigh, event.PriorityCritical}},
+	} {
+		if got := Refused(s.pct); !slices.Equal(got, s.want) {
+			t.Errorf("%.1f%%: refused %v, want %v", s.pct, got, s.want)
 		}
+	}
+}
+
+// A class is admitted again as soon as use falls below its limit: no
+// hysteresis state remains.
+func TestQuotaSampleNoHysteresis(t *testing.T) {
+	pct := 90.0
+	q := NewQuota(func() (float64, error) { return pct, nil })
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(Refused(q.UsedPct()), event.PriorityHigh) {
+		t.Fatalf("high not refused at 90%%: %v", Refused(q.UsedPct()))
+	}
+	pct = 89.9
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(Refused(q.UsedPct()), event.PriorityHigh) {
+		t.Fatalf("high still refused at 89.9%%: %v", Refused(q.UsedPct()))
 	}
 }
 
@@ -60,12 +73,53 @@ func sealedAt(c *chain, kind string, prio event.Priority, fields map[string]any)
 	return e
 }
 
+// At each class limit an event of that class is chain-verified and
+// acknowledged past but not stored, and the run is a gap with reason
+// controller_quota and the refused class.
+func TestIngestRefusesEachClassAtItsLimit(t *testing.T) {
+	for _, prio := range []event.Priority{event.PriorityCritical, event.PriorityHigh, event.PriorityNormal, event.PriorityBulk} {
+		t.Run(prio.String(), func(t *testing.T) {
+			ctx := context.Background()
+			s, _ := open(t)
+			enroll(t, s, "h1")
+			pct := float64(prio.AdmitPercent())
+			q := NewQuota(func() (float64, error) { return pct, nil })
+			if err := q.Sample(); err != nil {
+				t.Fatal(err)
+			}
+			s.SetQuota(q)
+			ch := &chain{agent: "h1"}
+			ev := sealedAt(ch, "agent.health", prio, map[string]any{"i": 1})
+			ack, err := s.Ingest(ctx, "h1", []event.Event{ev})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ack.Seq != 1 || ack.Accepted != 0 || ack.Skipped != 1 {
+				t.Fatalf("ack %+v", ack)
+			}
+			if evs, _ := s.Events(ctx, Query{Agent: "h1", Limit: 10}); len(evs) != 0 {
+				t.Fatalf("stored %+v", evs)
+			}
+			gaps, err := s.Gaps(ctx, "h1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gaps) != 1 || gaps[0].From != 1 || gaps[0].To != 1 || gaps[0].Reason != "controller_quota" ||
+				gaps[0].Class != prio.String() || gaps[0].Count != 1 {
+				t.Fatalf("gaps %+v", gaps)
+			}
+		})
+	}
+}
+
 func TestIngestSkipsRefusedAndKeepsChain(t *testing.T) {
 	ctx := context.Background()
 	s, _ := open(t)
 	enroll(t, s, "h1")
-	q := NewQuota(func() (float64, error) { return 91, nil })
-	q.Sample()
+	q := NewQuota(func() (float64, error) { return 60, nil })
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
 	s.SetQuota(q)
 	ch := &chain{agent: "h1"}
 	batch := []event.Event{
@@ -100,7 +154,8 @@ func TestIngestSkipsRefusedAndKeepsChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gaps) != 1 || gaps[0].From != 2 || gaps[0].To != 3 || gaps[0].Reason != "controller quota" {
+	if len(gaps) != 1 || gaps[0].From != 2 || gaps[0].To != 3 || gaps[0].Reason != "controller_quota" ||
+		gaps[0].Class != "bulk" || gaps[0].Count != 2 {
 		t.Fatalf("gaps %+v", gaps)
 	}
 	n, dropped, err := s.GapTotals(ctx)
@@ -109,12 +164,48 @@ func TestIngestSkipsRefusedAndKeepsChain(t *testing.T) {
 	}
 }
 
+// A run that switches class is one gap record with class "mixed", as in the
+// spool.
+func TestIngestMixedClassRunIsOneGap(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	enroll(t, s, "h1")
+	q := NewQuota(func() (float64, error) { return 80, nil })
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	s.SetQuota(q)
+	ch := &chain{agent: "h1"}
+	batch := []event.Event{
+		sealedAt(ch, "agent.health", event.PriorityNormal, map[string]any{"i": 1}),
+		sealedAt(ch, "agent.health", event.PriorityBulk, map[string]any{"i": 2}),
+		sealedAt(ch, "agent.health", event.PriorityNormal, map[string]any{"i": 3}),
+		sealedAt(ch, "agent.health", event.PriorityHigh, map[string]any{"i": 4}),
+	}
+	ack, err := s.Ingest(ctx, "h1", batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Accepted != 1 || ack.Skipped != 3 {
+		t.Fatalf("ack %+v", ack)
+	}
+	gaps, err := s.Gaps(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gaps) != 1 || gaps[0].From != 1 || gaps[0].To != 3 || gaps[0].Class != "mixed" || gaps[0].Count != 3 {
+		t.Fatalf("gaps %+v", gaps)
+	}
+}
+
 func TestIngestNeverSkipsAlerts(t *testing.T) {
 	ctx := context.Background()
 	s, _ := open(t)
 	enroll(t, s, "h1")
 	q := NewQuota(func() (float64, error) { return 99, nil })
-	q.Sample()
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
 	s.SetQuota(q)
 	ch := &chain{agent: "h1"}
 	// agent.silent is alert-class, but bulk priority is not an alert row: shed.
@@ -138,8 +229,10 @@ func TestIngestSkippedEventStillChainChecked(t *testing.T) {
 	ctx := context.Background()
 	s, _ := open(t)
 	enroll(t, s, "h1")
-	q := NewQuota(func() (float64, error) { return 91, nil })
-	q.Sample()
+	q := NewQuota(func() (float64, error) { return 60, nil })
+	if err := q.Sample(); err != nil {
+		t.Fatal(err)
+	}
 	s.SetQuota(q)
 	ch := &chain{agent: "h1"}
 	bad := sealedAt(ch, "agent.health", event.PriorityBulk, map[string]any{"i": 1})
@@ -152,6 +245,6 @@ func TestIngestSkippedEventStillChainChecked(t *testing.T) {
 		t.Fatalf("bad event stored: %+v", evs)
 	}
 	if gaps, _ := s.Gaps(ctx, "h1"); len(gaps) != 0 {
-		t.Fatalf("bad event recorded as a quota skip: %+v", gaps)
+		t.Fatalf("bad event recorded as a quota gap: %+v", gaps)
 	}
 }
