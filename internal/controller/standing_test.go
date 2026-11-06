@@ -68,6 +68,35 @@ func TestRunStandingOutOfScopeProposes(t *testing.T) {
 	}
 }
 
+func TestRevokeStandingAuditsOperator(t *testing.T) {
+	c := newStandingController(t)
+	if err := c.CreateStanding(ctx, sa()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RevokeStanding(ctx, "s1", "  "); err == nil {
+		t.Fatal("revocation without an operator accepted")
+	}
+	if got, err := c.st.Standing(ctx, "s1"); err != nil || got.Revoked {
+		t.Fatalf("a refused revocation changed the approval: %+v %v", got, err)
+	}
+	if err := c.RevokeStanding(ctx, "s1", "net-op"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.st.Standing(ctx, "s1"); err != nil || !got.Revoked {
+		t.Fatalf("standing approval not revoked: %+v %v", got, err)
+	}
+	rows, err := c.st.Audit(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Action == "standing_revoke" && r.Actor == "net-op" && strings.Contains(r.Detail, "s1") {
+			return
+		}
+	}
+	t.Fatalf("no audit row for the revoking operator: %+v", rows)
+}
+
 func TestRunStandingExpired(t *testing.T) {
 	c := newStandingController(t)
 	s := sa()

@@ -112,11 +112,21 @@ func (c *Controller) CreateStanding(ctx context.Context, sa store.StandingApprov
 	return c.st.InsertStanding(ctx, sa)
 }
 
-// RevokeStanding revokes a standing approval. by is the operator in the audit
-// log written by the caller.
+// RevokeStanding revokes a standing approval and records the operator in the
+// audit log.
 func (c *Controller) RevokeStanding(ctx context.Context, id, by string) error {
-	_ = by
-	return c.st.SetStandingRevoked(ctx, id)
+	if err := requireOperator(by); err != nil {
+		return err
+	}
+	sa, err := c.st.Standing(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := c.st.SetStandingRevoked(ctx, id); err != nil {
+		return err
+	}
+	return c.st.AppendAudit(ctx, store.AuditRow{Time: c.now(), Actor: by, Action: "standing_revoke",
+		Detail: "standing " + sa.ID + " (" + sa.Module + "/" + sa.Template + ")"})
 }
 
 // RunStanding starts a plan inside an operator's standing approval. Any scope
