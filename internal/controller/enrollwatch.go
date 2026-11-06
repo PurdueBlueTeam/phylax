@@ -21,17 +21,16 @@ import (
 // named in served (the binaries the web root serves) and, until window has
 // elapsed:
 //   - a hello from a watched host whose BinarySHA256 is empty or matches none
-//     of the served hashes raises an enroll.hash_mismatch alert (once per
-//     host);
+//     of the served hashes raises an enroll.alert with reason hash_mismatch
+//     (once per host);
 //   - the first accepted connection of a watched host removes dir/<host>.json
 //     (the bundle token is consumed anyway);
 //   - at the end of the window every watched host that never connected raises
-//     enroll.no_show, and every remaining dir/<host>.json is removed
-//     (bundles are served only during enrollment).
+//     enroll.alert with reason no_show, and every remaining dir/<host>.json is
+//     removed (bundles are served only during enrollment).
 //
-// enroll.refused already raises an alert in authorize for a refused token or
-// an unknown host. A served path that cannot be read is an error: an empty
-// served set would accept every hash silently.
+// enroll.alert with reason refused is raised by authorize for a refused token
+// or an unknown host.
 //
 // shortcut: the served set is hashed once at start, a binary replaced on disk
 // afterwards is not re-hashed, upgrade when W12 serves from the bootstrap
@@ -135,8 +134,8 @@ func (c *Controller) enrollConnected(host, hash string) {
 	}
 	w.mu.Unlock()
 	if detail != "" {
-		c.alertTyped(host, detail, event.KindEnrollHashMismatch, event.EnrollHashMismatch{
-			Host: host, Served: served, Reported: hash})
+		c.alertTyped(host, event.ReasonHashMismatch, detail, event.PriorityCritical, event.KindEnrollAlert,
+			event.EnrollAlert{Reason: event.ReasonHashMismatch, Host: host, Detail: detail, Served: served, Reported: hash})
 	}
 	if first {
 		c.removeBundle(w.dir, host)
@@ -160,16 +159,16 @@ func (c *Controller) endEnrollment(w *enrollWatch) {
 	w.mu.Unlock()
 	sort.Strings(missed)
 	for _, h := range missed {
-		c.alertTyped(h, "no connection within the enrollment window", event.KindEnrollNoShow,
-			event.EnrollNoShow{Host: h, WindowSec: int(w.window / time.Second), Since: bundleSince(w.dir, h, w.started)})
+		c.alertTyped(h, event.ReasonNoShow, "no connection within the enrollment window", event.PriorityHigh, event.KindEnrollAlert,
+			event.EnrollAlert{Reason: event.ReasonNoShow, Host: h, WindowSec: int(w.window / time.Second), Since: bundleSince(w.dir, h, w.started)})
 	}
 	for _, h := range w.hosts {
 		c.removeBundle(w.dir, h)
 	}
 }
 
-// bundleSince is when the host's bundle was written, for the enroll.no_show
-// payload. A bundle already gone falls back to the start of the watch.
+// bundleSince is when the host's bundle was written, for the enroll.alert
+// no_show payload. A bundle already gone falls back to the start of the watch.
 func bundleSince(dir, host string, fallback time.Time) string {
 	if fi, err := os.Stat(filepath.Join(dir, host+".json")); err == nil {
 		fallback = fi.ModTime()

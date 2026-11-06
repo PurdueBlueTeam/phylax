@@ -41,21 +41,21 @@ type alertRecorder struct {
 }
 
 type Alert struct {
-	Host, Kind, Detail string
+	Host, Reason, Detail string
 }
 
-func (r *alertRecorder) alert(host, kind, detail string) {
+func (r *alertRecorder) alert(host, reason, detail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.got = append(r.got, Alert{Host: host, Kind: kind, Detail: detail})
+	r.got = append(r.got, Alert{Host: host, Reason: reason, Detail: detail})
 }
 
-func (r *alertRecorder) kinds() []string {
+func (r *alertRecorder) reasons() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]string, len(r.got))
 	for i := range r.got {
-		out[i] = r.got[i].Kind
+		out[i] = r.got[i].Reason
 	}
 	return out
 }
@@ -113,8 +113,8 @@ func TestAuthorizeRefusals(t *testing.T) {
 		if _, err := authorize(t, f, "h1", "", link.Pin{1}); err == nil {
 			t.Fatal("unknown host without a token was admitted")
 		}
-		if got := alerts.kinds(); len(got) != 1 || got[0] != "enroll.refused" {
-			t.Fatalf("alerts = %v, want one enroll.refused", got)
+		if got := alerts.reasons(); len(got) != 1 || got[0] != event.ReasonRefused {
+			t.Fatalf("alerts = %v, want one refused", got)
 		}
 	})
 
@@ -128,8 +128,8 @@ func TestAuthorizeRefusals(t *testing.T) {
 		if _, err := authorize(t, f, "h1", tok, pin); !errors.Is(err, ErrTokenHost) {
 			t.Fatalf("wrong-host token err = %v, want ErrTokenHost", err)
 		}
-		if got := alerts.kinds(); len(got) != 1 || got[0] != "enroll.refused" {
-			t.Fatalf("alerts = %v, want one enroll.refused", got)
+		if got := alerts.reasons(); len(got) != 1 || got[0] != event.ReasonRefused {
+			t.Fatalf("alerts = %v, want one refused", got)
 		}
 		if _, err := authorize(t, f, "h2", tok, pin); err != nil {
 			t.Fatalf("the token was burned by the wrong-host claim: %v", err)
@@ -145,8 +145,8 @@ func TestAuthorizeRefusals(t *testing.T) {
 		if _, err := authorize(t, f, "h1", "", link.Pin{4}); !errors.Is(err, store.ErrKeyMismatch) {
 			t.Fatalf("different key err = %v, want store.ErrKeyMismatch", err)
 		}
-		if got := alerts.kinds(); len(got) != 1 || got[0] != "enroll.key_mismatch" {
-			t.Fatalf("alerts = %v, want one enroll.key_mismatch", got)
+		if got := alerts.reasons(); len(got) != 1 || got[0] != event.ReasonKeyMismatch {
+			t.Fatalf("alerts = %v, want one key_mismatch", got)
 		}
 	})
 
@@ -161,8 +161,8 @@ func TestAuthorizeRefusals(t *testing.T) {
 		if _, err := authorize(t, f, "h2", tok2, pin); err == nil {
 			t.Fatal("a key enrolled as h1 was admitted as h2")
 		}
-		if got := alerts.kinds(); len(got) != 1 || got[0] != "enroll.key_reuse" {
-			t.Fatalf("alerts = %v, want one enroll.key_reuse", got)
+		if got := alerts.reasons(); len(got) != 1 || got[0] != event.ReasonKeyReuse {
+			t.Fatalf("alerts = %v, want one key_reuse", got)
 		}
 	})
 }
@@ -244,4 +244,3 @@ func TestRevokeThenReenroll(t *testing.T) {
 		t.Fatalf("archived count = %d, %v; want 5, nil", c, err)
 	}
 }
-

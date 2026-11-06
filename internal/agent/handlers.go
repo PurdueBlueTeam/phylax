@@ -140,12 +140,17 @@ func (a *Agent) stepStatus(ctx context.Context, c *plan.Control, reply Reply) er
 // its expiry (design: Expiry): an agent.step_result with phase expire and the
 // node and plan ids from the entry.
 func (a *Agent) onDeadmanResult(e deadman.Entry, err error) {
-	f := event.AgentDeadmanFired{ID: e.ID, Node: e.NodeID, State: string(e.State)}
+	f := event.PlanFailed{Reason: event.ReasonDeadmanFired, Host: a.bundle.Host, Detail: string(e.State)}
 	if err != nil {
-		f.Error = err.Error()
+		f.Detail += ": " + err.Error()
 	}
-	a.emit(core("agent.deadman_fired", f))
 	planID, node, ok := splitNodeKey(e.NodeID)
+	if ok {
+		f.Plan, f.Node = planID, node
+	}
+	ev := core(event.KindPlanFailed, f)
+	ev.Priority = event.PriorityCritical // the design: a dead-man rollback is a human's to see
+	a.emit(ev)
 	if !ok {
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
@@ -33,7 +34,7 @@ func (c *Controller) loadPlans(ctx context.Context) error {
 		rt, err := c.restorePlan(row, grace)
 		if err != nil {
 			c.log.Error("plan not restored", "plan", row.ID, "state", row.State, "err", err)
-			c.alert("", "plan.restore_failed", fmt.Sprintf("%s: %v", row.ID, err))
+			c.planFailed("", event.PlanFailed{Reason: event.ReasonRestoreFailed, Plan: row.ID}, fmt.Sprintf("%s: %v", row.ID, err))
 			if row.State == PlanRunning {
 				_ = c.st.UpsertPlan(ctx, store.PlanRow{ID: row.ID, Name: row.Name, State: PlanInterrupted, Epoch: row.Epoch,
 					Body: row.Body, Created: row.Created})

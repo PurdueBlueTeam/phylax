@@ -120,7 +120,7 @@ func TestIngestNeverSkipsAlerts(t *testing.T) {
 	// agent.silent is alert-class, but bulk priority is not an alert row: shed.
 	shed := sealedAt(ch, "agent.silent", event.PriorityBulk, map[string]any{"host": "h1"})
 	// A critical alert-class event is stored.
-	keep := sealedAt(ch, "plan.deadman_fired", event.PriorityCritical, map[string]any{"host": "h1"})
+	keep := sealedAt(ch, "plan.failed", event.PriorityCritical, map[string]any{"host": "h1"})
 	ack, err := s.Ingest(ctx, "h1", []event.Event{shed, keep})
 	if err != nil {
 		t.Fatal(err)

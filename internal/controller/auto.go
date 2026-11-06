@@ -317,7 +317,7 @@ func (c *Controller) autoHalted(ctx context.Context, mod, template, host string)
 
 // noteAutoRollback feeds the auto circuit breaker. Two automatic rollbacks of
 // the same (module, template, host) within ten minutes halt it and emit
-// plan.auto_halted at critical priority.
+// plan.failed with reason auto_halted at critical priority.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
 	ctx := context.Background()
 	halted, err := c.autoHalted(ctx, mod, template, host)
@@ -353,13 +353,14 @@ func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) 
 		c.log.Error("auto breaker: save halt", "module", mod, "template", template, "host", host, "err", err)
 		return
 	}
-	e, err := event.New("plan.auto_halted", event.PlanAutoHalted{Module: mod, Template: template, Host: host, Rollbacks: len(times)})
+	e, err := event.New(event.KindPlanFailed, event.PlanFailed{Reason: event.ReasonAutoHalted,
+		Module: mod, Template: template, Host: host, Count: len(times)})
 	if err != nil {
 		c.log.Error("auto breaker: build event", "err", err)
 		return
 	}
 	if _, err := c.EmitController(ctx, e); err != nil {
-		c.log.Error("auto breaker: emit plan.auto_halted", "err", err)
+		c.log.Error("auto breaker: emit plan.failed", "err", err)
 	}
 }
 

@@ -28,7 +28,8 @@ import (
 type Alert struct {
 	Time   time.Time
 	Host   string
-	Kind   string // agent.silent, agent.resumed, store.chain_error, enroll.refused, ...
+	Kind   string // agent.silent, agent.resumed, store.chain_error, plan.failed, enroll.alert, ...
+	Reason string // plan.failed and enroll.alert: which failure or enrollment refusal
 	Detail string
 }
 
@@ -214,7 +215,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		PlanKey:    pk.Public().(ed25519.PublicKey),
 		ReleaseDir: cfg.ReleaseDir,
 		Advertise:  opt.Advertise,
-		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.alert,
+		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.enrollAlert,
 		Connected: func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
 	})
 	if err != nil {
@@ -288,15 +289,15 @@ func (c *Controller) Alerts() []Alert {
 }
 
 func (c *Controller) alert(host, kind, detail string) {
-	c.alertRow(host, kind, detail)
+	c.alertRow(host, kind, "", detail)
 	c.alertEvent(host, kind, detail)
 }
 
 // alertRow records the operator alert in the ring, logs it and notifies
 // OnAlert.
-func (c *Controller) alertRow(host, kind, detail string) {
-	a := Alert{Time: c.now(), Host: host, Kind: kind, Detail: detail}
-	c.log.Warn("alert", "host", host, "kind", kind, "detail", detail)
+func (c *Controller) alertRow(host, kind, reason, detail string) {
+	a := Alert{Time: c.now(), Host: host, Kind: kind, Reason: reason, Detail: detail}
+	c.log.Warn("alert", "host", host, "kind", kind, "reason", reason, "detail", detail)
 	c.mu.Lock()
 	c.alerts = append(c.alerts, a)
 	if len(c.alerts) > alertRing {
@@ -311,17 +312,42 @@ func (c *Controller) alertRow(host, kind, detail string) {
 // alertTyped records the operator alert row and emits the declared alert event
 // that explains it. The event is built with event.New from its declared
 // payload, so it validates and the store's ingest hook gives it an alert-queue
-// row. Use it instead of alert when the kind's payload is not {host, detail}.
-func (c *Controller) alertTyped(host, detail, kind string, payload any) {
-	c.alertRow(host, kind, detail)
+// row. Use it instead of alert when the kind's payload is not {host, detail},
+// and pass the priority the design's table gives this event (plan.failed and
+// enroll.alert decide their alert row per reason).
+func (c *Controller) alertTyped(host, reason, detail string, priority event.Priority, kind string, payload any) {
+	c.alertRow(host, kind, reason, detail)
 	e, err := event.New(kind, payload)
 	if err != nil {
 		c.log.Error("cannot build alert event", "host", host, "kind", kind, "err", err)
 		return
 	}
+	e.Priority = priority
 	if _, err := c.EmitController(context.Background(), e); err != nil {
 		c.log.Error("cannot emit alert event", "host", host, "kind", kind, "err", err)
 	}
+}
+
+// planFailed emits the one plan-failure kind and its alert row. A dead-man or
+// rollback failure is critical; a missing or unverifiable step result high.
+func (c *Controller) planFailed(host string, f event.PlanFailed, detail string) {
+	prio := event.PriorityCritical
+	if f.Reason == event.ReasonStepTimeout || f.Reason == event.ReasonBadResult {
+		prio = event.PriorityHigh
+	}
+	f.Host, f.Detail = host, detail
+	c.alertTyped(host, f.Reason, detail, prio, event.KindPlanFailed, f)
+}
+
+// enrollAlert emits the one enrollment-alert kind for a refused, mismatched or
+// reused key. A binary-hash mismatch is critical; the others high.
+func (c *Controller) enrollAlert(host, reason, detail string) {
+	prio := event.PriorityHigh
+	if reason == event.ReasonHashMismatch {
+		prio = event.PriorityCritical
+	}
+	c.alertTyped(host, reason, detail, prio, event.KindEnrollAlert,
+		event.EnrollAlert{Reason: reason, Host: host, Detail: detail})
 }
 
 // alertEvent puts an operator alert on the controller's event chain when the

@@ -130,8 +130,8 @@ func TestWatchHashMismatchAlerts(t *testing.T) {
 	}
 
 	alerts := enrollAlerts(x.c, "h1")
-	if len(alerts) != 1 || alerts[0].Kind != "enroll.hash_mismatch" {
-		t.Fatalf("h1 alerts = %+v, want one enroll.hash_mismatch", alerts)
+	if len(alerts) != 1 || alerts[0].Kind != event.KindEnrollAlert || alerts[0].Reason != event.ReasonHashMismatch {
+		t.Fatalf("h1 alerts = %+v, want one enroll.alert hash_mismatch", alerts)
 	}
 	for _, want := range []string{trojan, good} {
 		if !strings.Contains(alerts[0].Detail, want) {
@@ -142,8 +142,8 @@ func TestWatchHashMismatchAlerts(t *testing.T) {
 		t.Errorf("h2 reported the served hash but raised %d alerts", n)
 	}
 	alerts = enrollAlerts(x.c, "h3")
-	if len(alerts) != 1 || alerts[0].Kind != "enroll.hash_mismatch" {
-		t.Fatalf("h3 alerts = %+v, want one enroll.hash_mismatch", alerts)
+	if len(alerts) != 1 || alerts[0].Kind != event.KindEnrollAlert || alerts[0].Reason != event.ReasonHashMismatch {
+		t.Fatalf("h3 alerts = %+v, want one enroll.alert hash_mismatch", alerts)
 	}
 	if !strings.Contains(alerts[0].Detail, "no binary hash reported") {
 		t.Errorf("h3 detail %q", alerts[0].Detail)
@@ -198,8 +198,8 @@ func TestWatchNoShowAndCleanup(t *testing.T) {
 	fired()
 
 	alerts := enrollAlerts(x.c, "h2")
-	if len(alerts) != 1 || alerts[0].Kind != "enroll.no_show" {
-		t.Fatalf("h2 alerts = %+v, want one enroll.no_show", alerts)
+	if len(alerts) != 1 || alerts[0].Kind != event.KindEnrollAlert || alerts[0].Reason != event.ReasonNoShow {
+		t.Fatalf("h2 alerts = %+v, want one enroll.alert no_show", alerts)
 	}
 	if n := len(enrollAlerts(x.c, "h1")); n != 0 {
 		t.Errorf("h1 connected but got %d alerts", n)
@@ -218,7 +218,7 @@ func TestWatchNoShowAndCleanup(t *testing.T) {
 		t.Fatal("late hello was refused")
 	}
 	if n := len(enrollAlerts(x.c, "h2")); n != 1 {
-		t.Errorf("late hello raised %d alerts after enroll.no_show", n)
+		t.Errorf("late hello raised %d alerts after the no_show alert", n)
 	}
 }
 
@@ -231,8 +231,8 @@ func TestWatchRefusedEnrollmentAlerts(t *testing.T) {
 		t.Fatal("bogus token admitted")
 	}
 	alerts := enrollAlerts(x.c, "h1")
-	if len(alerts) != 1 || alerts[0].Kind != "enroll.refused" {
-		t.Fatalf("h1 alerts = %+v, want one enroll.refused", alerts)
+	if len(alerts) != 1 || alerts[0].Kind != event.KindEnrollAlert || alerts[0].Reason != event.ReasonRefused {
+		t.Fatalf("h1 alerts = %+v, want one enroll.alert refused", alerts)
 	}
 	// A refused enrollment does not consume the bundle: the real host can
 	// still enroll with it.
@@ -250,21 +250,27 @@ func TestWatchServedFileMissing(t *testing.T) {
 	}
 }
 
-// storedControllerEvent returns the one stored controller event of kind and
+// storedEnrollAlert returns the one stored enroll.alert event with reason and
 // checks that it still validates against its declared kind.
-func storedControllerEvent(t *testing.T, c *Controller, kind string) event.Event {
+func storedEnrollAlert(t *testing.T, c *Controller, reason string) event.Event {
 	t.Helper()
-	evs, err := c.Store().Events(context.Background(), store.Query{Agent: ControllerAgent, Kind: kind, Limit: 10})
+	evs, err := c.Store().Events(context.Background(), store.Query{Agent: ControllerAgent, Kind: event.KindEnrollAlert, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evs) != 1 {
-		t.Fatalf("%s events = %d, want 1", kind, len(evs))
+	var got []event.Event
+	for _, e := range evs {
+		if e.Fields["reason"] == reason {
+			got = append(got, e)
+		}
 	}
-	if err := event.Validate(evs[0]); err != nil {
-		t.Fatalf("%s stored event does not validate: %v", kind, err)
+	if len(got) != 1 {
+		t.Fatalf("%s %s events = %d, want 1", event.KindEnrollAlert, reason, len(got))
 	}
-	return evs[0]
+	if err := event.Validate(got[0]); err != nil {
+		t.Fatalf("%s stored event does not validate: %v", event.KindEnrollAlert, err)
+	}
+	return got[0]
 }
 
 // The enrollment-watch alerts are declared events: each one is emitted on the
@@ -284,11 +290,11 @@ func TestEnrollAlertsAreStoredAlerts(t *testing.T) {
 	}
 	fired()
 
-	mismatch := storedControllerEvent(t, x.c, event.KindEnrollHashMismatch)
+	mismatch := storedEnrollAlert(t, x.c, event.ReasonHashMismatch)
 	if mismatch.Priority != event.PriorityCritical {
 		t.Errorf("hash mismatch priority = %v, want critical", mismatch.Priority)
 	}
-	hm, err := event.Decode[event.EnrollHashMismatch](mismatch, event.KindEnrollHashMismatch)
+	hm, err := event.Decode[event.EnrollAlert](mismatch, event.KindEnrollAlert)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,11 +302,11 @@ func TestEnrollAlertsAreStoredAlerts(t *testing.T) {
 		t.Errorf("hash mismatch payload = %+v", hm)
 	}
 
-	noShow := storedControllerEvent(t, x.c, event.KindEnrollNoShow)
+	noShow := storedEnrollAlert(t, x.c, event.ReasonNoShow)
 	if noShow.Priority != event.PriorityHigh {
 		t.Errorf("no-show priority = %v, want high", noShow.Priority)
 	}
-	ns, err := event.Decode[event.EnrollNoShow](noShow, event.KindEnrollNoShow)
+	ns, err := event.Decode[event.EnrollAlert](noShow, event.KindEnrollAlert)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,16 +322,16 @@ func TestEnrollAlertsAreStoredAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{event.KindEnrollHashMismatch: "h1", event.KindEnrollNoShow: "h2"}
+	want := map[string]string{"h1": event.ReasonHashMismatch, "h2": event.ReasonNoShow}
 	for _, r := range rows {
-		host, ok := want[r.Rule]
-		if !ok {
+		host, ok := want[r.Host]
+		if !ok || r.Rule != event.KindEnrollAlert {
 			continue
 		}
-		if r.Host != host || r.Agent != ControllerAgent || r.Seq == 0 {
+		if r.Agent != ControllerAgent || r.Seq == 0 {
 			t.Errorf("alert row %+v, want host %s on the controller chain", r, host)
 		}
-		delete(want, r.Rule)
+		delete(want, r.Host)
 	}
 	if len(want) != 0 {
 		t.Errorf("no alert row for %v", want)

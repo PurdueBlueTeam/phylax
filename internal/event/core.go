@@ -85,13 +85,6 @@ type AgentModuleCrash struct {
 	RestartInMS int64  `json:"restart_in_ms,omitempty"`
 }
 
-type AgentDeadmanFired struct {
-	ID    string `json:"id"`
-	Node  string `json:"node"`
-	State string `json:"state"`
-	Error string `json:"error,omitempty"`
-}
-
 type AgentDeadmanRecovered struct {
 	ID    string `json:"id"`
 	Node  string `json:"node"`
@@ -132,44 +125,110 @@ type SpoolGap struct {
 	Class string `json:"class"`
 }
 
-type EnrollRefused struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type EnrollKeyMismatch struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type EnrollKeyReuse struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-// The console-script enrollment checks (R1), a locked controller after a
-// restart (R8) and the controller disk quota (R9).
+// The one plan-failure kind and the one enrollment-alert kind carry a reason;
+// the design's kind table makes each event's priority decide the alert row.
+// A locked controller after a restart (R8) and the controller disk quota (R9)
+// keep their own kinds.
 const (
-	KindEnrollHashMismatch = "enroll.hash_mismatch"
-	KindEnrollNoShow       = "enroll.no_show"
-	KindControllerLocked   = "controller.locked"
-	KindStoreQuota         = "store.quota"
+	KindPlanFailed           = "plan.failed"
+	KindEnrollAlert          = "enroll.alert"
+	KindOperatorEdit         = "operator.edit"
+	KindInventorySnapshot    = "inventory.snapshot"
+	KindInventoryRow         = "inventory.row"
+	KindInventoryProbeResult = "inventory.probe_result"
+	KindControllerLocked     = "controller.locked"
+	KindStoreQuota           = "store.quota"
 )
 
-// EnrollHashMismatch is raised when the agent's hello binary_sha256 differs
-// from the hash of the binary the controller served.
-type EnrollHashMismatch struct {
+// The reason values of plan.failed and enroll.alert (design: Event kinds).
+const (
+	ReasonDeadmanFired   = "deadman_fired"
+	ReasonAutoHalted     = "auto_halted"
+	ReasonRollbackFailed = "rollback_failed"
+	ReasonRestoreFailed  = "restore_failed"
+	ReasonConfirmFailed  = "confirm_failed"
+	ReasonStepTimeout    = "step_timeout"
+	ReasonBadResult      = "bad_result"
+
+	ReasonRefused      = "refused"
+	ReasonHashMismatch = "hash_mismatch"
+	ReasonNoShow       = "no_show"
+	ReasonKeyMismatch  = "key_mismatch"
+	ReasonKeyReuse     = "key_reuse"
+)
+
+// PlanFailed is the one failure kind of a plan node or an automatic action
+// (design: Event kinds). Reason says which failure it was.
+type PlanFailed struct {
+	Reason   string `json:"reason"`
 	Host     string `json:"host"`
-	Served   string `json:"served"`   // sha256 hex of the served binary
-	Reported string `json:"reported"` // sha256 hex the agent reported
+	Detail   string `json:"detail,omitempty"`
+	Plan     string `json:"plan,omitempty"`
+	Node     string `json:"node,omitempty"`
+	Module   string `json:"module,omitempty"`
+	Template string `json:"template,omitempty"`
+	Count    int    `json:"count,omitempty"`
 }
 
-// EnrollNoShow is raised when a host with a served bundle did not connect
-// inside the enrollment window.
-type EnrollNoShow struct {
+// EnrollAlert is the one enrollment-alert kind (design: Event kinds). Reason
+// is refused, hash_mismatch, no_show, key_mismatch or key_reuse; the served
+// and reported hashes belong to hash_mismatch, the window to no_show.
+type EnrollAlert struct {
+	Reason    string `json:"reason"`
 	Host      string `json:"host"`
-	WindowSec int    `json:"window_sec"`
-	Since     string `json:"since"` // RFC 3339, UTC: when the bundle was written
+	Detail    string `json:"detail,omitempty"`
+	Served    string `json:"served,omitempty"`     // sha256 hex of the served binary
+	Reported  string `json:"reported,omitempty"`   // sha256 hex the agent reported
+	WindowSec int    `json:"window_sec,omitempty"` // no_show: the enrollment window
+	Since     string `json:"since,omitempty"`      // RFC 3339, UTC: when the bundle was written
+}
+
+// OperatorEdit is the one command-event kind (design: Event kinds): an
+// operator action that changes what a module's table holds. Record is the
+// full new value, never a diff.
+type OperatorEdit struct {
+	Module  string         `json:"module"`
+	Op      string         `json:"op"`
+	Subject string         `json:"subject,omitempty"`
+	Record  map[string]any `json:"record,omitempty"`
+	By      string         `json:"by"`
+	At      string         `json:"at"`
+}
+
+// The core inventory kinds (design: Event kinds).
+type InventorySnapshot struct {
+	Table       string           `json:"table"`
+	Schema      int              `json:"schema"`
+	Epoch       uint64           `json:"epoch"`
+	Reason      string           `json:"reason"` // baseline | epoch_change | periodic | requested
+	Rows        []map[string]any `json:"rows,omitempty"`
+	Part        int              `json:"part,omitempty"`
+	Parts       int              `json:"parts,omitempty"`
+	Count       int              `json:"count,omitempty"`
+	CollectedAt string           `json:"collected_at"`
+}
+
+type InventoryRow struct {
+	Table       string         `json:"table"`
+	Epoch       uint64         `json:"epoch"`
+	Op          string         `json:"op"` // added | removed | changed | overflow
+	Key         string         `json:"key"`
+	Row         map[string]any `json:"row,omitempty"`
+	Old         map[string]any `json:"old,omitempty"`
+	ChangedCols []string       `json:"changed_cols,omitempty"`
+	Count       int            `json:"count,omitempty"` // overflow
+	CollectedAt string         `json:"collected_at"`
+}
+
+type InventoryProbeResult struct {
+	Probe       string           `json:"probe"`
+	Params      map[string]any   `json:"params,omitempty"`
+	Host        string           `json:"host"`
+	Columns     []string         `json:"columns,omitempty"`
+	Rows        []map[string]any `json:"rows,omitempty"`
+	Truncated   bool             `json:"truncated,omitempty"`
+	CollectedAt string           `json:"collected_at"`
+	Live        bool             `json:"live,omitempty"`
 }
 
 // ControllerLocked is raised while plan signing is locked after a restart.
@@ -183,43 +242,6 @@ type StoreQuota struct {
 	Level   string   `json:"level"` // "ok", "bulk", "evidence", "critical"
 	UsedPct int      `json:"used_pct"`
 	Shed    []string `json:"shed,omitempty"` // classes now refused
-}
-
-type PlanStepTimeout struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanBadResult struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanDeadmanFired struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanRollbackFailed struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanRestoreFailed struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanConfirmFailed struct {
-	Host   string `json:"host"`
-	Detail string `json:"detail,omitempty"`
-}
-
-type PlanAutoHalted struct {
-	Module    string `json:"module"`
-	Template  string `json:"template"`
-	Host      string `json:"host"`
-	Rollbacks int    `json:"rollbacks,omitempty"`
 }
 
 // The core kinds: what the agent, the spool and the controller emit about
@@ -238,7 +260,6 @@ func init() {
 	Declare(Type{Kind: "agent.control_refused", Schema: 1, Priority: PriorityHigh, Fields: AgentControlRefused{}})
 	Declare(Type{Kind: "agent.module_crash", Schema: 1, Priority: PriorityHigh, Fields: AgentModuleCrash{}})
 	Declare(Type{Kind: "controller.fact", Schema: 1, Priority: PriorityHigh, Fields: ControllerFact{}})
-	Declare(Type{Kind: "agent.deadman_fired", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: AgentDeadmanFired{}})
 	Declare(Type{Kind: "agent.deadman_recovered", Schema: 1, Priority: PriorityHigh, Fields: AgentDeadmanRecovered{}})
 	Declare(Type{Kind: "agent.deadman_recovery_error", Schema: 1, Priority: PriorityHigh, Fields: AgentDeadmanRecoveryError{}})
 	Declare(Type{Kind: "agent.enrolled", Schema: 1, Priority: PriorityHigh, Fields: AgentEnrolled{}})
@@ -246,18 +267,12 @@ func init() {
 	Declare(Type{Kind: "agent.silent", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: AgentSilent{}})
 	Declare(Type{Kind: "agent.resumed", Schema: 1, Priority: PriorityHigh, Fields: AgentResumed{}})
 	Declare(Type{Kind: "spool.gap", Schema: 1, Priority: PriorityHigh, Fields: SpoolGap{}})
-	Declare(Type{Kind: "enroll.refused", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollRefused{}})
-	Declare(Type{Kind: "enroll.key_mismatch", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyMismatch{}})
-	Declare(Type{Kind: "enroll.key_reuse", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyReuse{}})
-	Declare(Type{Kind: "plan.step_timeout", Schema: 1, Priority: PriorityHigh, Fields: PlanStepTimeout{}})
-	Declare(Type{Kind: "plan.bad_result", Schema: 1, Priority: PriorityHigh, Fields: PlanBadResult{}})
-	Declare(Type{Kind: "plan.deadman_fired", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanDeadmanFired{}})
-	Declare(Type{Kind: "plan.rollback_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanRollbackFailed{}})
-	Declare(Type{Kind: "plan.restore_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanRestoreFailed{}})
-	Declare(Type{Kind: "plan.confirm_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanConfirmFailed{}})
-	Declare(Type{Kind: "plan.auto_halted", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanAutoHalted{}})
-	Declare(Type{Kind: KindEnrollHashMismatch, Schema: 1, Priority: PriorityCritical, Alert: true, Fields: EnrollHashMismatch{}})
-	Declare(Type{Kind: KindEnrollNoShow, Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollNoShow{}})
+	Declare(Type{Kind: KindPlanFailed, Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanFailed{}})
+	Declare(Type{Kind: KindEnrollAlert, Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollAlert{}})
+	Declare(Type{Kind: KindOperatorEdit, Schema: 1, Priority: PriorityNormal, Fields: OperatorEdit{}})
+	Declare(Type{Kind: KindInventorySnapshot, Schema: 1, Priority: PriorityBulk, Fields: InventorySnapshot{}})
+	Declare(Type{Kind: KindInventoryRow, Schema: 1, Priority: PriorityNormal, Fields: InventoryRow{}})
+	Declare(Type{Kind: KindInventoryProbeResult, Schema: 1, Priority: PriorityNormal, Fields: InventoryProbeResult{}})
 	Declare(Type{Kind: KindControllerLocked, Schema: 1, Priority: PriorityCritical, Alert: true, Fields: ControllerLocked{}})
 	Declare(Type{Kind: KindStoreQuota, Schema: 1, Priority: PriorityHigh, Alert: true, Fields: StoreQuota{}})
 }

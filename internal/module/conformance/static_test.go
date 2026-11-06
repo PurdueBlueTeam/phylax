@@ -444,12 +444,11 @@ var (
 	coreKinds   = []string{
 		"agent.start", "agent.health", "agent.step", "agent.step_result", "agent.step_refused",
 		"evidence.blob", "agent.config_applied", "agent.config_rejected", "agent.control_refused",
-		"agent.module_crash", "controller.fact", "agent.deadman_fired", "agent.deadman_recovered",
+		"agent.module_crash", "controller.fact", "agent.deadman_recovered",
 		"agent.deadman_recovery_error", "agent.enrolled", "agent.reenrolled", "agent.silent",
-		"agent.resumed", "spool.gap", "enroll.refused", "enroll.hash_mismatch", "enroll.no_show",
-		"controller.locked", "store.quota", "enroll.key_mismatch", "enroll.key_reuse",
-		"plan.step_timeout", "plan.bad_result", "plan.deadman_fired", "plan.rollback_failed",
-		"plan.restore_failed", "plan.confirm_failed", "plan.auto_halted",
+		"agent.resumed", "spool.gap", "plan.failed", "operator.edit", "enroll.alert",
+		"controller.locked", "store.quota", "inventory.snapshot", "inventory.row",
+		"inventory.probe_result",
 	}
 )
 

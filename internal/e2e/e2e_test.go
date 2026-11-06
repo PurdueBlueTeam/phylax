@@ -24,6 +24,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
@@ -729,7 +730,12 @@ func TestEndToEnd(t *testing.T) {
 			return h1.accounts(t) == before && h1.deadmanStates(t, "p5")["pw"] == deadman.StateRolledBack
 		})
 		eventually(t, "agent reports the rollback", 10*time.Second, func() bool {
-			return len(h.agentEvents("h1", "agent.deadman_fired")) > 0
+			for _, f := range h.agentEvents("h1", event.KindPlanFailed) {
+				if strings.Contains(f, `"reason":"deadman_fired"`) {
+					return true
+				}
+			}
+			return false
 		})
 		eventually(t, "agent reconnects", 10*time.Second, func() bool {
 			s, _ := h.c.AgentStatus("h1")

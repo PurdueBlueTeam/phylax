@@ -22,8 +22,8 @@ func TestBreakerHaltsAfterTwoRollbacks(t *testing.T) {
 	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "halted") {
 		t.Fatalf("got %v", err)
 	}
-	e, err := c.st.Latest(ctx, "controller", "plan.auto_halted")
-	if err != nil || e.Priority != event.PriorityCritical {
+	e, err := c.st.Latest(ctx, "controller", event.KindPlanFailed)
+	if err != nil || e.Priority != event.PriorityCritical || e.Fields["reason"] != event.ReasonAutoHalted {
 		t.Fatalf("%+v %v", e, err)
 	}
 	_ = c.ReenableAuto(ctx, "ctltest", "t1", "h1", "driver")

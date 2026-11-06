@@ -13,6 +13,7 @@ import (
 	"time"
 
 	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -600,7 +601,8 @@ func (c *Controller) stepTimedOut(key stepKey) {
 		return
 	}
 	c.log.Warn("step timed out", "host", key.host, "node", pd.node, "phase", pd.phase)
-	c.alert(key.host, "plan.step_timeout", fmt.Sprintf("%s %s/%s: no result", pd.rt.p.ID, pd.node, pd.phase))
+	c.planFailed(key.host, event.PlanFailed{Reason: event.ReasonStepTimeout, Plan: pd.rt.p.ID, Node: pd.node},
+		fmt.Sprintf("%s %s/%s: no result", pd.rt.p.ID, pd.node, pd.phase))
 	c.deliver(pd, checkResult{outcome: plan.OutcomeFailed, err: "no result from the agent (timeout or link loss)"}, nil)
 }
 
@@ -625,7 +627,8 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 	default:
 		res, err := c.verifyResult(ag, pd, m)
 		if err != nil {
-			c.alert(host, "plan.bad_result", fmt.Sprintf("%s/%s: %v", m.Plan, m.Node, err))
+			c.planFailed(host, event.PlanFailed{Reason: event.ReasonBadResult, Plan: m.Plan, Node: m.Node},
+				fmt.Sprintf("%s/%s: %v", m.Plan, m.Node, err))
 			out = checkResult{outcome: plan.OutcomeFailed, err: "unverifiable result: " + err.Error()}
 		} else {
 			rec = res
@@ -1002,7 +1005,8 @@ func (rt *planRT) noteRollbackFailedLocked(id, why string) {
 	nr := rt.nodes[id]
 	nr.failedIn = plan.PhaseRollback
 	nr.reason += " rollback failed: " + why
-	rt.c.alert(rt.node(id).Target, "plan.rollback_failed", fmt.Sprintf("%s/%s: %s", rt.p.ID, id, why))
+	rt.c.planFailed(rt.node(id).Target, event.PlanFailed{Reason: event.ReasonRollbackFailed, Plan: rt.p.ID, Node: id},
+		fmt.Sprintf("%s/%s: %s", rt.p.ID, id, why))
 }
 
 func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
@@ -1145,7 +1149,8 @@ func (rt *planRT) confirmLocked(id string) {
 	args, _ := json.Marshal(map[string]string{"plan": rt.p.ID, "node": id})
 	ag := rt.c.sessionFor(n.Target)
 	if ag == nil || rt.c.sendControl(context.Background(), ag, n.Target, plan.ControlDeadmanConfirm, true, args, true) != nil {
-		rt.c.alert(n.Target, "plan.confirm_failed", fmt.Sprintf("%s/%s: could not send dead-man confirm; the agent will roll back", rt.p.ID, id))
+		rt.c.planFailed(n.Target, event.PlanFailed{Reason: event.ReasonConfirmFailed, Plan: rt.p.ID, Node: id},
+			fmt.Sprintf("%s/%s: could not send dead-man confirm; the agent will roll back", rt.p.ID, id))
 		return
 	}
 	nr.confirmed = true
@@ -1197,7 +1202,8 @@ func (rt *planRT) lostLocked(id, reason string) {
 	if rt.policy() == plan.RollbackPlan {
 		rt.draining = true
 	}
-	rt.c.alert(rt.node(id).Target, "plan.deadman_fired", fmt.Sprintf("%s/%s: %s", rt.p.ID, id, reason))
+	rt.c.planFailed(rt.node(id).Target, event.PlanFailed{Reason: event.ReasonDeadmanFired, Plan: rt.p.ID, Node: id},
+		fmt.Sprintf("%s/%s: %s", rt.p.ID, id, reason))
 	_ = rt.persistLocked(context.Background())
 }
 

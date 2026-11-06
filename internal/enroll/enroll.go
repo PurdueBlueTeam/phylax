@@ -28,7 +28,7 @@ type Options struct {
 	Advertise     string                                                        // controller host:port the host sees; empty means the request Host
 	HostKnown     func(host string) bool                                        // nil allows any host
 	Emit          func(ctx context.Context, e event.Event) (event.Event, error) // Controller.EmitController
-	Alert         func(host, kind, detail string)                               // Controller.alert
+	Alert         func(host, reason, detail string)                             // the enroll.alert reasons
 	Connected     func(host string) bool                                        // true when the host's agent has a live session
 	Now           func() time.Time                                              // nil means time.Now
 }
@@ -99,13 +99,13 @@ type Result struct {
 }
 
 // Authorize decides whether pin may act as h.Host. Refusals call Options.Alert
-// with the enrollment alert kind.
+// with the enroll.alert reason (refused, key_mismatch or key_reuse).
 func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (Result, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	refuse := func(kind string, err error) (Result, error) {
+	refuse := func(reason string, err error) (Result, error) {
 		if e.opt.Alert != nil {
-			e.opt.Alert(h.Host, kind, fmt.Sprintf("pin %s: %v", pin, err))
+			e.opt.Alert(h.Host, reason, fmt.Sprintf("pin %s: %v", pin, err))
 		}
 		return Result{}, err
 	}
@@ -114,18 +114,18 @@ func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (
 		ag, aerr := e.opt.Store.Agent(ctx, h.Host)
 		switch {
 		case aerr == nil && string(ag.PubKey) == string(pin[:]):
-			return refuse("enroll.refused", ErrRevoked)
+			return refuse(event.ReasonRefused, ErrRevoked)
 		case aerr != nil && !errors.Is(aerr, store.ErrUnknownAgent):
 			return Result{}, aerr
 		}
 		if h.Token == "" {
-			return refuse("enroll.refused", ErrRevoked)
+			return refuse(event.ReasonRefused, ErrRevoked)
 		}
 		if err := e.keyReuse(ctx, h.Host, pin); err != nil {
-			return refuse("enroll.key_reuse", err)
+			return refuse(event.ReasonKeyReuse, err)
 		}
 		if err := e.tokens.Consume(h.Token, h.Host, pin); err != nil {
-			return refuse("enroll.refused", err)
+			return refuse(event.ReasonRefused, err)
 		}
 		res := Result{Reenrolled: true}
 		if aerr == nil {
@@ -148,20 +148,20 @@ func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (
 	switch {
 	case err == nil:
 		if string(ag.PubKey) != string(pin[:]) {
-			return refuse("enroll.key_mismatch", store.ErrKeyMismatch)
+			return refuse(event.ReasonKeyMismatch, store.ErrKeyMismatch)
 		}
 		return Result{}, nil
 	case !errors.Is(err, store.ErrUnknownAgent):
 		return Result{}, err
 	}
 	if h.Token == "" {
-		return refuse("enroll.refused", errors.New("unknown host without token"))
+		return refuse(event.ReasonRefused, errors.New("unknown host without token"))
 	}
 	if err := e.keyReuse(ctx, h.Host, pin); err != nil {
-		return refuse("enroll.key_reuse", err)
+		return refuse(event.ReasonKeyReuse, err)
 	}
 	if err := e.tokens.Consume(h.Token, h.Host, pin); err != nil {
-		return refuse("enroll.refused", err)
+		return refuse(event.ReasonRefused, err)
 	}
 	if err := e.opt.Store.EnrollAgent(ctx, h.Host, pin[:]); err != nil {
 		return Result{}, err

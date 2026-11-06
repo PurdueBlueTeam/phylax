@@ -68,7 +68,7 @@ func TestHostKeysRecordThenCheck(t *testing.T) {
 func TestSSHPushHostKeyChanged(t *testing.T) {
 	var alerts []string
 	f := newEnrollerWith(t, func(o *Options) {
-		o.Alert = func(host, kind, detail string) { alerts = append(alerts, host+" "+kind) }
+		o.Alert = func(host, reason, detail string) { alerts = append(alerts, host+" "+reason) }
 	})
 	srv := fakeSSHDefaults()
 	addr := startFakeSSH(t, srv)
@@ -87,7 +87,7 @@ func TestSSHPushHostKeyChanged(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Class != ClassHostKey {
 		t.Fatalf("err = %v, want class %s", err, ClassHostKey)
 	}
-	if len(alerts) != 1 || alerts[0] != "h1 enroll.hostkey_changed" {
-		t.Fatalf("alerts = %v, want one enroll.hostkey_changed for h1", alerts)
+	if len(alerts) != 1 || alerts[0] != "h1 key_mismatch" {
+		t.Fatalf("alerts = %v, want one key_mismatch for h1", alerts)
 	}
 }

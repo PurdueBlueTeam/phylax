@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 	"golang.org/x/crypto/ssh"
@@ -91,7 +92,7 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		case errors.Is(err, ErrHostKeyChanged):
 			// Refused hard: a changed key may be a man in the middle.
 			if e.opt.Alert != nil {
-				e.opt.Alert(t.Host, "enroll.hostkey_changed", err.Error())
+				e.opt.Alert(t.Host, event.ReasonKeyMismatch, err.Error())
 			}
 			return fail(ClassHostKey, err.Error())
 		case ctx.Err() != nil:

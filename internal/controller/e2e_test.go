@@ -270,6 +270,15 @@ func hasAlert(c *Controller, host, kind string) bool {
 	return false
 }
 
+func hasAlertReason(c *Controller, host, kind, reason string) bool {
+	for _, a := range c.Alerts() {
+		if a.Host == host && a.Kind == kind && a.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
 func waitFor(t *testing.T, d time.Duration, what string, f func() bool) {
 	t.Helper()
 	// d is the expected latency; a slow -race CI runner gets a generous floor.
@@ -457,7 +466,7 @@ func TestEnrollmentRefusals(t *testing.T) {
 	if tryHello(t, x, id(), "other", tok) {
 		t.Fatal("token for h2 enrolled host other")
 	}
-	if hasAlert(x.c, "other", "enroll.refused") == false {
+	if !hasAlertReason(x.c, "other", event.KindEnrollAlert, event.ReasonRefused) {
 		t.Error("no alert for wrong-host token")
 	}
 	// The wrong-host claim did not burn the token.
@@ -473,7 +482,7 @@ func TestEnrollmentRefusals(t *testing.T) {
 	if tryHello(t, x, id(), "h2", tok) {
 		t.Fatal("reused token admitted a second key")
 	}
-	if !hasAlert(x.c, "h2", "enroll.key_mismatch") {
+	if !hasAlertReason(x.c, "h2", event.KindEnrollAlert, event.ReasonKeyMismatch) {
 		t.Error("no alert for a new key claiming an existing host")
 	}
 	// A token alone cannot re-key an enrolled host, and a key cannot enroll as a second host.
