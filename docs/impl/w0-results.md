@@ -57,8 +57,16 @@ phase 2 starts. No assertion changed. Verified:
 further runs (`-race -count=5 -cpu 1,4`, eight at a time), nor in the sweep
 above. The failure was undiagnosable because the test discarded the module's
 error, so commit `0482952` (mods: report why the decoy child stopped in the
-sandbox test) makes it say why the child stopped. `shortcut: cause not
-reproduced; the message is in place, reopen if it recurs`.
+sandbox test) makes it say why the child stopped.
+
+Cause (seen again later as `decoys: listen ssh on 46884: bind: address already
+in use`): the test picked a port by listening on `127.0.0.1:0`, closing it and
+then using that number (and the next one) for the decoy child, so any parallel
+test could take either port in between; the sandbox parent's bind then failed.
+The fix runs the whole start again on a fresh pair of probed ports when the
+module reports `EADDRINUSE` (at most five attempts, no sleeps), and waits for
+the module's `Ready` instead of polling the port. The bind failure is now
+explained by the module's error, which the test surfaces.
 
 ### After the fixes
 

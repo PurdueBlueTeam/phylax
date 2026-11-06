@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -103,27 +104,32 @@ func TestSectionFingerprintFollowsTheTokens(t *testing.T) {
 	}
 }
 
-// The factory's module, run for real: a child process serves, the signed
-// token is recognised across the process boundary, the SSH host key persists
-// in the state dir.
-func TestSandboxedDecoysFromSignedConfig(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("the sandboxed child is Linux only")
+// freePorts reserves n distinct loopback ports and releases them. A port can
+// be taken by another process before the decoy child binds it, so the caller
+// must treat a bind failure as a lost race, not as a defect.
+func freePorts(t *testing.T, n int) []uint16 {
+	t.Helper()
+	lns := make([]net.Listener, 0, n)
+	for i := 0; i < n; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lns = append(lns, ln)
 	}
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	port := uint16(ln.Addr().(*net.TCPAddr).Port)
-	ln.Close()
-	state := t.TempDir()
-	cfg := signedCfg(&plan.DeceptionSettings{Bind: "127.0.0.1", SandboxUser: "-",
-		Listeners: []plan.DecoyListenerSettings{{Kind: "redis", Port: port}, {Kind: "ssh", Port: port + 1}},
-		Tokens:    []plan.HoneyToken{{ID: "ht-9", Host: "ubuntu-email", Kind: "db_cred", User: "svc_x1", Secret: "Maple!Vault42"}}})
-	spec, err := buildDecoys(agent.Env{Host: "rocky-ecom", StateDir: state}, cfg)
-	if err != nil {
-		t.Fatal(err)
+	ports := make([]uint16, n)
+	for i, ln := range lns {
+		ports[i] = uint16(ln.Addr().(*net.TCPAddr).Port)
+		ln.Close()
 	}
-	if _, err := os.Stat(filepath.Join(state, "decoy_ssh_host_ed25519")); err != nil {
-		t.Errorf("host key not persisted: %v", err)
-	}
+	return ports
+}
+
+// runDecoySession runs the module until the signed token is used against the
+// redis decoy. It returns the module's own error when it stopped first, so the
+// caller can tell a port collision (retry) from a real failure.
+func runDecoySession(t *testing.T, spec agent.ModuleSpec, port uint16) error {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	got := make(chan event.Event, 16)
@@ -137,22 +143,29 @@ func TestSandboxedDecoysFromSignedConfig(t *testing.T) {
 			return nil
 		})
 	}()
-	var c net.Conn
-	for i := 0; i < 200 && c == nil; i++ {
-		select {
-		case err := <-done:
-			// Surface why the child stopped instead of only "never listened".
-			t.Fatalf("decoy module stopped before listening: %v", err)
-		default:
-		}
-		if cc, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil {
-			c = cc
-		} else {
-			time.Sleep(50 * time.Millisecond)
-		}
+	// The child reports when every listener is bound; a port that was taken
+	// after the probe fails the parent's bind first and surfaces on done.
+	rm, ok := spec.Module.(interface{ Ready() <-chan struct{} })
+	if !ok {
+		t.Fatalf("decoy module has no Ready: %T", spec.Module)
 	}
-	if c == nil {
-		t.Fatal("decoy never listened")
+	select {
+	case <-rm.Ready():
+	case err := <-done:
+		if err == nil {
+			return errors.New("decoy module stopped before serving")
+		}
+		return err
+	case <-time.After(30 * time.Second):
+		cancel()
+		<-done
+		return errors.New("decoy never became ready")
+	}
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		cancel()
+		<-done
+		return fmt.Errorf("decoy never listened: %w", err)
 	}
 	fmt.Fprintf(c, "AUTH Maple!Vault42\r\n")
 	c.Close()
@@ -162,11 +175,51 @@ func TestSandboxedDecoysFromSignedConfig(t *testing.T) {
 		case e := <-got:
 			if e.Fields["honeytoken"] == "ht-9" && e.Fields["token_origin"] == "ubuntu-email" {
 				cancel()
-				<-done
-				return
+				if err := <-done; err != nil {
+					return fmt.Errorf("decoy module stopped: %w", err)
+				}
+				return nil
 			}
 		case <-deadline:
-			t.Fatal("no honeytoken hit from the sandboxed decoy")
+			cancel()
+			<-done
+			return errors.New("no honeytoken hit from the sandboxed decoy")
 		}
 	}
+}
+
+// The factory's module, run for real: a child process serves, the signed
+// token is recognised across the process boundary, the SSH host key persists
+// in the state dir.
+func TestSandboxedDecoysFromSignedConfig(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the sandboxed child is Linux only")
+	}
+	state := t.TempDir()
+	// The ports are probed and released before the decoy child binds them, so a
+	// parallel test can take one in between. That is a lost race, not a defect:
+	// start again on a fresh pair, bounded.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		ports := freePorts(t, 2)
+		cfg := signedCfg(&plan.DeceptionSettings{Bind: "127.0.0.1", SandboxUser: "-",
+			Listeners: []plan.DecoyListenerSettings{{Kind: "redis", Port: ports[0]}, {Kind: "ssh", Port: ports[1]}},
+			Tokens:    []plan.HoneyToken{{ID: "ht-9", Host: "ubuntu-email", Kind: "db_cred", User: "svc_x1", Secret: "Maple!Vault42"}}})
+		spec, err := buildDecoys(agent.Env{Host: "rocky-ecom", StateDir: state}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(state, "decoy_ssh_host_ed25519")); err != nil {
+			t.Errorf("host key not persisted: %v", err)
+		}
+		err = runDecoySession(t, spec, ports[0])
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			t.Fatal(err)
+		}
+		lastErr = err
+	}
+	t.Fatalf("decoy ports were taken on every attempt: %v", lastErr)
 }
