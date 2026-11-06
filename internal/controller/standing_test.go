@@ -68,6 +68,26 @@ func TestRunStandingOutOfScopeProposes(t *testing.T) {
 	}
 }
 
+func TestRunStandingRevokedProposes(t *testing.T) {
+	c := newStandingController(t)
+	if err := c.CreateStanding(ctx, sa()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RevokeStanding(ctx, "s1", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("open %+v %v", open, err)
+	}
+	if !strings.Contains(open[0].Reason, "revoked") {
+		t.Fatalf("reason %q does not name the revocation", open[0].Reason)
+	}
+}
+
 func TestRevokeStandingAuditsOperator(t *testing.T) {
 	c := newStandingController(t)
 	if err := c.CreateStanding(ctx, sa()); err != nil {

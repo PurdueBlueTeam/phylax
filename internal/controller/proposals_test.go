@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -94,6 +95,91 @@ func TestProposalDecisionsNeedOperator(t *testing.T) {
 	plans, err := c.StoredPlans(ctx)
 	if err != nil || len(plans) != 0 {
 		t.Fatalf("a refused accept stored a plan: %+v %v", plans, err)
+	}
+}
+
+func TestOpenProposalCapPerModule(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{
+		"ctltest/gate.yml": "id: gate\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: g, gate: true}\n",
+		"other/gate.yml":   "id: gate\nmodule: other\non_failure: stop_dependents\nnodes:\n  - {id: g, gate: true}\n",
+	})
+	var first int64
+	for i := 0; i <= maxOpenProposalsPerModule; i++ {
+		id, err := c.Propose(ctx, module.Proposal{Module: "ctltest", Title: fmt.Sprintf("p%d", i), Template: "gate"})
+		if err != nil {
+			t.Fatalf("proposal %d: %v", i, err)
+		}
+		if i == 0 {
+			first = id
+		}
+	}
+	otherID, err := c.Propose(ctx, module.Proposal{Module: "other", Title: "unrelated", Template: "gate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := map[string]int{}
+	for _, row := range open {
+		count[row.Module]++
+		if row.ID == first {
+			t.Fatal("the oldest open proposal was not dismissed")
+		}
+	}
+	if count["ctltest"] != maxOpenProposalsPerModule || count["other"] != 1 {
+		t.Fatalf("open proposals by module: %+v", count)
+	}
+	if old, err := c.st.Proposal(ctx, first); err != nil || old.State != "dismissed" {
+		t.Fatalf("oldest proposal %d: %+v %v", first, old, err)
+	}
+	if row, err := c.st.Proposal(ctx, otherID); err != nil || row.State != "open" {
+		t.Fatalf("the other module was trimmed: %+v %v", row, err)
+	}
+}
+
+func TestRunStandingTargetMismatchProposes(t *testing.T) {
+	c := newStandingController(t)
+	s := sa()
+	s.Targets = "windows"
+	if err := c.CreateStanding(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("open %+v %v", open, err)
+	}
+	if !strings.Contains(open[0].Reason, "targets") {
+		t.Fatalf("reason %q does not name the targets mismatch", open[0].Reason)
+	}
+	if plans, err := c.StoredPlans(ctx); err != nil || len(plans) != 0 {
+		t.Fatalf("out-of-scope plan was stored: %+v %v", plans, err)
+	}
+}
+
+func TestRunStandingActionOutsideAllowlistProposes(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{
+		"ctltest/out.yml": "id: out\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.write, target: '${host}', params: {path: /tmp/x, content: y}}\n",
+	})
+	s := sa()
+	s.Template = "out"
+	s.Actions = []string{"file.hash"}
+	if err := c.CreateStanding(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "out", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("open %+v %v", open, err)
+	}
+	if !strings.Contains(open[0].Reason, "not in the standing approval") {
+		t.Fatalf("reason %q does not name the action allowlist", open[0].Reason)
 	}
 }
 

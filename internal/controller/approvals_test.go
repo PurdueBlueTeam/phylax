@@ -32,6 +32,18 @@ func TestRunReadOnlyStartsPlan(t *testing.T) {
 	}
 }
 
+func TestRunReadOnlyRefusesServiceRisk(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{"ctltest/perms.yml": "id: perms\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: p, action: file.perms, target: h1, params: {path: /etc/hosts, mode: '0644'}}\n"})
+	_, err := c.RunReadOnly(ctx, "ctltest", "perms", nil)
+	if err == nil || !strings.Contains(err.Error(), "SS000") || !strings.Contains(err.Error(), "file.perms") {
+		t.Fatalf("got %v", err)
+	}
+	plans, err := c.StoredPlans(ctx)
+	if err != nil || len(plans) != 0 {
+		t.Fatalf("refused plan was stored: %+v %v", plans, err)
+	}
+}
+
 func TestRunReadOnlyRefusesWrite(t *testing.T) {
 	c := newTestControllerWithPlans(t, map[string]string{"ctltest/w.yml": "id: w\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: w, action: file.write, target: h1, params: {path: /tmp/x, content: y}}\n"})
 	_, err := c.RunReadOnly(ctx, "ctltest", "w", nil)
