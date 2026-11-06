@@ -39,7 +39,7 @@ var (
 )
 
 // ModuleLimits is the generic part of every module's settings block (the
-// enablement block) plus the module's event rate budget. A zero budget means
+// enablement block) plus the module's event rate limit. A zero rate means
 // the agent's default.
 type ModuleLimits struct {
 	module.Common
@@ -206,11 +206,6 @@ type ModuleSettings struct {
 	Deception *DeceptionSettings `json:"deception,omitempty"`
 }
 
-// Budgets are agent-wide resource budgets.
-type Budgets struct {
-	MemoryLimitMB int `json:"memory_limit_mb,omitempty"`
-}
-
 // AgentConfig is the typed per-host configuration.
 type AgentConfig struct {
 	V        int    `json:"v"`
@@ -222,7 +217,6 @@ type AgentConfig struct {
 	// check_runner, scanner, canary).
 	Roles   []string       `json:"roles,omitempty"`
 	Modules ModuleSettings `json:"modules"`
-	Budgets Budgets        `json:"budgets"`
 }
 
 // BlockFor returns the settings block for module name (a typed nil pointer when

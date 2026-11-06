@@ -25,12 +25,6 @@ type ConfigInputs struct {
 	Tokens []honeytokens.Token
 }
 
-// Per-module event budgets (events per second sustained / burst) applied at
-// the supervisor. Audit and winevt also limit internally.
-var moduleBudgets = map[string][2]int{
-	"net": {500, 1000}, "winevt": {2000, 4000}, "integrity": {100, 200}, "detect": {100, 200},
-}
-
 const maxExpandedRange = 64
 
 // BuildAgentConfig derives a host's AgentConfig from the manifest. Epoch,
@@ -47,10 +41,6 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 	}
 	cfg = &plan.AgentConfig{Host: host, Roles: expandRoles(h.Roles)}
 	enabled := module.Common{Enabled: true} // every block the controller renders runs
-	lim := func(mod string) plan.ModuleLimits {
-		b := moduleBudgets[mod]
-		return plan.ModuleLimits{Common: enabled, RatePerSec: float64(b[0]), Burst: b[1]}
-	}
 	cfg.Modules.Health = &plan.HealthSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, IntervalSec: 60}
 
 	svcs := m.ServicesOn(host)
@@ -100,10 +90,10 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 	}
 
 	if h.IsWindows() {
-		cfg.Modules.Winevt = &plan.WinevtSettings{ModuleLimits: lim("winevt")}
+		cfg.Modules.Winevt = &plan.WinevtSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}}
 	} else {
 		cfg.Modules.Audit = &plan.AuditSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, WebRoots: uniq(webRoots), ServiceBinaries: uniq(bins)}
-		cfg.Modules.Net = &plan.NetSettings{ModuleLimits: lim("net"), Services: nilIfEmpty(netSvc), HashExe: true, IntervalMS: 2000}
+		cfg.Modules.Net = &plan.NetSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, Services: nilIfEmpty(netSvc), HashExe: true, IntervalMS: 2000}
 		hp, perr := render.BuildHostPolicy(m, host)
 		if perr != nil {
 			warnings = append(warnings, "firewall policy not derived, no NFLOG groups or canaries: "+perr.Error())
@@ -130,10 +120,10 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 			}
 			sort.Slice(cfg.Modules.Net.NFLogGroups, func(i, j int) bool { return cfg.Modules.Net.NFLogGroups[i] < cfg.Modules.Net.NFLogGroups[j] })
 		}
-		cfg.Modules.Integrity = &plan.IntegritySettings{ModuleLimits: lim("integrity"), Pins: pins, Ledger: in.Ledger}
+		cfg.Modules.Integrity = &plan.IntegritySettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, Pins: pins, Ledger: in.Ledger}
 	}
 	if len(in.Rules) > 0 {
-		d := &plan.DetectSettings{ModuleLimits: lim("detect"), Rules: in.Rules, Seeds: detectSeeds(m, host, h, svcs, comms)}
+		d := &plan.DetectSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, Rules: in.Rules, Seeds: detectSeeds(m, host, h, svcs, comms)}
 		d.Seeds = append(d.Seeds, honeySeeds(in.Tokens)...)
 		cfg.Modules.Detect = d
 	}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime/debug"
 
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -232,12 +231,6 @@ func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 		}
 		a.managed[f.Name] = fp
 		res[f.Name] = "running"
-	}
-	if mb := cfg.Budgets.MemoryLimitMB; mb > 0 {
-		lim := int64(mb) << 20
-		if a.cfg.MemoryLimit <= 0 || lim < a.cfg.MemoryLimit {
-			debug.SetMemoryLimit(lim)
-		}
 	}
 	state := ConfigOK
 	if degraded {
