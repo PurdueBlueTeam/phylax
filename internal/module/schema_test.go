@@ -2,12 +2,12 @@ package module
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 	"time"
 )
 
 func TestSchemaOfStruct(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 33")
 	type inner struct {
 		N int `json:"n"`
 	}
@@ -17,7 +17,7 @@ func TestSchemaOfStruct(t *testing.T) {
 		Hosts  []string          `json:"hosts,omitempty"`
 		Inner  inner             `json:"inner"`
 		Map    map[string]string `json:"map,omitempty"`
-		Window time.Duration     `json:"window,omitempty"`
+		Window Duration          `json:"window,omitempty"`
 	}
 	b, err := Schema(cfg{})
 	if err != nil {
@@ -33,5 +33,49 @@ func TestSchemaOfStruct(t *testing.T) {
 	}
 	if s["additionalProperties"] != false || props["level"].(map[string]any)["type"] != "integer" {
 		t.Fatalf("%s", b)
+	}
+}
+
+func TestSchemaRejectsBareTimeDuration(t *testing.T) {
+	type bad struct {
+		Common
+		D time.Duration `json:"d"`
+	}
+	if _, err := Schema(bad{}); err == nil {
+		t.Fatal("a bare time.Duration in a settings struct must be an error")
+	}
+}
+
+func TestSchemaOfDuration(t *testing.T) {
+	type cfg struct {
+		Common
+		Window Duration `json:"window"`
+	}
+	b, err := Schema(cfg{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s map[string]any
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	w, ok := s["properties"].(map[string]any)["window"].(map[string]any)
+	if !ok || w["type"] != "string" {
+		t.Fatalf("window schema %v (%s)", w, b)
+	}
+	pat, _ := w["pattern"].(string)
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		t.Fatalf("pattern %q: %v", pat, err)
+	}
+	for _, good := range []string{"90s", "2m", "1h30m"} {
+		if !re.MatchString(good) {
+			t.Errorf("%q does not match %q", good, pat)
+		}
+	}
+	for _, bad := range []string{"90", ""} {
+		if re.MatchString(bad) {
+			t.Errorf("%q matches %q", bad, pat)
+		}
 	}
 }
