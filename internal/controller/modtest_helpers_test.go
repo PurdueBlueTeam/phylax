@@ -120,9 +120,15 @@ func newStandingController(t *testing.T) *Controller {
 	})
 }
 
-func newAutoController(t *testing.T, block string) *Controller {
+func newAutoController(t *testing.T, block string, extra ...map[string]string) *Controller {
 	t.Helper()
-	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": block})
+	files := map[string]string{"modules/ctltest.yml": block}
+	for _, m := range extra {
+		for k, v := range m {
+			files[k] = v
+		}
+	}
+	c := newTestControllerWithManifest(t, files)
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"ctltest/t1.yml":  "id: t1\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hosts}}\n",

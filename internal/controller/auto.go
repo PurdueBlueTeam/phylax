@@ -55,12 +55,16 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 		return fail("template " + template + " is not in the module's auto list")
 	}
 	now := c.now()
+	safe := map[string]bool{}
+	for _, h := range man.SafeModeHostSet() {
+		safe[h] = true
+	}
 	for _, h := range hosts {
 		st, ok := c.AgentStatus(h)
 		if !ok || st.LastSeen.IsZero() || now.Sub(st.LastSeen) > autoHeartbeatMax {
 			return fail("no recent heartbeat from " + h)
 		}
-		if st.SafeMode {
+		if st.SafeMode || safe[h] {
 			return fail("safe mode is on for " + h)
 		}
 	}

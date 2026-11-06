@@ -71,6 +71,23 @@ func TestRunAutoFailsClosedOnStoreError(t *testing.T) {
 	}
 }
 
+func TestRunAutoRefusesManifestSafeMode(t *testing.T) {
+	for name, overrides := range map[string]string{
+		"host":  "overrides:\n  safe_mode_hosts: [linux]\n",
+		"fleet": "overrides:\n  safe_mode_hosts: [linux || windows]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n",
+				map[string]string{"overrides.yml": overrides})
+			setHeartbeat(c, "h1", false, time.Now())
+			_, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"})
+			if !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "safe mode") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
 func TestRunAutoStarts(t *testing.T) {
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
