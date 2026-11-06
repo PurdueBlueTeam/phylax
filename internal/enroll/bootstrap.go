@@ -125,6 +125,11 @@ func (e *Enroller) serveScript(w http.ResponseWriter, r *http.Request, ip, token
 	if _, ok := e.tokenHost(w, ip, token); !ok {
 		return
 	}
+	ctl, ok := e.controllerAddr(r)
+	if !ok {
+		notFound(w)
+		return
+	}
 	_, sha, err := e.release(osName)
 	if err != nil {
 		notFound(w)
@@ -133,9 +138,9 @@ func (e *Enroller) serveScript(w http.ResponseWriter, r *http.Request, ip, token
 	dir := svcinstall.DeriveNames([]byte(token)).Dir
 	var body string
 	if osName == OSLinux {
-		body, err = e.linuxScript(r.Host, token, sha, dir)
+		body, err = e.linuxScript(ctl, token, sha, dir)
 	} else {
-		body, err = e.windowsScript(r.Host, token, sha, dir)
+		body, err = e.windowsScript(ctl, token, sha, dir)
 	}
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -183,11 +188,12 @@ func (e *Enroller) serveBundleFile(w http.ResponseWriter, r *http.Request, ip, r
 		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
 		_, _ = io.Copy(w, f)
 	case "boot":
-		if _, _, err := net.SplitHostPort(r.Host); err != nil {
+		ctl, ok := e.controllerAddr(r)
+		if !ok {
 			notFound(w)
 			return
 		}
-		b, err := e.bundleFor(host, BundleOptions{Controllers: []string{r.Host}}, token)
+		b, err := e.bundleFor(host, BundleOptions{Controllers: []string{ctl}}, token)
 		if err != nil {
 			notFound(w)
 			return
@@ -203,6 +209,65 @@ func (e *Enroller) serveBundleFile(w http.ResponseWriter, r *http.Request, ip, r
 	default:
 		notFound(w)
 	}
+}
+
+// controllerAddr is the address written into scripts and the boot bundle:
+// the configured advertised address, or the request Host when none is set. A
+// value that is not a hostname, IPv4 or bracketed IPv6 plus a numeric port is
+// refused before it can reach a template.
+func (e *Enroller) controllerAddr(r *http.Request) (string, bool) {
+	ctl := e.opt.Advertise
+	if ctl == "" {
+		ctl = r.Host
+	}
+	return ctl, validControllerAddr(ctl)
+}
+
+func validControllerAddr(s string) bool {
+	if s == "" || len(s) > 255 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '.' || c == ':' || c == '[' || c == ']' || c == '-'
+		if !ok {
+			return false
+		}
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return false
+	}
+	if strings.Contains(host, ":") {
+		return net.ParseIP(host) != nil // bracketed IPv6, brackets stripped above
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.To4() != nil
+	}
+	return validHostname(host)
+}
+
+func validHostname(host string) bool {
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (e *Enroller) tokenHost(w http.ResponseWriter, ip, token string) (string, bool) {

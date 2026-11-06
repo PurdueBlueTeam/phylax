@@ -75,7 +75,7 @@ func runServe(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w (use -config or -data-dir)", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	opt := controller.Options{Logger: log, Version: version}
+	opt := controller.Options{Logger: log, Version: version, Advertise: *advertise}
 	var m *manifest.Manifest
 	if cfg.ManifestPath != "" {
 		var err error

@@ -192,3 +192,78 @@ func get(t *testing.T, client *http.Client, url string) ([]byte, int) {
 	}
 	return body, resp.StatusCode
 }
+
+func TestBootstrapControllerAddress(t *testing.T) {
+	const badHost = "evil';$(:7443"
+	f := newEnrollerWith(t, func(o *Options) { o.ReleaseDir = t.TempDir() })
+	writeReleases(t, f.e.opt.ReleaseDir)
+	tok, err := f.e.MintToken("h1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs := startBoot(t, f.e, nil)
+	client := bootClient()
+	body, code := getWithHost(t, client, "https://"+bs.addr+"/l/"+tok, badHost)
+	if code != http.StatusNotFound {
+		t.Fatalf("script with Host %q = %d, want 404 (body %q)", badHost, code, body)
+	}
+	if strings.Contains(string(body), "set -e") {
+		t.Fatalf("a rejected Host got a script: %q", body)
+	}
+	body, code = getWithHost(t, client, "https://"+bs.addr+"/b/"+tok+"/boot", badHost)
+	if code != http.StatusNotFound {
+		t.Fatalf("boot with Host %q = %d, want 404 (body %q)", badHost, code, body)
+	}
+
+	adv := "10.9.8.7:7443"
+	fa := newEnrollerWith(t, func(o *Options) {
+		o.ReleaseDir = t.TempDir()
+		o.Advertise = adv
+	})
+	writeReleases(t, fa.e.opt.ReleaseDir)
+	atok, err := fa.e.MintToken("h1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs := startBoot(t, fa.e, nil)
+	script, code := getWithHost(t, client, "https://"+abs.addr+"/l/"+atok, badHost)
+	if code != http.StatusOK {
+		t.Fatalf("script with an advertised address = %d, want 200 (body %q)", code, script)
+	}
+	if !strings.Contains(string(script), "https://"+adv+"/b/"+atok+"/linux") {
+		t.Fatalf("script does not use the advertised address %s: %q", adv, script)
+	}
+	if strings.Contains(string(script), "evil") {
+		t.Fatalf("script uses the request Host: %q", script)
+	}
+	boot, code := getWithHost(t, client, "https://"+abs.addr+"/b/"+atok+"/boot", badHost)
+	if code != http.StatusOK {
+		t.Fatalf("boot with an advertised address = %d, want 200 (body %q)", code, boot)
+	}
+	b, err := phyagent.ParseBundle(boot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Controllers) != 1 || b.Controllers[0] != adv {
+		t.Fatalf("boot Controllers = %v, want [%s]", b.Controllers, adv)
+	}
+}
+
+func getWithHost(t *testing.T, client *http.Client, url, host string) ([]byte, int) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s with Host %q: %v", url, host, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body, resp.StatusCode
+}

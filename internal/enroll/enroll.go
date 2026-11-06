@@ -25,6 +25,7 @@ type Options struct {
 	Identity      *link.Identity // the controller's transport identity (pin, certificate)
 	PlanKey       ed25519.PublicKey
 	ReleaseDir    string                                                        // phylax-linux-amd64 and phylax-windows-amd64.exe
+	Advertise     string                                                        // controller host:port the host sees; empty means the request Host
 	HostKnown     func(host string) bool                                        // nil allows any host
 	Emit          func(ctx context.Context, e event.Event) (event.Event, error) // Controller.EmitController
 	Alert         func(host, kind, detail string)                               // Controller.alert

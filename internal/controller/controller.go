@@ -39,6 +39,9 @@ type Options struct {
 	// OnAlert is called (synchronously, keep it quick) for every alert.
 	OnAlert func(Alert)
 	Version string
+	// Advertise is the controller host:port hosts see (serve -advertise).
+	// Empty means the bootstrap handler uses the request Host.
+	Advertise string
 
 	// Registry is the action catalog plans are validated against (default
 	// actions.Core()).
@@ -184,6 +187,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
 		PlanKey:    pk.Public().(ed25519.PublicKey),
 		ReleaseDir: cfg.ReleaseDir,
+		Advertise:  opt.Advertise,
 		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.alert,
 		Connected: func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
 	})
