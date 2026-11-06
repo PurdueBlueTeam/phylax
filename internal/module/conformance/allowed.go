@@ -6,7 +6,7 @@ import "time"
 // shrinks. The list is the factories the agent registers today; the deception
 // family registers one factory per capability (decoys, honeywatch, akiascan)
 // until the deception module tasks fold them behind one manifest.
-var PreContract = []string{"akiascan", "audit", "capture", "decoys", "detect", "health", "honeywatch", "integrity", "net", "winevt"}
+var PreContract = []string{"akiascan", "audit", "capture", "decoys", "detect", "honeywatch", "integrity", "net", "winevt"}
 
 // AllowedLibraries is the closed list of shared stateless libraries.
 var AllowedLibraries = []string{

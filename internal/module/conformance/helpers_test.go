@@ -53,6 +53,25 @@ func fixtureFactory(name string, start func(context.Context, agent.Emit) error) 
 
 func goodFactory() agent.Factory { return fixtureFactory("good", nil) }
 
+// defaultOnFactory is a core-default module (Manifest.Default): it runs on its
+// default settings when no block is configured.
+func defaultOnFactory() agent.Factory {
+	return agent.Factory{Name: "on",
+		Manifest: module.Manifest{Name: "on", Sides: []module.Side{module.SideAgent}, Privilege: "user", Default: true},
+		Section:  func(*plan.AgentConfig) (string, bool) { return "on", true },
+		Build: func(agent.Env, *plan.AgentConfig) (agent.ModuleSpec, error) {
+			return agent.ModuleSpec{Module: fixtureModule{name: "on"}}, nil
+		}}
+}
+
+// gapFactory runs a fixture module that reports the given health.
+func gapFactory(name string, health func() module.Health) agent.Factory {
+	return agent.Factory{Name: name, Section: fixtureSection,
+		Build: func(agent.Env, *plan.AgentConfig) (agent.ModuleSpec, error) {
+			return agent.ModuleSpec{Module: fixtureModule{name: name, health: health}}, nil
+		}}
+}
+
 // leakGone is never closed: leakyFactory's goroutine outlives the module, so
 // the stop check has a real leak to catch.
 var leakGone = make(chan struct{})

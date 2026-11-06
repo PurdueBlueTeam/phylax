@@ -128,10 +128,16 @@ func waitFor(h *agent.Harness, name string, d time.Duration, ok func(module.Heal
 	}
 }
 
-func running(hl module.Health, present bool) bool { return present && hl.State == module.StateOK }
+// running reports a module that has left the start-up window: running, or
+// held back by a gap this host cannot close (a root module on a non-root
+// host). restarting and error still count as not running.
+func running(hl module.Health, present bool) bool {
+	return present && (hl.State == module.StateOK || gapReported(hl))
+}
 
 // checkNoConfig is check 1: a module without its config block is disabled or
-// refuses to build; it never panics and never runs.
+// refuses to build; it never panics and never runs. A core-default module
+// (Manifest.Default) runs on its default settings instead.
 func checkNoConfig(c AgentCase) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -139,6 +145,11 @@ func checkNoConfig(c AgentCase) (err error) {
 		}
 	}()
 	if _, on := c.Factory.Section(&plan.AgentConfig{}); !on {
+		return nil
+	}
+	if c.Factory.Manifest.Default {
+		// A core-default module (Manifest.Default) runs without its block by
+		// design: a missing block means its default settings.
 		return nil
 	}
 	h, cleanup, herr := newHarness(c, nil)
@@ -156,7 +167,8 @@ func checkNoConfig(c AgentCase) (err error) {
 }
 
 // checkDefaultConfig is check 2: with the module's default block, health
-// reaches ok (or unavailable when the host cannot run it) within 10 s.
+// reaches a settled state (ok, unavailable, or a reported gap this host
+// cannot close) within 10 s.
 func checkDefaultConfig(c AgentCase) error {
 	h, cleanup, err := newHarness(c, nil)
 	if err != nil {
@@ -167,9 +179,7 @@ func checkDefaultConfig(c AgentCase) error {
 	defer cancel()
 	go h.Run(ctx)
 	h.Apply(c.Default)
-	hl, ok := waitFor(h, c.Factory.Name, 10*time.Second, func(hl module.Health, present bool) bool {
-		return present && (hl.State == module.StateOK || hl.State == module.StateUnavailable)
-	})
+	hl, ok := waitFor(h, c.Factory.Name, 10*time.Second, running)
 	if !ok {
 		return fmt.Errorf("%s: health did not reach ok or unavailable within 10s: %+v", c.Factory.Name, hl)
 	}
@@ -282,7 +292,9 @@ func crashCount(h *agent.Harness, name string) int {
 }
 
 // checkLinkLoss is check 6: while every emit fails, a module that consumes
-// input stays ok and is never restarted. The full window runs when the case
+// input stays running and is never restarted. A module that reports a gap
+// this host cannot close (a root module on a non-root host) keeps that gap.
+// The full window runs when the case
 // supplies input; without input a short smoke window still catches a module
 // that crashes on its first emit.
 func checkLinkLoss(c AgentCase) error {
@@ -314,7 +326,7 @@ func checkLinkLoss(c AgentCase) error {
 		if n := crashCount(h, c.Factory.Name); n > 0 {
 			return fmt.Errorf("%s: restarted %d times while emits fail", c.Factory.Name, n)
 		}
-		if hl.State != module.StateOK {
+		if !running(hl, present) {
 			return fmt.Errorf("%s: state %q under link loss: %s", c.Factory.Name, hl.State, hl.Detail)
 		}
 		if time.Now().After(deadline) {

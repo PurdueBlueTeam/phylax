@@ -274,7 +274,12 @@ func core[T any](kind string, v T) event.Event {
 }
 
 // HealthSource implementation.
-func (a *Agent) SpoolStats() spool.Stats { return a.sp.Stats() }
+func (a *Agent) SpoolStats() spool.Stats {
+	if a.sp == nil {
+		return spool.Stats{} // a harness agent has no spool
+	}
+	return a.sp.Stats()
+}
 func (a *Agent) Modules() map[string]ModuleStatus {
 	a.mu.Lock()
 	sup := a.sup

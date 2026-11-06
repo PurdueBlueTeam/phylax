@@ -422,9 +422,9 @@ One table lists every event kind, who emits it and who consumes it. It is the si
 | `listener` | common | 1 | - | `net` | `detect`, `traceback`, `deps`, `report` |
 | `auth_event` | common | 1 | - | `winevt`, `logs` | `detect`, `scorer`, `traceback`, `chains`, `report`, `splunk` |
 | `dns_query` | common | 1 | - | `winevt` (Windows only; Linux has no DNS source) | `detect`, `deps`, `honeytokens` |
-| `telemetry_gap` | common | 1 | - | `audit`, `winevt`, `net`, `logs`, `inventory` | `detect`, `content_guard`, `integrity`, `checks`, `traceback`, `chains` |
+| `telemetry_gap` | common | 1 | - | `audit`, `winevt`, `net`, `logs`, `inventory`, `health` | `detect`, `content_guard`, `integrity`, `checks`, `traceback`, `chains` |
 | `agent.start` | core | 1 | - | agent supervisor | none (stored, shown in the UI) |
-| `agent.health` | core | 1 | - | agent supervisor | `detect` |
+| `agent.health` | core | 1 | - | agent supervisor, `health` | `detect` |
 | `agent.step` | core | 1 | - | agent executor | none (stored, shown in the UI) |
 | `agent.step_result` | core | 1 | - | agent executor and controller executor | `report`, `backup` |
 | `agent.step_refused` | core | 1 | - | agent executor | none (stored, shown in the UI) |
@@ -829,12 +829,12 @@ Content lives in the repository under `rules/`, `plans/` and `checks/`, one subd
 
 `internal/module/conformance` runs against every registered module in CI (review N1.2, N13.1). A module fails CI unless it:
 
-1. **Starts with no config:** `Section` reports disabled, or `Build` returns `ErrUnavailable`, never a crash.
-2. **Starts with its default config** on a fixture host and reaches `ok` or `unavailable` within 10 s.
+1. **Starts with no config:** `Section` reports disabled, or `Build` returns `ErrUnavailable`, never a crash. A core-default module (`Manifest.Default`) runs on its default settings instead.
+2. **Starts with its default config** on a fixture host and reaches a settled state (`ok`, `unavailable`, or the gap this host cannot close such as a root module on a non-root host) within 10 s.
 3. **Stops cleanly:** returns within 5 s of context cancel and leaves no goroutines (checked with a goroutine leak detector).
 4. **Reports health** within one heartbeat interval, with a non-empty `Gaps` entry for every declared OS or privilege it lacks.
 5. **Emits only declared kinds,** every event decoding strictly against its declared schema version.
-6. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s.
+6. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s, keeping any gap this host cannot close.
 7. **Survives reconfiguration:** a changed config replaces it without losing `Keep` state.
 8. **Has no sibling imports** and **rejects unknown config fields**, while decoding `enabled` and `act_enabled` (they are accepted by every block).
 9. **Passes `go test -race`** for its package.
