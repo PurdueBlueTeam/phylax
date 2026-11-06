@@ -599,7 +599,7 @@ type AgentCase struct {
 	Reconfig *plan.AgentConfig // a changed block (check 8)
 	KeepKey  string            // key the module stores with Env.Keep; "" when it keeps nothing
 	Load     []event.Event     // consumed events fed on the bus (check 6)
-	Block    any               // pointer to a zero settings struct (check 9); nil: plan.BlockFor(Default, Factory.Name)
+	Block    any               // pointer to a zero settings struct (check 8); nil: plan.BlockFor(Default, Factory.Name)
 }
 func Agent(t *testing.T, c AgentCase)
 
@@ -3953,7 +3953,7 @@ func TestAgentChecks4to6Pass(t *testing.T) {
 
 ---
 
-### Task 36: Conformance, agent checks 8 and 9; controller checks
+### Task 36: Conformance, agent checks 7 and 8; controller checks
 
 **Files:**
 - Modify: `internal/module/conformance/agent.go`, `internal/module/conformance/controller.go`
@@ -3966,13 +3966,13 @@ func TestAgentChecks4to6Pass(t *testing.T) {
 - [ ] **Step 1: Remove the skips:**
 
 ```go
-func TestAgentCheck8CatchesLostKeep(t *testing.T) {
+func TestAgentCheck7CatchesLostKeep(t *testing.T) {
 	c := AgentCase{Factory: forgetfulFactory(), Default: cfgWith("forget"), Reconfig: cfgWith2("forget"), KeepKey: "baseline"}
 	if errs := runAgentChecks(c); errs["reconfig"] == nil {
 		t.Fatal("lost Keep state not detected")
 	}
 }
-func TestAgentCheck9CatchesLooseBlock(t *testing.T) {
+func TestAgentCheck8CatchesLooseBlock(t *testing.T) {
 	// Block is a test settings struct whose UnmarshalJSON ignores unknown keys
 	if errs := runAgentChecks(AgentCase{Factory: goodFactory(), Default: cfgWith("good"), Block: &looseSettings{}}); errs["config_decode"] == nil {
 		t.Fatal("unknown field accepted")
@@ -3984,7 +3984,7 @@ func TestControllerCheck10CatchesNondeterminism(t *testing.T) {
 		t.Fatal("nondeterministic analyser not detected")
 	}
 }
-func TestControllerCheck9CatchesLooseConfig(t *testing.T) {
+func TestControllerCheck8CatchesLooseConfig(t *testing.T) {
 	// a Configurable module whose Start ignores Host.Config errors and reports ok
 	c := ControllerCase{Module: ignoresConfigErrorModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
 	if errs := runControllerChecks(c); errs["config_decode"] == nil {
@@ -4023,7 +4023,7 @@ func TestControllerChecksPass(t *testing.T) {
 **Interfaces:**
 - Consumes: `agent.Registered()`, `module.Registered()`, `event.Declared()`, `PreContract`, `AllowedLibraries`, `CoreImports`, `phylax_design.md`.
 - Produces these tests:
-  - `TestNoSiblingImports` (check 9, bug 15 guard): for every contract module (a registered agent factory or controller module with a manifest, not in `PreContract`), `go list -deps -f '{{.ImportPath}}' ./<pkg>/...` contains no other module's package (from `ModulePackages`) and nothing under `internal/` outside `CoreImports`, `AllowedLibraries` and its own tree; and its `internal/agent/mods/<name>*.go` files import only core packages, the allowed libraries and its own package (parsed with `go/parser`). `internal/enroll` is never allowed.
+  - `TestNoSiblingImports` (check 8, bug 15 guard): for every contract module (a registered agent factory or controller module with a manifest, not in `PreContract`), `go list -deps -f '{{.ImportPath}}' ./<pkg>/...` contains no other module's package (from `ModulePackages`) and nothing under `internal/` outside `CoreImports`, `AllowedLibraries` and its own tree; and its `internal/agent/mods/<name>*.go` files import only core packages, the allowed libraries and its own package (parsed with `go/parser`). `internal/enroll` is never allowed.
   - `TestKindTable` (T46): parse the "Event kinds" table of `phylax_design.md` (rows between the header `| Kind | Class |` and the next blank line); every declared kind outside the test prefixes (`ttest.`, `ctltest.`, `regtest.`) has a row with the same schema, alert flag and class (`common` for the eight common kinds, `core` for the 33 (Tasks 5 and 5a), `module` otherwise); every common and core row is declared; every row whose emitter is a contract module is declared; every contract module's `Emits` kinds have rows naming it as emitter; every `Consumes` entry has a row.
   - `TestPreContractShrinks`: every registered factory or controller module without a manifest is in `PreContract`; every `PreContract` name that now has a manifest fails the test ("remove X from PreContract").
   - `TestConformanceTestPresent`: every contract module's package directory has a `_test.go` file containing `conformance.Agent(` or `conformance.Controller(`.
@@ -4242,7 +4242,7 @@ Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom
 
 | Design requirement | Task |
 | --- | --- |
-| One package, registration file, config block with `enabled`/`act_enabled`, unknown fields an error, schema from struct | 11, 12, 33, 36 (check 9) |
+| One package, registration file, config block with `enabled`/`act_enabled`, unknown fields an error, schema from struct | 11, 12, 33, 36 (check 8) |
 | Declared typed events, `Declare`/`Lookup`/`New`/`Decode`, schema versions | 3, 4, 5 |
 | Envelope `Schema` and `Tag`, protocol minor | 2 |
 | Kinds for the console-script alerts, a locked controller and the store quota (R1, R8, R9) | 5a |
