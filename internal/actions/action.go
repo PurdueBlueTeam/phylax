@@ -57,7 +57,7 @@ type Action interface {
 }
 
 var (
-	ErrSafeMode      = errors.New("actions: agent is in safe mode; only rollback is permitted")
+	ErrSafeMode      = errors.New("actions: agent is in safe mode; only rollback and read-only actions are permitted")
 	ErrNoDeadman     = errors.New("actions: risky action needs the dead-man switch but none is configured")
 	ErrUnsupported   = errors.New("actions: not supported on this platform")
 	ErrUnknown       = errors.New("actions: unknown action")

@@ -218,12 +218,14 @@ func TestSafeModeRefusesEverythingButRollback(t *testing.T) {
 	}{
 		{"user.lock", map[string]any{"user": "bob"}},
 		{"file.write", map[string]any{"path": "/etc/x", "content": "x"}},
-		{"file.hash", map[string]any{"path": "/etc/passwd"}},
 		{"service.start", map[string]any{"unit": "cups"}},
 	} {
 		if _, err := f.run(t, c.a, c.p); !errors.Is(err, ErrSafeMode) {
 			t.Errorf("%s in safe mode: %v", c.a, err)
 		}
+	}
+	if _, err := f.run(t, "file.hash", map[string]any{"path": "/etc/passwd"}); err != nil {
+		t.Fatalf("read-only action in safe mode: %v", err)
 	}
 	if _, err := os.Stat(f.path("etc/x")); err == nil {
 		t.Fatal("file written in safe mode")

@@ -173,7 +173,7 @@ func (e *Env) Execute(ctx context.Context, req Request) (*Outcome, error) {
 		return out, err
 	}
 
-	if e.Safe.On() {
+	if e.Safe.On() && !spec.ReadOnly {
 		return out, ErrSafeMode
 	}
 	rel, err := e.Locks.Acquire(ctx, locks...)
@@ -181,7 +181,7 @@ func (e *Env) Execute(ctx context.Context, req Request) (*Outcome, error) {
 		return out, err
 	}
 	defer rel()
-	if e.Safe.On() { // re-check: it may have flipped while we waited
+	if e.Safe.On() && !spec.ReadOnly { // re-check: it may have flipped while we waited
 		return out, ErrSafeMode
 	}
 
