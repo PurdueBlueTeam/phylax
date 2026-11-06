@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"strings"
@@ -133,6 +134,20 @@ func (h *Harness) Kept(key string) any {
 	return v
 }
 
-func (h *Harness) Fact(f event.ControllerFact) { panic("unimplemented: W1 Task 31") }
-func (h *Harness) setNow(f func() time.Time)   { panic("unimplemented: W1 Task 31") }
-func (h *Harness) env() Env                    { panic("unimplemented: W1 Task 31") }
+// Fact delivers a controller fact through the same store-and-publish path as a
+// verified control: it is stored for Env.Fact and published on the bus only.
+func (h *Harness) Fact(f event.ControllerFact) {
+	raw, err := json.Marshal(f)
+	if err != nil {
+		panic("agent: fact: " + err.Error())
+	}
+	_ = h.a.receiveFact(raw)
+}
+
+// setNow replaces the agent's wall clock (facts and windows).
+func (h *Harness) setNow(f func() time.Time) { h.a.setNow(f) }
+
+// env is the Env a module built by this harness receives.
+func (h *Harness) env() Env {
+	return Env{Host: h.o.Host, StateDir: h.o.StateDir, Logger: h.a.log, a: h.a}
+}

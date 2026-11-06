@@ -69,7 +69,14 @@ func (e Env) Subscribe(buf int, kinds ...string) (<-chan event.Event, func()) {
 }
 
 // Fact returns a controller fact by id; false when never received or expired.
-func (e Env) Fact(id string) (event.ControllerFact, bool) { panic("unimplemented: W1 Task 31") }
+// The TTL counts from the agent's receipt of the fact, not from the
+// controller's clock in the payload.
+func (e Env) Fact(id string) (event.ControllerFact, bool) {
+	if e.a == nil {
+		return event.ControllerFact{}, false
+	}
+	return e.a.facts.get(id, e.a.clock())
+}
 
 // Keep stores a value that survives the module being replaced by a
 // reconfiguration (for example learned detection baselines).

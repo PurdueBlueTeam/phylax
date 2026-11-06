@@ -92,8 +92,11 @@ func (a *Agent) defaultControl(ctx context.Context, c *plan.Control, reply Reply
 		a.confirmDeadman(ctx, args.Plan, args.Node, args.ID)
 	case plan.ControlStepStatus:
 		return a.stepStatus(ctx, c, reply)
+	case plan.ControlFact:
+		return a.receiveFact(c.Args)
 	default:
 		a.log.Warn("unhandled control", "kind", c.Kind, "on", c.On)
+		a.emit(core("agent.control_refused", event.AgentControlRefused{Kind: c.Kind, Reason: "unknown control kind"}))
 	}
 	return nil
 }

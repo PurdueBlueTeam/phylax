@@ -47,7 +47,7 @@ func subscriberFactory(name string, kinds []string) Factory {
 	testSubsMu.Unlock()
 	return Factory{Name: name, Section: func(*plan.AgentConfig) (string, bool) { return "v1", true },
 		Build: func(env Env, _ *plan.AgentConfig) (ModuleSpec, error) {
-			return ModuleSpec{Module: subMod{name: name, kinds: kinds, out: ch}, Subscriber: true}, nil
+			return ModuleSpec{Module: subMod{name: name, kinds: kinds, out: ch, env: env}, Subscriber: true}, nil
 		}}
 }
 
@@ -61,13 +61,25 @@ type subMod struct {
 	name  string
 	kinds []string
 	out   chan event.Event
+	env   Env
 }
 
 func (m subMod) Name() string { return m.name }
 func (m subMod) Start(ctx context.Context, _ Emit) error {
-	// The real Env is not reachable here; the harness wires the bus in Task 15/31.
-	<-ctx.Done()
-	return nil
+	// The real on-host bus: a fact reaches a subscriber here and nowhere else.
+	ch, unsub := m.env.Subscribe(64, m.kinds...)
+	defer unsub()
+	for {
+		select {
+		case e := <-ch:
+			select {
+			case m.out <- e:
+			default:
+			}
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 var (

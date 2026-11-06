@@ -95,9 +95,17 @@ type Agent struct {
 	// runCtx is the agent's run context; steps execute under it, not under
 	// the (per-connection) handler context.
 	runCtx context.Context
+	// started anchors the agent's monotonic clock (work windows).
+	started time.Time
 
 	notify   chan struct{}
 	safeMode atomic.Bool
+
+	// facts are the controller facts held in memory, keyed by id.
+	facts factStore
+	// clkMu guards nowFn, the agent's wall clock (facts and windows).
+	clkMu sync.RWMutex
+	nowFn func() time.Time
 
 	mu       sync.Mutex
 	state    State
@@ -157,7 +165,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
-		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}}
+		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now()}
 	if err := a.initExec(); err != nil {
 		return nil, err
 	}
