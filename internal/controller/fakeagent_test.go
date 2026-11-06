@@ -29,7 +29,7 @@ type fakeStepAgent struct {
 
 func newFakeStepAgent(t *testing.T, x *ctl, host string, hold bool, step func(*link.Step) (string, bool)) *fakeStepAgent {
 	t.Helper()
-	tok, err := x.c.MintToken(host, 0)
+	tok, err := x.c.Enroller().MintToken(host, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
