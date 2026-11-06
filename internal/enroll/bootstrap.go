@@ -127,7 +127,7 @@ func (e *Enroller) serveScript(w http.ResponseWriter, r *http.Request, ip, token
 	if osName == OSLinux {
 		body, err = e.linuxScript(ctl, token, sha, dir)
 	} else {
-		body, err = e.windowsScript(ctl, token, sha, dir)
+		body, err = e.windowsInstallScript(ctl, token, sha, dir)
 	}
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)

@@ -6,16 +6,17 @@ import "fmt"
 type Class string
 
 const (
-	ClassAuth        Class = "auth_refused"
-	ClassNoShell     Class = "no_shell"
-	ClassNoSpace     Class = "no_space"
-	ClassSELinux     Class = "selinux_denial"
-	ClassTimeout     Class = "timeout"
-	ClassHostname    Class = "hostname_mismatch"
-	ClassWindowsSSH  Class = "windows_openssh" // banner says Windows: use the console one-liner or WinRM
-	ClassHostKey     Class = "hostkey_changed"
-	ClassNoHeartbeat Class = "no_heartbeat" // installed and fresh login worked, the agent never connected
-	ClassInstall     Class = "install_failed"
+	ClassAuth             Class = "auth_refused"
+	ClassNoShell          Class = "no_shell"
+	ClassNoSpace          Class = "no_space"
+	ClassSELinux          Class = "selinux_denial"
+	ClassTimeout          Class = "timeout"
+	ClassHostname         Class = "hostname_mismatch"
+	ClassWindowsSSH       Class = "windows_openssh" // banner says Windows: use the console one-liner or WinRM
+	ClassHostKey          Class = "hostkey_changed"
+	ClassNoHeartbeat      Class = "no_heartbeat" // installed and fresh login worked, the agent never connected
+	ClassInstall          Class = "install_failed"
+	ClassWinRMUnreachable Class = "winrm_unreachable" // connect refused or no route: console one-liner
 )
 
 // Next is the next step the operator follows for this class (one sentence).
@@ -41,6 +42,8 @@ func (c Class) Next() string {
 		return "check the agent service on the console; it installed but never connected"
 	case ClassInstall:
 		return "read the install output on the console and fix the service manager or the binary copy"
+	case ClassWinRMUnreachable:
+		return "use the console one-liner on this host; WinRM is unreachable"
 	}
 	return "check the host on the console"
 }

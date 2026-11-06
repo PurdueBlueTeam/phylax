@@ -31,12 +31,26 @@ func (e *Enroller) OneLiner(osName, ctl, token string) (string, error) {
 		if _, _, err := e.release(osName); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("powershell -c \"[Net.ServicePointManager]::SecurityProtocol=3072;"+
-			"[Net.ServicePointManager]::ServerCertificateValidationCallback={param($s,$c)$c.GetCertHashString() -eq '%s'};"+
-			"iex(iwr https://%s/w/%s -UseBasicParsing)\"", e.thumbprint(), ctl, token), nil
+		s, err := e.windowsScript(ctl, token)
+		if err != nil {
+			return "", err
+		}
+		return `powershell -c "` + s + `"`, nil
 	default:
 		return "", fmt.Errorf("enroll: unknown OS %q", osName)
 	}
+}
+
+// windowsScript is the inner script of the Windows one-liner, which the WinRM
+// push runs after stripping the `powershell -c "..."` wrapper. OneLiner wraps
+// this exact text, so the typed line and the pushed script cannot drift.
+func (e *Enroller) windowsScript(ctl, token string) (string, error) {
+	if strings.TrimSpace(ctl) == "" {
+		return "", errors.New("enroll: Windows script needs a controller address")
+	}
+	return fmt.Sprintf("[Net.ServicePointManager]::SecurityProtocol=3072;"+
+		"[Net.ServicePointManager]::ServerCertificateValidationCallback={param($s,$c)$c.GetCertHashString() -eq '%s'};"+
+		"iex(iwr https://%s/w/%s -UseBasicParsing)", e.thumbprint(), ctl, token), nil
 }
 
 // thumbprint is the uppercase SHA-1 of the controller certificate, the hash
@@ -58,8 +72,8 @@ func (e *Enroller) linuxScript(ctl, token, sha, dir string) (string, error) {
 	})
 }
 
-// windowsScript is the script the typed Windows line downloads and runs.
-func (e *Enroller) windowsScript(ctl, token, sha, dir string) (string, error) {
+// windowsInstallScript is the script the typed Windows line downloads and runs.
+func (e *Enroller) windowsInstallScript(ctl, token, sha, dir string) (string, error) {
 	return renderScript("windows", windowsTemplate, map[string]string{
 		"Thumb":     e.thumbprint(),
 		"Dir":       dir,

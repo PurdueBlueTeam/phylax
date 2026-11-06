@@ -37,7 +37,7 @@ func init() {
 const enrollUsage = `usage: phylax enroll [-config FILE | -data-dir DIR] [-release-dir DIR] [-vault FILE] <subcommand> [flags]
 
   line -os linux|windows -ctl HOST:PORT HOST   print the pinned console one-liner (mints a token)
-  push -ctl HOST:PORT [-parallel N] HOST...    install the Linux agent over SSH
+  push -ctl HOST:PORT [-parallel N] HOST...    install over SSH (Linux) or WinRM (Windows)
   status                                       print each manifest host: enrolled, connected, revoked
 
 The command uses the controller's data dir (the same tokens, identity and
@@ -253,6 +253,7 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 	}
 	var v *vault.Vault
 	targets := make([]enroll.Target, 0, fs.NArg())
+	winrm := map[string]enroll.WinRMTarget{}
 	for _, host := range fs.Args() {
 		h, ok := b.m.Hosts[host]
 		if !ok {
@@ -277,11 +278,25 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 		if !ok || user == "" {
 			return fmt.Errorf("enroll push: host %s: vault secret %s must be user:password", host, h.DefaultCredential)
 		}
-		targets = append(targets, enroll.Target{Host: host, Addr: enrollPushAddr(h), User: user,
-			Pass: vault.NewSecretString(pass), Hostname: host})
+		t := enroll.Target{Host: host, User: user, Pass: vault.NewSecretString(pass), Hostname: host}
+		if h.IsWindows() {
+			// WinRM uses its own port; Addr only supplies the host.
+			t.Addr = h.IP
+			if t.Addr == "" {
+				t.Addr = host
+			}
+			winrm[host] = enroll.WinRMTarget{Target: t, Port: 5985}
+		} else {
+			t.Addr = enrollPushAddr(h)
+		}
+		targets = append(targets, t)
 	}
 	pusher := &enroll.SSHPusher{Controller: *ctl, Timeout: 30 * time.Second}
+	wpusher := &enroll.WinRMPusher{Controller: *ctl, Timeout: 120 * time.Second}
 	results := enroll.PushAll(ctx, targets, *parallel, func(ctx context.Context, t enroll.Target) error {
+		if wt, ok := winrm[t.Host]; ok {
+			return wpusher.Push(ctx, e, wt)
+		}
 		return pusher.Push(ctx, e, t)
 	})
 	failed := 0
