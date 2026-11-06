@@ -224,7 +224,21 @@ CREATE TABLE module_migrations (
   applied INTEGER NOT NULL
 );
 `,
-	// 7: one-click proposals (W1 Task 25). Evidence is a list of "agent:seq"
+	// 7: controller quota skipped runs (W1 Task 8b). An event refused by the
+	// disk quota is chain-verified and acknowledged past but its body is not
+	// stored; one row records each contiguous skipped run.
+	`
+CREATE TABLE quota_skips (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent    TEXT NOT NULL REFERENCES agents(id),
+  from_seq INTEGER NOT NULL,
+  to_seq   INTEGER NOT NULL,
+  reason   TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX quota_skips_agent ON quota_skips(agent, from_seq);
+`,
+	// 8: one-click proposals (W1 Task 25). Evidence is a list of "agent:seq"
 	// references; params is the template's parameter map.
 	`
 CREATE TABLE proposals (
@@ -242,7 +256,7 @@ CREATE TABLE proposals (
 );
 CREATE INDEX proposals_state_created ON proposals(state, created_ns);
 `,
-	// 8: standing approvals (W1 Task 24): an operator's one-time approval of a
+	// 9: standing approvals (W1 Task 24): an operator's one-time approval of a
 	// module template, target labels and action list, until it expires.
 	`
 CREATE TABLE standing_approvals (
