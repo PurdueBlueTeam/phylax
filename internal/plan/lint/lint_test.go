@@ -13,7 +13,6 @@ func node(id, action string, params map[string]any) plan.Node {
 }
 
 func TestRegisterRejectsBadAndDuplicate(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 21")
 	for _, id := range []string{"X1", "ss001", "SS0001", "SS000"} { // SS000 is already registered
 		func() {
 			defer func() {
@@ -27,7 +26,6 @@ func TestRegisterRejectsBadAndDuplicate(t *testing.T) {
 }
 
 func TestSS000ReadOnly(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 21")
 	reg := actions.Core()
 	ro := plan.Plan{Nodes: []plan.Node{node("p", "net.tcp_probe", map[string]any{"host": "127.0.0.1", "port": 22})}}
 	if f := Run(ro, Ctx{Class: plan.ClassAutoReadOnly, Actions: reg}); len(f) != 0 {
@@ -44,7 +42,6 @@ func TestSS000ReadOnly(t *testing.T) {
 }
 
 func TestSS000AutoRefusesClickOnly(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 21")
 	reg := actions.Core()
 	p := plan.Plan{Nodes: []plan.Node{node("x", "host.exec", map[string]any{"argv": []any{"/bin/true"}})}}
 	if f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg}); len(f) == 0 {
@@ -53,7 +50,6 @@ func TestSS000AutoRefusesClickOnly(t *testing.T) {
 }
 
 func TestRulesSorted(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 21")
 	ids := []string{}
 	for _, r := range Rules() {
 		ids = append(ids, r.ID)
