@@ -147,6 +147,44 @@ type EnrollKeyReuse struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// The console-script enrollment checks (R1), a locked controller after a
+// restart (R8) and the controller disk quota (R9).
+const (
+	KindEnrollHashMismatch = "enroll.hash_mismatch"
+	KindEnrollNoShow       = "enroll.no_show"
+	KindControllerLocked   = "controller.locked"
+	KindStoreQuota         = "store.quota"
+)
+
+// EnrollHashMismatch is raised when the agent's hello binary_sha256 differs
+// from the hash of the binary the controller served.
+type EnrollHashMismatch struct {
+	Host     string `json:"host"`
+	Served   string `json:"served"`   // sha256 hex of the served binary
+	Reported string `json:"reported"` // sha256 hex the agent reported
+}
+
+// EnrollNoShow is raised when a host with a served bundle did not connect
+// inside the enrollment window.
+type EnrollNoShow struct {
+	Host      string `json:"host"`
+	WindowSec int    `json:"window_sec"`
+	Since     string `json:"since"` // RFC 3339, UTC: when the bundle was written
+}
+
+// ControllerLocked is raised while plan signing is locked after a restart.
+type ControllerLocked struct {
+	Since   string   `json:"since"`             // RFC 3339, UTC
+	Stopped []string `json:"stopped,omitempty"` // what is not running
+}
+
+// StoreQuota is raised when the controller disk crosses a quota level.
+type StoreQuota struct {
+	Level   string   `json:"level"` // "ok", "bulk", "evidence", "critical"
+	UsedPct int      `json:"used_pct"`
+	Shed    []string `json:"shed,omitempty"` // classes now refused
+}
+
 type PlanStepTimeout struct {
 	Host   string `json:"host"`
 	Detail string `json:"detail,omitempty"`
@@ -208,7 +246,7 @@ func init() {
 	Declare(Type{Kind: "agent.silent", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: AgentSilent{}})
 	Declare(Type{Kind: "agent.resumed", Schema: 1, Priority: PriorityHigh, Fields: AgentResumed{}})
 	Declare(Type{Kind: "spool.gap", Schema: 1, Priority: PriorityHigh, Fields: SpoolGap{}})
-	Declare(Type{Kind: "enroll.refused", Schema: 1, Priority: PriorityHigh, Fields: EnrollRefused{}})
+	Declare(Type{Kind: "enroll.refused", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollRefused{}})
 	Declare(Type{Kind: "enroll.key_mismatch", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyMismatch{}})
 	Declare(Type{Kind: "enroll.key_reuse", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyReuse{}})
 	Declare(Type{Kind: "plan.step_timeout", Schema: 1, Priority: PriorityHigh, Fields: PlanStepTimeout{}})
@@ -218,4 +256,8 @@ func init() {
 	Declare(Type{Kind: "plan.restore_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanRestoreFailed{}})
 	Declare(Type{Kind: "plan.confirm_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanConfirmFailed{}})
 	Declare(Type{Kind: "plan.auto_halted", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanAutoHalted{}})
+	Declare(Type{Kind: KindEnrollHashMismatch, Schema: 1, Priority: PriorityCritical, Alert: true, Fields: EnrollHashMismatch{}})
+	Declare(Type{Kind: KindEnrollNoShow, Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollNoShow{}})
+	Declare(Type{Kind: KindControllerLocked, Schema: 1, Priority: PriorityCritical, Alert: true, Fields: ControllerLocked{}})
+	Declare(Type{Kind: KindStoreQuota, Schema: 1, Priority: PriorityHigh, Alert: true, Fields: StoreQuota{}})
 }
