@@ -123,3 +123,24 @@ func TestBenchUnknownSubcommand(t *testing.T) {
 		t.Fatalf("stderr lacks usage: %q", errOut)
 	}
 }
+
+func TestBenchLoadNeedsLab(t *testing.T) {
+	err := commands["bench"].run(context.Background(), []string{"load",
+		"-bundles", t.TempDir(), "-ctl-bench", filepath.Join(t.TempDir(), "bench.jsonl")})
+	if err == nil || !strings.Contains(err.Error(), "-lab") {
+		t.Fatalf("error = %v, want -lab", err)
+	}
+}
+
+func TestBenchLoadParsesRates(t *testing.T) {
+	got, err := parseRates("1,5,20,20")
+	if err != nil || got != [bench.NumClasses]float64{1, 5, 20, 20} {
+		t.Fatalf("rates = %v, err = %v", got, err)
+	}
+	if _, err := parseRates("1,2"); err == nil {
+		t.Fatal("two rates accepted")
+	}
+	if _, err := parseRates("a,b,c,d"); err == nil {
+		t.Fatal("non-numeric rates accepted")
+	}
+}

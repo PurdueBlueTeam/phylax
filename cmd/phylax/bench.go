@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/bench"
+	"github.com/PurdueBlueTeam/phylax/internal/bench/load"
 )
 
 func init() {
@@ -41,6 +44,8 @@ func runBench(ctx context.Context, args []string) error {
 		return runBenchReport(args[1:])
 	case "mark":
 		return runBenchMark(args[1:])
+	case "load":
+		return runBenchLoad(ctx, args[1:])
 	}
 	fmt.Fprint(os.Stderr, benchUsage)
 	return fmt.Errorf("unknown bench subcommand %q", args[0])
@@ -182,4 +187,72 @@ func parseRFC3339(name, v string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%s: %w", name, err)
 	}
 	return t.UTC(), nil
+}
+
+func runBenchLoad(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("bench load", flag.ContinueOnError)
+	lab := fs.Bool("lab", false, "confirm this is a lab controller (required)")
+	bundles := fs.String("bundles", "", "bundle directory from the lab manifest")
+	prefix := fs.String("prefix", "bench-", "bundle file prefix")
+	n := fs.Int("n", 20, "number of synthetic agents")
+	ratesArg := fs.String("rates", "1,5,20,20", "events/s per class: critical,high,normal,bulk")
+	size := fs.Int("size", 200, "payload bytes per event")
+	duration := fs.Duration("duration", 5*time.Minute, "total run, including the partition")
+	partitionAt := fs.Duration("partition-at", time.Minute, "partition start, from load start")
+	partitionFor := fs.Duration("partition-for", time.Minute, "partition length")
+	ctlBench := fs.String("ctl-bench", "", "the controller's bench.jsonl")
+	ctlInterval := fs.Duration("ctl-interval", 10*time.Second, "the controller's bench_interval")
+	out := fs.String("out", "bench-load", "output directory: agent state and load.jsonl marks")
+	spoolMB := fs.Int64("spool-mb", 200, "agent spool cap in MB (0 = the agent default)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*lab {
+		return errors.New("bench load writes synthetic events into the target controller's store; pass -lab to confirm this is a lab controller")
+	}
+	if *bundles == "" {
+		return errors.New("bench load needs -bundles DIR")
+	}
+	if *ctlBench == "" {
+		return errors.New("bench load needs -ctl-bench FILE")
+	}
+	rates, err := parseRates(*ratesArg)
+	if err != nil {
+		return err
+	}
+	res, err := load.Run(ctx, load.Config{
+		BundleDir: *bundles, Prefix: *prefix, N: *n,
+		Rates: rates, Size: *size,
+		Duration: *duration, PartitionAt: *partitionAt, PartitionFor: *partitionFor,
+		CtlBench: *ctlBench, CtlInterval: *ctlInterval, Out: *out,
+		SpoolMax: *spoolMB << 20,
+		Criteria: defaultCriteria,
+	}, os.Stdout)
+	if err != nil {
+		return err
+	}
+	if !res.Pass {
+		return errors.New("bench load: one or more checks failed")
+	}
+	return nil
+}
+
+// parseRates parses four comma-separated events/s figures.
+func parseRates(s string) ([bench.NumClasses]float64, error) {
+	var out [bench.NumClasses]float64
+	parts := strings.Split(s, ",")
+	if len(parts) != bench.NumClasses {
+		return out, fmt.Errorf("rates %q: need %d comma-separated numbers", s, bench.NumClasses)
+	}
+	for i, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return out, fmt.Errorf("rates %q: %w", s, err)
+		}
+		if v < 0 {
+			return out, fmt.Errorf("rates %q: negative rate", s)
+		}
+		out[i] = v
+	}
+	return out, nil
 }
