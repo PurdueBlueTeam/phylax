@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/PurdueBlueTeam/phylax/internal/module/conformance"
 )
 
 const labelsHostsYAML = `hosts:
@@ -80,17 +78,5 @@ func TestLoadModuleTemplateForPlainFile(t *testing.T) {
 	c := labelsController(t)
 	if _, err := LoadModuleTemplateFor(root, "demo", "ok", c.hostsMatching); err != nil {
 		t.Fatalf("a plain file must not need a resolver: %v", err)
-	}
-}
-
-func TestCoreImportsHasPlans(t *testing.T) {
-	found := false
-	for _, p := range conformance.CoreImports {
-		if p == "github.com/PurdueBlueTeam/phylax/plans" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("plans package missing from CoreImports")
 	}
 }

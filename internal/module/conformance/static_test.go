@@ -274,6 +274,14 @@ func TestLibrariesStateless(t *testing.T) {
 	}
 }
 
+// TestCoreImportsHasPlans keeps the root plans package (Host plan templates)
+// importable by a module. It lives here because the list does.
+func TestCoreImportsHasPlans(t *testing.T) {
+	if !contains(CoreImports, "github.com/PurdueBlueTeam/phylax/plans") {
+		t.Fatal("plans package missing from CoreImports")
+	}
+}
+
 func TestImportCheckCatchesSibling(t *testing.T) {
 	if err := checkFileImports("depot", "testdata/sibling/a.go"); err == nil || !strings.Contains(err.Error(), "internal/integrity") {
 		t.Fatalf("a module importing a sibling module must fail the import check: %v", err)
