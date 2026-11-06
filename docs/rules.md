@@ -15,7 +15,6 @@ Implementation: `internal/detect`. Corpus: `rules/` (active) and `rules/pending/
 id: D6f.immutable-flag            # required; unique
 title: ...                        # required
 description: ...                  # optional
-mode: act                         # act (default; may trigger tier-0/1 responses) | alert; Options.AlertOnly forces alert
 scope: agent                      # agent (default) | controller (needs events from several agents)
 severity: medium                  # info | low | medium | high | critical
 tier: 1                           # 0 automatic | 1 one-click | 2 manual (response tier of the recipe)

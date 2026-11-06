@@ -113,9 +113,9 @@ func (m Manifest) validateEmit(kind string) error {
 
 // Common is the generic part of every module's config block.
 type Common struct {
-	Enabled    bool     `json:"enabled" yaml:"enabled"`
-	ActEnabled bool     `json:"act_enabled" yaml:"act_enabled"`
-	Auto       []string `json:"auto,omitempty" yaml:"auto,omitempty"` // templates under plans/<module>/ that RunAuto may start
+	Enabled    bool              `json:"enabled" yaml:"enabled"`
+	ActEnabled bool              `json:"act_enabled" yaml:"act_enabled"`
+	Autonomy   map[string]string `json:"autonomy,omitempty" yaml:"autonomy,omitempty"` // action template -> propose | shadow | auto; absent means propose
 }
 
 // State is a module's health state.

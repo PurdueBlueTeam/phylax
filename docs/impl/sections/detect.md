@@ -56,7 +56,7 @@ Rule ids owned by other modules are in the catalogue table's "Owner" column; the
 ```yaml
 # manifest/modules/detect.yml
 detect:
-  act_enabled: false        # false: every rule alerts only (the global override_mode: alert). true: rules with mode: act may be acted on by `respond`
+  # detect only alerts (S1): no act_enabled, no per-rule mode; `respond` acts from its recipes
   max_keys: 4096            # per-rule bound on count and sequence state
   rate_per_sec: 5           # module emit limit (ModuleLimits)
   burst: 50
@@ -71,14 +71,13 @@ type DetectSettings struct {
 	ModuleLimits
 	Rules      []RuleFile    `json:"rules,omitempty"`      // signed rule documents for this host
 	Seeds      []ProfileSeed `json:"seeds,omitempty"`      // manifest-derived static profiles: the behavioural scorer exemption
-	ActEnabled bool          `json:"act_enabled,omitempty"`
 	MaxKeys    int           `json:"max_keys,omitempty"`
 	Lists      []ListFile    `json:"lists,omitempty"`      // NEW: rules/lists.yml plus manifest-derived lists
 	Exceptions []Exception   `json:"exceptions,omitempty"` // NEW: suppression records from overrides, keyed by rule id
 }
 ```
 
-`act_enabled` is the code's form of the core `override_mode`: `false` forces `mode: alert` on every alert (`detect.Options.AlertOnly`). The code is kept as is. Safe mode (core) suspends `respond` separately.
+`detect` only alerts (S1): a rule has no `mode`, the engine has no `AlertOnly`, and the module does not read `act_enabled`. Safe mode (core) suspends `respond` separately.
 
 **5. Events**
 
@@ -88,7 +87,7 @@ Emitted:
 
 | Kind | Schema | Priority | Key fields |
 | --- | --- | --- | --- |
-| `detect.alert` | 1 | critical | `rule`, `title`, `severity` (info..critical), `tier` (0, 1, 2), `mode` (`act` or `alert`), `message`, `attack` (ATT&CK v19 ids), `collect` (collector names), `entities` (fields copied from the matching event: path, exe, account, source, ...), `evidence` (up to the last three matching events, each with kind, time, fields), `source` (upstream attribution for ported rules) |
+| `detect.alert` | 1 | critical | `rule`, `title`, `severity` (info..critical), `tier` (0, 1, 2), `message`, `attack` (ATT&CK v19 ids), `collect` (collector names), `entities` (fields copied from the matching event: path, exe, account, source, ...), `evidence` (up to the last three matching events, each with kind, time, fields), `source` (upstream attribution for ported rules) |
 | `detect.suppressed` | 1 | normal | `rule`, `count`, `window`, `by` (one summary per window when a rule's `rate:` cap is exceeded; never silence) |
 
 `detect.alert` events are never fed back into the engine (the module drops any event whose kind starts with `detect.`).
@@ -118,7 +117,7 @@ Emitted:
 
 The controller sends `freeze_capture` for controller-scope rules; that is the fix for Known bug 7. Collectors are bounded in time and size, and a failed collector is recorded on the alert, never retried in a loop.
 
-*Hand-ported third-party logic.* Third-party rules are ported by hand, never imported. A ported rule carries `source:` with the upstream id, path, commit, author and licence; it reaches the alert, the UI and the IR drafter, and a generated `THIRD_PARTY_RULES.md` lists them. Licence policy [DR §6]: Sigma (Detection Rule License 1.1, attribution required), Splunk security_content, Falco, osquery packs, sysmon-modular and Atomic Red Team may be ported with attribution; Elastic (ELv2) and Wazuh (GPL-2.0) logic is re-implemented from the idea and the upstream id is cited in `source:`; the UIUC and Wayne State files are not used. Same CI as any rule: an inline test per rule, ATT&CK ids, tier and mode. Why not a native Sigma evaluator, kept as rationale: 10,377 match values cost about 46 MB of heap and 14.5 ms per event unindexed against an 80 MB, 3% agent budget, and Sigma is 77% Windows and 7% Linux, mostly `status: test` [DR §4].
+*Hand-ported third-party logic.* Third-party rules are ported by hand, never imported. A ported rule carries `source:` with the upstream id, path, commit, author and licence; it reaches the alert, the UI and the IR drafter, and a generated `THIRD_PARTY_RULES.md` lists them. Licence policy [DR §6]: Sigma (Detection Rule License 1.1, attribution required), Splunk security_content, Falco, osquery packs, sysmon-modular and Atomic Red Team may be ported with attribution; Elastic (ELv2) and Wazuh (GPL-2.0) logic is re-implemented from the idea and the upstream id is cited in `source:`; the UIUC and Wayne State files are not used. Same CI as any rule: an inline test per rule, ATT&CK ids and tier. Why not a native Sigma evaluator, kept as rationale: 10,377 match values cost about 46 MB of heap and 14.5 ms per event unindexed against an 80 MB, 3% agent budget, and Sigma is 77% Windows and 7% Linux, mostly `status: test` [DR §4].
 
 *The detection catalogue.* Ids continue v2's D1 to D17 and the coverage spec's D18 onward [COV §4]. The 81 proposed rules P01 to P81 [PR] are the backlog, each a tested file under `rules/` when its producer exists (readiness classes: A shipped event types, A* needs the exec feed, B needs an engine feature, C needs a producer). The mapping from a proposed rule to its id is in the rule id (`D18.default-cred-logon` is P01). Appendix I of the design groups the backlog.
 
@@ -180,19 +179,19 @@ Actions: none. Content shipped (all under `rules/`, loaded only when `detect` is
 
 **8. UI**
 
-The shell's Alerts and incidents page lists `detect.alert` rows with evidence, one-click proposals (supplied by `respond`'s recipes) and the pivot. The Rules page (a Settings sub-page registered by this module) lists loaded rules by file, their mode, their tests, exceptions with reason, owner, added date and expiry, and expired exceptions highlighted. Silencing an alert in the Alerts page writes an exception to `overrides.yml`; this module only reads it. Overview tile: alert counts by severity and the number of rules in `alert` mode versus `act` mode. Host-grid column: none.
+The shell's Alerts and incidents page lists `detect.alert` rows with evidence, one-click proposals (supplied by `respond`'s recipes) and the pivot. The Rules page (a Settings sub-page registered by this module) lists loaded rules by file, the `respond` recipe and autonomy enabled for them, their tests, exceptions with reason, owner, added date and expiry, and expired exceptions highlighted. Silencing an alert in the Alerts page writes an exception to `overrides.yml`; this module only reads it. Overview tile: alert counts by severity and the number of rules with an enabled recipe. Host-grid column: none.
 
 **9. Health**
 
-States: `ok`; `degraded` when the signed rule set failed to load (the previous set keeps running) or when profiles were rebuilt from empty after a restore; `over_budget` per the contract. Gaps reported: a rule whose producer is missing on this host (for example the `inventory` rules on a host without that module), reported by rule count and by the first ten rule ids; the evidence collectors not yet built; `lists:` or `exceptions:` entries that failed to parse. Detail carries rules loaded, rules in alert mode, `count` and `sequence` state sizes against `max_keys`, and profile keys. `degraded` means some detection is not running on this host; the Platform page shows which.
+States: `ok`; `degraded` when the signed rule set failed to load (the previous set keeps running) or when profiles were rebuilt from empty after a restore; `over_budget` per the contract. Gaps reported: a rule whose producer is missing on this host (for example the `inventory` rules on a host without that module), reported by rule count and by the first ten rule ids; the evidence collectors not yet built; `lists:` or `exceptions:` entries that failed to parse. Detail carries rules loaded, rules with an enabled recipe, `count` and `sequence` state sizes against `max_keys`, and profile keys. `degraded` means some detection is not running on this host; the Platform page shows which.
 
 **10. Scoring safety**
 
 - Detection never touches the scored path. The module reads events and emits alerts; it holds no action.
-- The risks are false positives that cause a response and rules that read like scorer behaviour. Both are handled by the controls above, and by the rule that `mode: act` is honoured only if `act_enabled` is true and `respond` accepts it (see `respond` for the guards).
+- The risks are false positives that cause a response and rules that read like scorer behaviour. Both are handled by the controls above, and by the rule that an action runs only through a `respond` recipe tied to the rule id and enabled for the host, with the template's `autonomy` and the attempt ledger (see `respond`).
 - Brute-force and fan-out thresholds never count the scorer's `BadAttempts`; scored accounts are excluded from fan-out by profile.
 - Every rule with `tier: 0` is on unscored state by construction: Windows registry, task and WMI persistence, Defender settings and audit settings. D17c's tier-0 restart is the only tier-0 rule that touches a scored unit, and `respond` runs it under the circuit breaker.
-- Alert-only stage: the first lab and Invitational runs use `act_enabled: false`. A rule that fires more than five times an hour on scorer and orange traffic alone is fixed or given an exception before `act_enabled` is turned on for its host (core success metric).
+- Alert-only start: every rule starts without a recipe enabled. A rule that fires more than five times an hour on scorer and orange traffic alone is fixed or given an exception before its recipe is enabled for a host (core success metric).
 
 **11. Tests**
 
@@ -206,7 +205,7 @@ States: `ok`; `degraded` when the signed rule set failed to load (the previous s
 
 - `shortcut: lists, exceptions and rate are not in the loader yet, so manifest allowlists use seeded profiles and suppression needs a rule edit; build them before the first lab run that exercises suppression.`
 - `shortcut: controller-scope rules are parsed but not evaluated; D18b, D13e and the pass-the-hash pack are inert until the controller evaluator exists.`
-- `shortcut: evidence collectors are names only; upgrade by building the host and controller collectors above before act mode is enabled anywhere.`
+- `shortcut: evidence collectors are names only; upgrade by building the host and controller collectors above before any recipe is enabled for auto.`
 - `shortcut: the Windows firewall, Sysmon and 1644 diagnostic-logging prerequisites for some rules are not verified on a real host; upgrade at the first Windows lab run.`
 - Open: how a controller-scope rule reads the traffic label of a source. The pass-the-hash pack needs a `source_label` field from `traceback`. Recommendation: the controller enriches each event it evaluates with the latest label for its source address from the `traceback` label events, by store query, so no module imports another.
 - Open: whether hand-ported rules live in a `rules/ported/` directory or beside the rules they resemble. Recommendation: `rules/ported/`, so `THIRD_PARTY_RULES.md` generation is one directory walk.

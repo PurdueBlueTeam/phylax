@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
-	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
 
 func busyPlan(id string, n int) plan.Plan {
@@ -178,7 +176,7 @@ func TestBusyOnAutoPlanDoesNotRollBack(t *testing.T) {
 	if d.State != PlanSucceeded || d.Nodes["a"].State != plan.StateVerified {
 		t.Fatalf("plan %s node %+v", d.State, d.Nodes["a"])
 	}
-	if _, err := x.c.st.MetaGet(ctx, "auto_halted/ctltest/t1/h1"); !errors.Is(err, store.ErrNoMeta) {
-		t.Fatalf("a busy answer opened the auto breaker: %v", err)
+	if halted, err := x.c.autoHalted(ctx, "h1", "/tmp/phylax-busy-auto", "t1"); halted || err != nil {
+		t.Fatalf("a busy answer opened the auto ledger: %v %v", halted, err)
 	}
 }

@@ -20,7 +20,6 @@ type ruleDoc struct {
 	ID           string            `yaml:"id"`
 	Title        string            `yaml:"title"`
 	Description  string            `yaml:"description"`
-	Mode         string            `yaml:"mode"`
 	Scope        string            `yaml:"scope"`
 	When         *whenDoc          `yaml:"when"`
 	ExemptTagged bool              `yaml:"exempt_tagged"`
@@ -88,7 +87,6 @@ type testEvent struct {
 // Rule is a compiled rule.
 type Rule struct {
 	ID, Title, Description string
-	Mode                   string // act or alert
 	Scope                  string // agent or controller
 	Severity               string
 	Tier                   int
@@ -217,12 +215,6 @@ func (env *compileEnv) compileRule(d *ruleDoc, file string) (*Rule, error) {
 	}
 	if d.Title == "" {
 		return nil, fmt.Errorf("%s: title is required", where)
-	}
-	if r.Mode = d.Mode; r.Mode == "" {
-		r.Mode = "act"
-	}
-	if r.Mode != "act" && r.Mode != "alert" {
-		return nil, fmt.Errorf("%s: mode must be act or alert", where)
 	}
 	if r.Scope = d.Scope; r.Scope == "" {
 		r.Scope = "agent"

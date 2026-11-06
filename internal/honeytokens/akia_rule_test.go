@@ -27,7 +27,7 @@ func TestDerivedEventMatchesRuleD15g(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyID := hp.Tokens[0].User
-	eng := detect.NewEngine(rs, detect.Options{AlertOnly: true})
+	eng := detect.NewEngine(rs, detect.Options{})
 	for p, vals := range reg.Seeds() {
 		if len(vals) > 0 {
 			if err := eng.Seed(p, nil, vals...); err != nil {

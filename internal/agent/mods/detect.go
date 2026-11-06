@@ -48,12 +48,7 @@ type detectModule struct {
 func (*detectModule) Name() string { return "detect" }
 
 func (m *detectModule) Start(ctx context.Context, emit agent.Emit) error {
-	eng := detect.NewEngine(m.rs, detect.Options{
-		// Tier-0 responses stay disabled until a later task: every rule is
-		// forced to alert unless the signed config explicitly enables acting.
-		AlertOnly: !m.s.Common.ActEnabled,
-		MaxKeys:   m.s.MaxKeys,
-	})
+	eng := detect.NewEngine(m.rs, detect.Options{MaxKeys: m.s.MaxKeys})
 	if st, ok := m.env.Kept(keptProfiles).(map[string]map[string]detect.KeyState); ok {
 		eng.ImportProfiles(st)
 	}
@@ -94,7 +89,7 @@ func AlertEvent(a detect.Alert) event.Event {
 		ents[k] = v
 	}
 	f := map[string]any{
-		"rule": a.RuleID, "title": a.Title, "severity": a.Severity, "tier": a.Tier, "mode": a.Mode,
+		"rule": a.RuleID, "title": a.Title, "severity": a.Severity, "tier": a.Tier,
 		"message": a.Message, "attack": strs(a.Attack), "collect": strs(a.Collect), "entities": ents,
 	}
 	if a.IRTemplate != "" {

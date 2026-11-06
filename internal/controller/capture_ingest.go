@@ -101,8 +101,7 @@ func (s *captureState) engine() *detect.Engine {
 		return nil
 	}
 	rs.Rules = rules
-	// AlertOnly: the controller never acts on these; the operator decides.
-	eng := detect.NewEngine(rs, detect.Options{AlertOnly: true, Clock: c.now})
+	eng := detect.NewEngine(rs, detect.Options{Clock: c.now})
 	srcs := ManifestScorerSources(in.Manifest)
 	for a := range s.learned {
 		srcs = append(srcs, a)

@@ -26,7 +26,7 @@ func TestSchemaOfStruct(t *testing.T) {
 	var s map[string]any
 	_ = json.Unmarshal(b, &s)
 	props := s["properties"].(map[string]any)
-	for _, k := range []string{"enabled", "act_enabled", "auto", "level", "hosts", "inner", "map", "window"} {
+	for _, k := range []string{"enabled", "act_enabled", "autonomy", "level", "hosts", "inner", "map", "window"} {
 		if _, ok := props[k]; !ok {
 			t.Errorf("missing %s", k)
 		}

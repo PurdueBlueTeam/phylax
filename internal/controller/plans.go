@@ -1251,7 +1251,6 @@ func (rt *planRT) maybeFinishLocked() {
 	switch {
 	case rt.draining && !rt.rbFailed:
 		rt.state = PlanRolledBack
-		rt.noteAutoRollbackLocked()
 	case rt.failed || rt.draining:
 		rt.state = PlanFailed
 	default:
@@ -1534,18 +1533,6 @@ func (c *Controller) inflightSteps(host string) int {
 		}
 	}
 	return n
-}
-
-// noteAutoRollbackLocked feeds the auto circuit breaker for every host of an
-// auto plan that rolled itself back.
-func (rt *planRT) noteAutoRollbackLocked() {
-	if rt.p.Class != plan.ClassAuto || rt.p.Module == "" || rt.p.Template == "" {
-		return
-	}
-	now := rt.c.now()
-	for _, h := range rt.p.Hosts() {
-		rt.c.noteAutoRollback(rt.p.Module, rt.p.Template, h, now)
-	}
 }
 
 // ---- persistence ----

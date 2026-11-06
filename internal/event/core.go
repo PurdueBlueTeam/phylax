@@ -160,14 +160,18 @@ const (
 // PlanFailed is the one failure kind of a plan node or an automatic action
 // (design: Event kinds). Reason says which failure it was.
 type PlanFailed struct {
-	Reason   string `json:"reason"`
-	Host     string `json:"host"`
-	Detail   string `json:"detail,omitempty"`
-	Plan     string `json:"plan,omitempty"`
-	Node     string `json:"node,omitempty"`
-	Module   string `json:"module,omitempty"`
-	Template string `json:"template,omitempty"`
-	Count    int    `json:"count,omitempty"`
+	Reason    string `json:"reason"`
+	Host      string `json:"host"`
+	Detail    string `json:"detail,omitempty"`
+	Plan      string `json:"plan,omitempty"`
+	Node      string `json:"node,omitempty"`
+	Module    string `json:"module,omitempty"`
+	Template  string `json:"template,omitempty"`
+	Object    string `json:"object,omitempty"`     // attempt ledger: what the action touches
+	Kind      string `json:"kind,omitempty"`       // attempt ledger: the template or action
+	WindowSec int    `json:"window_sec,omitempty"` // attempt ledger: the counting window
+	Trigger   string `json:"trigger,omitempty"`    // attempt ledger: repeat | red_check
+	Count     int    `json:"count,omitempty"`
 }
 
 // EnrollAlert is the one enrollment-alert kind (design: Event kinds). Reason

@@ -1,7 +1,7 @@
 package manifest
 
 import (
-	"slices"
+	"maps"
 	"testing"
 	"testing/fstest"
 )
@@ -25,14 +25,14 @@ hosts:
 
 func TestLoadModuleBlocks(t *testing.T) {
 	fsys := minimalManifestFS()
-	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nauto: [harden]\nlevel: 3\n")}
+	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nautonomy: {harden: auto, restore: shadow}\nlevel: 3\n")}
 	fsys["modules/other.yml"] = &fstest.MapFile{Data: []byte("level: 1\n")}
 	m, err := Load(fsys, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := m.Modules["demo"]
-	if b.Enabled == nil || *b.Enabled || !b.ActEnabled || !slices.Equal(b.Auto, []string{"harden"}) {
+	if b.Enabled == nil || *b.Enabled || !b.ActEnabled || !maps.Equal(b.Autonomy, map[string]string{"harden": "auto", "restore": "shadow"}) {
 		t.Fatalf("block %+v", b)
 	}
 	if m.Modules["other"].Enabled != nil {
@@ -41,10 +41,10 @@ func TestLoadModuleBlocks(t *testing.T) {
 	var cfg struct {
 		// module.Common's fields; spelled out because internal/module imports
 		// this package (deviation 17), so the test cannot import it back.
-		Enabled    bool     `yaml:"enabled"`
-		ActEnabled bool     `yaml:"act_enabled"`
-		Auto       []string `yaml:"auto"`
-		Level      int      `yaml:"level"`
+		Enabled    bool              `yaml:"enabled"`
+		ActEnabled bool              `yaml:"act_enabled"`
+		Autonomy   map[string]string `yaml:"autonomy"`
+		Level      int               `yaml:"level"`
 	}
 	if err := b.Decode(&cfg); err != nil || cfg.Level != 3 || !cfg.ActEnabled {
 		t.Fatalf("decode %+v %v", cfg, err)

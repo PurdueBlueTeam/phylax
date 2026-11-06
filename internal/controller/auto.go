@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +35,16 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 	if !ok {
 		return fail("module block " + mod + " is missing")
 	}
+	autonomy := block.Autonomy[template]
+	if autonomy == "" {
+		autonomy = "propose"
+	}
+	if autonomy != "propose" && autonomy != "shadow" && autonomy != "auto" {
+		return fail("template " + template + " has autonomy " + autonomy)
+	}
+	if autonomy == "propose" {
+		return fail("template " + template + " is propose")
+	}
 	p, err := c.moduleTemplate(mod, template, params)
 	if err != nil {
 		return fail("template: " + err.Error())
@@ -43,16 +54,6 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 		if !man.ActEnabled(h, mod) {
 			return fail("act_enabled is false on " + h)
 		}
-	}
-	allowed := false
-	for _, t := range block.Auto {
-		if t == template {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return fail("template " + template + " is not in the module's auto list")
 	}
 	now := c.now()
 	safe := map[string]bool{}
@@ -84,22 +85,46 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 			return fail("probe cannot run: node " + n.ID + " touches a scored service")
 		}
 	}
-	for _, h := range hosts {
-		halted, err := c.autoHalted(ctx, mod, template, h)
-		if err != nil {
-			return "", fmt.Errorf("controller: auto breaker: %w", err)
-		}
-		if halted {
-			return fail("template halted on " + h)
-		}
+	object := params["object"]
+	if object == "" {
+		object = autoObject(p)
 	}
 	p.OnFailure = plan.RollbackPlan
+	p.Module = mod
+	p.Template = template
+	if autonomy == "shadow" {
+		p.Approver = "shadow:" + mod + "/" + template
+		if t := params[plan.TriggerParam]; t != "" {
+			p.Approver += " trigger " + t
+		}
+		p.ID = PlanIDFor(p, template, "", now)
+		if err := c.CreatePlan(ctx, p, p.Approver); err != nil {
+			return "", err
+		}
+		dr, err := c.DryRun(ctx, p.ID)
+		if err != nil {
+			return "", err
+		}
+		_ = c.st.AppendAudit(ctx, store.AuditRow{Time: now, Actor: p.Approver, Action: "auto_shadow",
+			Detail: fmt.Sprintf("%s/%s on %s: %s dry run, approvable=%t", mod, template, strings.Join(hosts, ","), object, dr.Approvable)})
+		return p.ID, nil
+	}
+	for _, h := range hosts {
+		allowed, opened, err := c.noteAutoAttempt(ctx, h, object, template, now)
+		if err != nil {
+			return "", fmt.Errorf("controller: auto ledger: %w", err)
+		}
+		if !allowed {
+			return fail("ledger halted on " + h)
+		}
+		if opened {
+			c.emitAutoHalted(ctx, h, object, template, now)
+		}
+	}
 	approver := "auto:" + mod + "/" + template
 	if t := params[plan.TriggerParam]; t != "" {
 		approver += " trigger " + t
 	}
-	p.Module = mod
-	p.Template = template
 	p.Approver = approver
 	p.ID = PlanIDFor(p, template, "", now)
 	if err := c.CreatePlan(ctx, p, approver); err != nil {
@@ -112,6 +137,26 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 		return "", err
 	}
 	return p.ID, nil
+}
+
+// autoObject names what an auto plan touches, for the attempt ledger: the
+// first action object of the plan (path, account, unit, ...), else its target.
+//
+// shortcut: one object identifies the whole template plan; upgrade if a
+// template must keep separate ledger entries for several objects.
+func autoObject(p plan.Plan) string {
+	for _, n := range p.Nodes {
+		if n.Gate {
+			continue
+		}
+		for _, k := range []string{"object", "path", "account", "user", "sid", "unit", "service", "gpo", "rule", "name", "id", "target", "host"} {
+			if v, ok := n.Params[k]; ok {
+				return fmt.Sprint(v)
+			}
+		}
+		return n.Target
+	}
+	return p.Template
 }
 
 // scoredTouch resolves the node's action and returns the manifest-scored
@@ -298,92 +343,106 @@ func (rt *planRT) failGateLocked(id, reason string) {
 	_ = rt.persistLocked(context.Background())
 }
 
-// autoBreakerWindow is how far back the breaker counts automatic rollbacks.
-const autoBreakerWindow = 10 * time.Minute
+// autoLedgerCount and autoLedgerWindow are the one fixed rule: two automatic
+// attempts of one (host, object, kind) inside ten minutes open the breaker.
+const (
+	autoLedgerCount  = 2
+	autoLedgerWindow = 10 * time.Minute
+)
 
-// autoHalted reports whether the circuit breaker has halted (module, template,
-// host). The marker survives a restart. Only a missing key means "not halted";
-// any other store error is returned so RunAuto fails closed.
-func (c *Controller) autoHalted(ctx context.Context, mod, template, host string) (bool, error) {
-	v, err := c.st.MetaGet(ctx, autoHaltedKey(mod, template, host))
+// autoLedger is the persisted attempt ledger entry for one key.
+type autoLedger struct {
+	Times []int64 `json:"times"`
+	Open  bool    `json:"open,omitempty"`
+}
+
+// noteAutoAttempt records one automatic attempt for (host, object, kind).
+// allowed is false while the breaker is open for that key; opened is true
+// exactly once, when this attempt reaches the count and opens it. Only a
+// missing key means a closed breaker; every other store error fails closed.
+func (c *Controller) noteAutoAttempt(ctx context.Context, host, object, kind string, at time.Time) (allowed, opened bool, err error) {
+	key := autoLedgerKey(host, object, kind)
+	var l autoLedger
+	raw, err := c.st.MetaGet(ctx, key)
+	if err != nil && !errors.Is(err, store.ErrNoMeta) {
+		return false, false, err
+	}
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &l); err != nil {
+			return false, false, err
+		}
+	}
+	if l.Open {
+		return false, false, nil
+	}
+	cutoff := at.Add(-autoLedgerWindow).UnixMilli()
+	kept := l.Times[:0]
+	for _, t := range l.Times {
+		if t >= cutoff && t <= at.UnixMilli() {
+			kept = append(kept, t)
+		}
+	}
+	l.Times = append(kept, at.UnixMilli())
+	if len(l.Times) >= autoLedgerCount {
+		l.Open = true
+		opened = true
+	}
+	b, err := json.Marshal(l)
+	if err != nil {
+		return false, false, err
+	}
+	if err := c.st.MetaSet(ctx, key, string(b)); err != nil {
+		return false, false, err
+	}
+	return true, opened, nil
+}
+
+// emitAutoHalted records the ledger's stop: plan.failed with reason
+// auto_halted at critical priority.
+func (c *Controller) emitAutoHalted(ctx context.Context, host, object, kind string, at time.Time) {
+	e, err := event.New(event.KindPlanFailed, event.PlanFailed{Reason: event.ReasonAutoHalted,
+		Host: host, Object: object, Kind: kind, Count: autoLedgerCount,
+		WindowSec: int(autoLedgerWindow / time.Second), Trigger: "repeat"})
+	if err != nil {
+		c.log.Error("auto ledger: build event", "err", err)
+		return
+	}
+	if _, err := c.EmitController(ctx, e); err != nil {
+		c.log.Error("auto ledger: emit plan.failed", "host", host, "object", object, "kind", kind, "err", err)
+	}
+}
+
+// autoHalted reports whether the ledger's breaker is open for a key.
+func (c *Controller) autoHalted(ctx context.Context, host, object, kind string) (bool, error) {
+	raw, err := c.st.MetaGet(ctx, autoLedgerKey(host, object, kind))
 	if errors.Is(err, store.ErrNoMeta) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return v != "", nil
+	var l autoLedger
+	if err := json.Unmarshal([]byte(raw), &l); err != nil {
+		return false, err
+	}
+	return l.Open, nil
 }
 
-// noteAutoRollback feeds the auto circuit breaker. Two automatic rollbacks of
-// the same (module, template, host) within ten minutes halt it and emit
-// plan.failed with reason auto_halted at critical priority.
-func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
-	ctx := context.Background()
-	halted, err := c.autoHalted(ctx, mod, template, host)
-	if err != nil {
-		c.log.Error("auto breaker: read halt marker", "module", mod, "template", template, "host", host, "err", err)
-		return
-	}
-	if halted {
-		return
-	}
-	key := autoRollbacksKey(mod, template, host)
-	var times []int64
-	if raw, err := c.st.MetaGet(ctx, key); err == nil && raw != "" {
-		_ = json.Unmarshal([]byte(raw), &times)
-	}
-	cutoff := at.Add(-autoBreakerWindow).UnixMilli()
-	kept := times[:0]
-	for _, t := range times {
-		if t >= cutoff && t <= at.UnixMilli() {
-			kept = append(kept, t)
-		}
-	}
-	times = append(kept, at.UnixMilli())
-	raw, _ := json.Marshal(times)
-	if err := c.st.MetaSet(ctx, key, string(raw)); err != nil {
-		c.log.Error("auto breaker: save rollback history", "module", mod, "template", template, "host", host, "err", err)
-		return
-	}
-	if len(times) < 2 {
-		return
-	}
-	if err := c.st.MetaSet(ctx, autoHaltedKey(mod, template, host), "1"); err != nil {
-		c.log.Error("auto breaker: save halt", "module", mod, "template", template, "host", host, "err", err)
-		return
-	}
-	e, err := event.New(event.KindPlanFailed, event.PlanFailed{Reason: event.ReasonAutoHalted,
-		Module: mod, Template: template, Host: host, Count: len(times)})
-	if err != nil {
-		c.log.Error("auto breaker: build event", "err", err)
-		return
-	}
-	if _, err := c.EmitController(ctx, e); err != nil {
-		c.log.Error("auto breaker: emit plan.failed", "err", err)
-	}
-}
-
-// ReenableAuto clears a halted breaker and records the operator in the audit
-// log.
-func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by string) error {
+// ReenableAuto clears the ledger's breaker for one key and records the
+// operator in the audit log.
+func (c *Controller) ReenableAuto(ctx context.Context, host, object, kind, by string) error {
 	if err := requireOperator(by); err != nil {
 		return err
 	}
-	if err := c.st.MetaDelete(ctx, autoHaltedKey(mod, template, host)); err != nil {
-		return err
-	}
-	if err := c.st.MetaDelete(ctx, autoRollbacksKey(mod, template, host)); err != nil {
+	if err := c.st.MetaDelete(ctx, autoLedgerKey(host, object, kind)); err != nil {
 		return err
 	}
 	return c.st.AppendAudit(ctx, store.AuditRow{Time: c.now(), Actor: by, Action: "auto_reenable",
-		Detail: "auto " + mod + "/" + template + " on " + host})
+		Detail: fmt.Sprintf("auto %s on %s (%s)", kind, host, object)})
 }
 
-func autoHaltedKey(mod, template, host string) string {
-	return "auto_halted/" + mod + "/" + template + "/" + host
-}
-
-func autoRollbacksKey(mod, template, host string) string {
-	return "auto_rollbacks/" + mod + "/" + template + "/" + host
+func autoLedgerKey(host, object, kind string) string {
+	return "auto_ledger/" + base64.RawURLEncoding.EncodeToString([]byte(host)) + "/" +
+		base64.RawURLEncoding.EncodeToString([]byte(object)) + "/" +
+		base64.RawURLEncoding.EncodeToString([]byte(kind))
 }

@@ -7,7 +7,6 @@ id: D1.service-spawns-shell
 title: Scored service process spawned a shell or tool outside its learned children
 severity: high
 tier: 1
-mode: act
 attack: [T1505.003, T1059]
 collect: [process_tree, content_changes, transactions_window_10m, freeze_ring]
 ir_template: web-app-compromise

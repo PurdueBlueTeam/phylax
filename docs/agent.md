@@ -81,10 +81,9 @@ config (signature re-verified) is applied before the link comes up.
 
 `Env.Subscribe` is the agent's event stream: every event a module emits (after its rate limit,
 before the spool, so shedding cannot blind a consumer) goes to bounded subscriber channels that
-drop rather than block. The `detect` module subscribes, runs `detect.Engine` (AlertOnly unless the
-signed config sets `act_enabled`, which the controller leaves off: tier-0 responses stay disabled) and
+drop rather than block. The `detect` module subscribes, runs `detect.Engine` (it only alerts, S1) and
 emits each alert as a `detect.alert` event at Critical priority (`rule`, `title`, `severity`, `tier`,
-`mode`, `message`, `attack`, `collect`, `entities`, `evidence`). It ignores `detect.*` events (no
+`message`, `attack`, `collect`, `entities`, `evidence`). It ignores `detect.*` events (no
 feedback) and hands its learned profiles to its replacement through `Env.Keep`, so a rules update does
 not forget baselines. The `integrity` module judges exec events, pinned service processes (`/proc`
 scan, Linux) and periodic sweeps against the signed ledger in `<state>/ledger.plx` whose sha256 the

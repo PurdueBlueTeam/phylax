@@ -203,9 +203,9 @@ func loadModuleBlocks(fsys fs.FS, team int) (map[string]ModuleBlock, ErrorList) 
 			continue
 		}
 		var generic struct {
-			Enabled    *bool    `yaml:"enabled"`
-			ActEnabled bool     `yaml:"act_enabled"`
-			Auto       []string `yaml:"auto"`
+			Enabled    *bool             `yaml:"enabled"`
+			ActEnabled bool              `yaml:"act_enabled"`
+			Autonomy   map[string]string `yaml:"autonomy"`
 		}
 		if err := yaml.Unmarshal(buf, &generic); err != nil {
 			errs.Addf("modules/%s: %v", name, err)
@@ -215,7 +215,7 @@ func loadModuleBlocks(fsys fs.FS, team int) (map[string]ModuleBlock, ErrorList) 
 			Raw:        buf,
 			Enabled:    generic.Enabled,
 			ActEnabled: generic.ActEnabled,
-			Auto:       generic.Auto,
+			Autonomy:   generic.Autonomy,
 		}
 	}
 	return out, errs

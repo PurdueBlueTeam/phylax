@@ -16,7 +16,7 @@ import (
 
 func autoProbeFiles() map[string]string {
 	return map[string]string{
-		"modules/ctltest.yml": "enabled: true\nact_enabled: true\nauto: [t1]\n",
+		"modules/ctltest.yml": "enabled: true\nact_enabled: true\nautonomy: {t1: auto}\n",
 	}
 }
 
@@ -64,8 +64,8 @@ func TestAutoAfterProbeRollsBack(t *testing.T) {
 	if got, _ := readFileString(file); got != "original" {
 		t.Fatalf("file content %q, want the original", got)
 	}
-	if _, err := x.c.st.MetaGet(ctx, autoRollbacksKey("ctltest", "t1", "h1")); err != nil {
-		t.Fatalf("the automatic rollback did not feed the breaker: %v", err)
+	if _, err := x.c.st.MetaGet(ctx, autoLedgerKey("h1", "/tmp/phylax-after-probe", "t1")); err != nil {
+		t.Fatalf("the automatic attempt was not recorded in the ledger: %v", err)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestAutoProbeGroupingFailsClosed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var steps atomic.Int32
-			c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+			c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {t1: auto}\n")
 			c.opt.OnStepSent = func(string, *link.Step) { steps.Add(1) }
 			p := plan.Plan{ID: "auto-probe-" + name, OnFailure: plan.RollbackPlan, Class: plan.ClassAuto,
 				Module: "ctltest", Template: "t1", Nodes: []plan.Node{{

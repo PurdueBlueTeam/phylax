@@ -16,7 +16,7 @@ type ModuleBlock struct {
 	Raw        []byte // YAML of modules/<name>.yml after template expansion
 	Enabled    *bool  // nil when the block omits enabled
 	ActEnabled bool
-	Auto       []string
+	Autonomy   map[string]string
 }
 
 // moduleFileRE is the only file name shape a module block may have.

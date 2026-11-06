@@ -1812,14 +1812,14 @@ func TestRegistrarRejectsBadRoute(t *testing.T) {
 - Consumes: built `Load`, `expandNode`, the strict decode in `load.go`.
 - Produces: `ModuleBlock`, `ModuleBlock.Decode`, `Manifest.Modules`, `Host.Modules`, `Host.Labels`, `(*Manifest).ModuleEnabled`, `ParseLabels`, `LabelExpr.Match`, `(*Manifest).HostsMatching`.
 
-Rules: `modules/` entries must be files named `^[a-z][a-z0-9_]*\.yml$` (anything else is a load error); each is template-expanded like the other files; `Enabled` is nil when the key is absent; `enabled`, `act_enabled` and `auto` are read from the YAML and the full text kept in `Raw`. `ModuleEnabled(host, module, def)` applies the same precedence as `module.Effective` inline (host entry, else the block's `Enabled`, else `def`); `manifest` must not import `internal/module`, because `module` imports `manifest` (deviation 17), and a test pins that both agree on all nine nil/true/false combinations. Label grammar: identifiers `[a-z0-9_-]+`, `!`, `&&`, `||`, parentheses; precedence `!` > `&&` > `||`; at most 256 bytes.
+Rules: `modules/` entries must be files named `^[a-z][a-z0-9_]*\.yml$` (anything else is a load error); each is template-expanded like the other files; `Enabled` is nil when the key is absent; `enabled`, `act_enabled` and `autonomy` are read from the YAML and the full text kept in `Raw`. `ModuleEnabled(host, module, def)` applies the same precedence as `module.Effective` inline (host entry, else the block's `Enabled`, else `def`); `manifest` must not import `internal/module`, because `module` imports `manifest` (deviation 17), and a test pins that both agree on all nine nil/true/false combinations. Label grammar: identifiers `[a-z0-9_-]+`, `!`, `&&`, `||`, parentheses; precedence `!` > `&&` > `||`; at most 256 bytes.
 
 - [ ] **Step 1: Remove the skips:**
 
 ```go
 func TestLoadModuleBlocks(t *testing.T) {
 	fsys := minimalManifestFS() // topology.yml + hosts.yml as load_test.go builds them, host "web1"
-	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nauto: [harden]\nlevel: 3\n")}
+	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nautonomy: {harden: auto}\nlevel: 3\n")}
 	fsys["modules/other.yml"] = &fstest.MapFile{Data: []byte("level: 1\n")}
 	m, err := Load(fsys, Options{})
 	if err != nil {
@@ -3120,18 +3120,18 @@ func TestProposalsPage(t *testing.T) {
 - Test: `internal/controller/auto_test.go`
 
 **Interfaces:**
-- Consumes: `manifest.ModuleBlock.ActEnabled`/`Auto` (Task 11), the last heartbeat per agent (`SafeMode`, receive time), `lint.Run` with `ClassAuto` (Task 21), `Propose` (Task 25), `Options.Probe`.
+- Consumes: `manifest.ModuleBlock.ActEnabled`/`Autonomy` (Task 11), the last heartbeat per agent (`SafeMode`, receive time), `lint.Run` with `ClassAuto` (Task 21), `Propose` (Task 25), `Options.Probe`.
 - Produces: `(*Controller).RunAuto(ctx, mod, template, params) (string, error)`; `Options.Probe func(ctx context.Context, service string) error`; `(*moduleHost).RunAuto`.
 
 Conditions, checked in this order; the first failure creates a proposal with `Reason` naming it and returns `module.ErrProposed`:
 1. the module's effective act switch on every target host is true: `Manifest.ActEnabled(host, mod)` (Task 11b: the block's `act_enabled` or an `overrides.yml` `act` entry matching the host);
-2. `template` is in the block's `auto` list;
+2. the template's `autonomy` is `shadow` or `auto` (absent or `propose` creates the proposal);
 3. the template loads and expands (`trigger` is not substituted);
 4. every target host has a heartbeat received in the last 15 s with `SafeMode == false` (no heartbeat = unknown = fail: Review Focus 4);
 5. `lint.Run(..., Class: ClassAuto)` has no finding (rules `SS010` and `SS011`);
 6. every node with `plan.ScoredTouch(...)` non-empty (its `Touches` hits a manifest-scored service on its target host; the manifest `health:` block decides until discovery has learned the live set, Task 27b) has a probe: `Options.Probe != nil` (else reason `probe cannot run`);
-7. the breaker for (module, template, host) is closed (Task 28; until then always closed).
-On success: `Class = ClassAuto`, `OnFailure = rollback_plan`, `Approver = "auto:" + mod + "/" + template` plus `" trigger " + params["trigger"]` when given; create, approve, apply.
+7. for `auto`, the attempt ledger allows the attempt on every target host (Task 28); a shadow run never counts.
+On success: `Class = ClassAuto`, `OnFailure = rollback_plan`, `Approver = "auto:" + mod + "/" + template` plus `" trigger " + params["trigger"]` when given; create, approve, apply. At `shadow` it creates the plan, runs the lint and the dry run, records the would-be plan and an `auto_shadow` audit row, and stops without approving or applying.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3140,7 +3140,7 @@ On success: `Class = ClassAuto`, `OnFailure = rollback_plan`, `Approver = "auto:
 // ctltest/t1.yml (file.hash on ${host}: read-only, no touches), ctltest/t2.yml (file.write of a temp path on ${host}: a path touch)
 // and ctltest/bad.yml (host.exec on ${host}); setHeartbeat(c, "h1", safeMode bool, at time.Time) writes the agent state directly
 func TestRunAutoNeedsActEnabled(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: false\nauto: [t1]\n")
+	c := newAutoController(t, "enabled: true\nact_enabled: false\nautonomy: {t1: auto}\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	_, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"})
 	if !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "act_enabled") {
@@ -3148,15 +3148,15 @@ func TestRunAutoNeedsActEnabled(t *testing.T) {
 	}
 	// want: one open proposal for ctltest with Reason containing "act_enabled"
 }
-func TestRunAutoNotOnAllowlist(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [other]\n")
+func TestRunAutoProposesByDefault(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {other: auto}\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
 		t.Fatalf("got %v", err)
 	}
 }
 func TestRunAutoUnknownSafeModeProposes(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {t1: auto}\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
 	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
 		t.Fatalf("no heartbeat: %v", err)
@@ -3171,7 +3171,7 @@ func TestRunAutoUnknownSafeModeProposes(t *testing.T) {
 	}
 }
 func TestRunAutoLintAndProbe(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t2, bad]\n")
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {t2: auto, bad: auto}\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	if _, err := c.RunAuto(ctx, "ctltest", "bad", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
 		t.Fatalf("host.exec: %v", err)
@@ -3182,7 +3182,7 @@ func TestRunAutoLintAndProbe(t *testing.T) {
 	}
 }
 func TestRunAutoStarts(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {t1: auto}\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
 	setHeartbeat(c, "h1", false, time.Now())
 	id, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1", "trigger": "h1:7"})
@@ -3439,53 +3439,29 @@ func TestPlainGateStillWaitsForClick(t *testing.T) { /* gate: approval in an aut
 
 ---
 
-### Task 28: Auto circuit breaker
+### Task 28: Attempt ledger
 
 **Files:**
 - Modify: `internal/controller/auto.go`
 - Test: `internal/controller/breaker_test.go`
 
 **Interfaces:**
-- Consumes: the rollback outcome of `ClassAuto` plans (Task 27), `store` kv (`internal/store/kv.go`), `EmitController` (Task 16), `event.PlanAutoHalted`.
-- Produces: `(*Controller).noteAutoRollback(mod, template, host string, at time.Time)` (unexported, called on every automatic rollback); `(*Controller).ReenableAuto(ctx, mod, template, host, by)`; condition 7 of `RunAuto`.
+- Consumes: the automatic attempt of `RunAuto` (Task 26), `store` kv (`internal/store/kv.go`), `EmitController` (Task 16), `event.PlanFailed`.
+- Produces: `(*Controller).noteAutoAttempt(ctx, host, object, kind string, at time.Time) (allowed, opened bool, err error)` (unexported, called once per automatic attempt); `(*Controller).ReenableAuto(ctx, host, object, kind, by string)`; condition 7 of `RunAuto`; `autoObject(plan.Plan)` for the controller-side object.
 
-Rules: two automatic rollbacks of the same (module, template, host) within 10 minutes halt it: kv key `auto_halted/<module>/<template>/<host>` set (survives restart), `plan.auto_halted` emitted at `PriorityCritical`; `RunAuto` then proposes with reason `template halted on <host>`; `ReenableAuto` deletes the key and records an audit entry with `by`.
+Rules: one entry per (host, object, kind) holds the attempt times and the breaker, persisted under `auto_ledger/...` and surviving restart. The fixed rule is two automatic attempts in a 10 minute window: the second attempt opens the breaker, the next one is refused and becomes a click proposal, and `plan.failed{reason: auto_halted, trigger: repeat}` is emitted at `PriorityCritical` with `host`, `object`, `kind`, `count` and `window_sec`. Shadow runs never count. A store error fails the call closed. `ReenableAuto` deletes the entry and records an `auto_reenable` audit row with `by`.
 
 - [ ] **Step 1: Remove the skips:**
 
 ```go
-func TestBreakerHaltsAfterTwoRollbacks(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
-	c.opt.Probe = func(context.Context, string) error { return nil }
-	setHeartbeat(c, "h1", false, time.Now())
-	now := time.Now()
-	c.noteAutoRollback("ctltest", "t1", "h1", now)
-	c.noteAutoRollback("ctltest", "t1", "h1", now.Add(9*time.Minute))
-	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "halted") {
-		t.Fatalf("got %v", err)
-	}
-	e, err := c.st.Latest(ctx, "controller", "plan.auto_halted")
-	if err != nil || e.Priority != event.PriorityCritical {
-		t.Fatalf("%+v %v", e, err)
-	}
-	_ = c.ReenableAuto(ctx, "ctltest", "t1", "h1", "driver")
-	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); err != nil {
-		t.Fatalf("after re-enable: %v", err)
-	}
-}
-func TestBreakerWindow(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
-	now := time.Now()
-	c.noteAutoRollback("ctltest", "t1", "h1", now)
-	c.noteAutoRollback("ctltest", "t1", "h1", now.Add(11*time.Minute))
-	// want: not halted (kv key absent)
-}
+func TestLedgerHaltsAfterTwoAttempts(t *testing.T) { /* two RunAuto calls for one host/object/kind: the second opens the ledger and emits plan.failed auto_halted; the third proposes; ReenableAuto clears it and writes the audit row; the next RunAuto runs */ }
+func TestLedgerWindow(t *testing.T) { /* attempts 11 minutes apart do not open the breaker */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run Breaker -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "controller: auto circuit breaker per module, template and host"`
+- [ ] **Step 5: Commit.** `git commit -am "controller: per-template autonomy and one attempt ledger"`
 
 ---
 

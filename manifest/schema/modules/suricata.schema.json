@@ -5,11 +5,11 @@
     "act_enabled": {
       "type": "boolean"
     },
-    "auto": {
-      "items": {
+    "autonomy": {
+      "additionalProperties": {
         "type": "string"
       },
-      "type": "array"
+      "type": "object"
     },
     "enabled": {
       "type": "boolean"

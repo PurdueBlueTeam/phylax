@@ -14,7 +14,6 @@ type Alert struct {
 	Title      string
 	Severity   string
 	Tier       int
-	Mode       string // act or alert (forced to alert by Options.AlertOnly)
 	Attack     []string
 	Collect    []string
 	IRTemplate string
@@ -30,8 +29,6 @@ type Alert struct {
 type Options struct {
 	// Clock supplies the time for events that carry none. Default time.Now.
 	Clock func() time.Time
-	// AlertOnly forces every alert to mode alert (global override_mode).
-	AlertOnly bool
 	// MaxKeys bounds per-rule window and sequence state (default 4096).
 	MaxKeys int
 }
@@ -169,12 +166,9 @@ func (e *Engine) Process(ev event.Event) []Alert {
 }
 
 func (e *Engine) alert(r *Rule, c *evalCtx, evid []event.Event) Alert {
-	a := Alert{RuleID: r.ID, Title: r.Title, Severity: r.Severity, Tier: r.Tier, Mode: r.Mode,
+	a := Alert{RuleID: r.ID, Title: r.Title, Severity: r.Severity, Tier: r.Tier,
 		Attack: r.Attack, Collect: r.Collect, IRTemplate: r.IRTemplate, Agent: c.ev.Agent,
 		Time: c.ev.Time, Evidence: evid, Source: r.Source}
-	if e.opts.AlertOnly {
-		a.Mode = "alert"
-	}
 	if len(r.entities) > 0 {
 		a.Entities = map[string]string{}
 		for _, f := range r.entities {

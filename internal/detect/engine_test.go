@@ -131,7 +131,7 @@ func TestLoadErrors(t *testing.T) {
 		"count and sequence":        ruleYAML("R", "  all:\n    - x: a\n  count: {window: 1m, gte: 3}\n  sequence: {by: [p], within: 1m, then: {event: k, all: [{y: b}]}}\n"),
 		"sequence no by":            ruleYAML("R", "  all:\n    - x: a\n  sequence: {within: 1m, then: {event: k, all: [{y: b}]}}\n"),
 		"sequence empty then":       ruleYAML("R", "  all:\n    - x: a\n  sequence: {by: [p], within: 1m, then: {event: k, all: []}}\n"),
-		"bad mode":                  strings.Replace(ruleYAML("R", "  all:\n    - x: a\n"), "title: t", "title: t\nmode: yolo", 1),
+		"removed mode key":          strings.Replace(ruleYAML("R", "  all:\n    - x: a\n"), "title: t", "title: t\nmode: act", 1),
 		"bad field name":            ruleYAML("R", "  all:\n    - 'a b': a\n"),
 		"event list null item":      "id: R\n" + hdr + "when:\n  event:\n    - k\n    -\n  all:\n    - x: a\n",
 		"profile field mismatch":    "profiles:\n  - {name: p, event: k, value: a, learn: 1m}\n---\n" + ruleYAML("R", "  all:\n    - b: {in_profile: p}\n"),
@@ -201,21 +201,17 @@ func TestTagExemption(t *testing.T) {
 }
 
 func TestAlertContents(t *testing.T) {
-	y := ruleYAML("R", "  all:\n    - x: a\n") + "entities: [x, y]\nmessage: 'x={x} y={y} p={p.q}'\ncollect: [process_tree]\nir_template: ir1\nmode: act\n"
+	y := ruleYAML("R", "  all:\n    - x: a\n") + "entities: [x, y]\nmessage: 'x={x} y={y} p={p.q}'\ncollect: [process_tree]\nir_template: ir1\n"
 	e := NewEngine(mustLoad(t, y), Options{})
 	a := e.Process(ev(0, map[string]any{"x": "a", "y": 7, "p": map[string]any{"q": "z"}}))
 	if len(a) != 1 {
 		t.Fatal("no alert")
 	}
 	g := a[0]
-	if g.RuleID != "R" || g.Severity != "high" || g.Tier != 1 || g.Mode != "act" || g.Agent != "a1" ||
+	if g.RuleID != "R" || g.Severity != "high" || g.Tier != 1 || g.Agent != "a1" ||
 		g.Entities["x"] != "a" || g.Entities["y"] != "7" || g.Message != "x=a y=7 p=z" ||
 		len(g.Evidence) != 1 || g.IRTemplate != "ir1" || g.Collect[0] != "process_tree" || g.Attack[0] != "T1059" {
 		t.Fatalf("alert = %+v", g)
-	}
-	e = NewEngine(mustLoad(t, y), Options{AlertOnly: true})
-	if a := e.Process(ev(0, map[string]any{"x": "a"})); a[0].Mode != "alert" {
-		t.Fatal("AlertOnly did not force alert mode")
 	}
 }
 

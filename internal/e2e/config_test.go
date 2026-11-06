@@ -216,7 +216,7 @@ func TestAgentConfigEndToEnd(t *testing.T) {
 	ch.fire()
 	eventually(t, "alert in the controller store", 10*time.Second, func() bool { return len(alertsIn(t, h, host)) == 1 })
 	al := alertsIn(t, h, host)[0]
-	if al.Priority != event.PriorityCritical || al.Fields["rule"] != "Z9.e2e-synthetic" || al.Fields["mode"] != "alert" ||
+	if al.Priority != event.PriorityCritical || al.Fields["rule"] != "Z9.e2e-synthetic" ||
 		!strings.Contains(al.Fields["message"].(string), "evil on /srv/www/shell.php") {
 		t.Fatalf("alert: %+v", al)
 	}
