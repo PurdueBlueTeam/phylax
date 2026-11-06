@@ -88,6 +88,46 @@ func TestRunAutoRefusesManifestSafeMode(t *testing.T) {
 	}
 }
 
+func TestRunAutoStartIsAtomicPerTemplate(t *testing.T) {
+	plans := map[string]string{
+		"ctltest/t1.yml": "id: t1\nmodule: ctltest\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hostname}}\n  - {id: g, gate: auto, needs: [a], until: {after: 60m}}\n",
+	}
+	x := newPlanCtl(t, autoProbeFiles(), plans, Options{GatePoll: 10 * time.Millisecond})
+	stepClock(x.c)
+	_, root := newPlanAgent(t, x, "h1")
+	writeAgentFile(t, root, "/etc/hostname", "h1\n")
+	setHeartbeat(x.c, "h1", false, time.Now().Add(time.Hour))
+	type res struct {
+		id  string
+		err error
+	}
+	start := make(chan struct{})
+	out := make(chan res, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			id, err := x.c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"})
+			out <- res{id, err}
+		}()
+	}
+	close(start)
+	var ok, proposed int
+	for i := 0; i < 2; i++ {
+		r := <-out
+		switch {
+		case r.err == nil && r.id != "":
+			ok++
+		case errors.Is(r.err, module.ErrProposed) && strings.Contains(r.err.Error(), "already running"):
+			proposed++
+		default:
+			t.Fatalf("unexpected result %q %v", r.id, r.err)
+		}
+	}
+	if ok != 1 || proposed != 1 {
+		t.Fatalf("started %d, proposed %d; want 1 and 1", ok, proposed)
+	}
+}
+
 func TestRunAutoStarts(t *testing.T) {
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
