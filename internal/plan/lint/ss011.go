@@ -30,7 +30,7 @@ func ss011(n plan.Node, c Ctx) []Finding {
 	if err != nil {
 		return nil
 	}
-	params, err := a.Spec().Validate(n.Params)
+	params, err := a.Spec().Validate(n.ActionParams())
 	if err != nil {
 		return nil
 	}

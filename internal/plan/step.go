@@ -354,7 +354,7 @@ func (s *Signer) Issue(p *Plan, run *Run, nodeID string, o IssueOpts) (*Step, er
 	if err != nil {
 		return nil, err
 	}
-	params := n.Params
+	params := n.ActionParams()
 	if params == nil {
 		params = map[string]any{}
 	}

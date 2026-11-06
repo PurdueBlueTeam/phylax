@@ -183,7 +183,7 @@ func (c *Controller) scoredTouch(m *manifest.Manifest, n plan.Node) []string {
 	if err != nil {
 		return nil
 	}
-	p, err := a.Spec().Validate(n.Params)
+	p, err := a.Spec().Validate(n.ActionParams())
 	if err != nil {
 		return nil
 	}

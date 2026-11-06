@@ -166,7 +166,7 @@ func (x *devExec) runPhase(ctx context.Context, planID string, n plan.Node, phas
 	}
 	ctx = actions.WithTag(ctx, actions.Tag{Plan: planID, Node: n.ID})
 	env := x.env(n.Target)
-	req := actions.Request{Action: n.Action, Params: n.Params, NodeID: nodeKey(planID, n.ID), Deadman: actions.NoDeadman}
+	req := actions.Request{Action: n.Action, Params: n.ActionParams(), NodeID: nodeKey(planID, n.ID), Deadman: actions.NoDeadman}
 	fail := func(err error) localOut { return localOut{outcome: plan.OutcomeFailed, err: x.clean(err)} }
 	switch phase {
 	case plan.PhaseCheck:
@@ -190,7 +190,7 @@ func (x *devExec) runPhase(ctx context.Context, planID string, n plan.Node, phas
 		if err != nil {
 			return fail(err)
 		}
-		p, err := a.Spec().Validate(n.Params)
+		p, err := a.Spec().Validate(n.ActionParams())
 		if err == nil {
 			err = a.Verify(ctx, env, p)
 		}

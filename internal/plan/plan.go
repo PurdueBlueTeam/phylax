@@ -94,6 +94,30 @@ type Node struct {
 	Until *GateUntil `json:"until,omitempty"`
 }
 
+// reservedParams are keys in Node.Params that are node options, not action
+// parameters. txn marks a node as part of a credential transaction; W7 moves it
+// to the plan, so actions never see it.
+var reservedParams = map[string]bool{"txn": true}
+
+// ActionParams returns the node's action parameters without the node options.
+// It returns nil when the node has no action parameters, and never mutates
+// Params.
+func (n Node) ActionParams() map[string]any {
+	if len(n.Params) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(n.Params))
+	for k, v := range n.Params {
+		if !reservedParams[k] {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // GateUntil is the condition set of a gate: auto node.
 type GateUntil struct {
 	AfterSec int      `json:"after_sec,omitempty"` // seconds after the gate's last dependency finished
@@ -227,7 +251,7 @@ func (p *Plan) resolve(cat Catalog) (*resolved, error) {
 					add("node %q: declared risk %q understates action risk %q", n.ID, n.Risk, spec.Risk)
 				}
 				if spec.ValidateParams != nil {
-					if err := spec.ValidateParams(n.Params); err != nil {
+					if err := spec.ValidateParams(n.ActionParams()); err != nil {
 						add("node %q: params: %v", n.ID, err)
 					}
 				}

@@ -45,7 +45,7 @@ func ss000(n plan.Node, c Ctx) []Finding {
 	if sp.Risk != actions.RiskNone {
 		return refuse(n.Action + " has risk " + string(sp.Risk))
 	}
-	p, err := sp.Validate(n.Params)
+	p, err := sp.Validate(n.ActionParams())
 	if err != nil {
 		return refuse(n.Action + " params: " + err.Error())
 	}

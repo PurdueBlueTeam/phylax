@@ -258,7 +258,7 @@ func (c *Controller) lint(ctx context.Context, n plan.Node) string {
 	if err != nil {
 		return err.Error()
 	}
-	p, err := a.Spec().Validate(n.Params)
+	p, err := a.Spec().Validate(n.ActionParams())
 	if err != nil {
 		return err.Error()
 	}
@@ -1300,7 +1300,7 @@ func (rt *planRT) initProbesLocked() {
 			}
 			continue
 		}
-		params, err := a.Spec().Validate(n.Params)
+		params, err := a.Spec().Validate(n.ActionParams())
 		if err != nil {
 			rt.probeGroupingFailedLocked("probe grouping: node " + n.ID + ": " + err.Error())
 			if rt.p.Class == plan.ClassAuto {

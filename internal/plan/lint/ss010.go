@@ -89,7 +89,7 @@ func pinnedReadOnlyHostExec(n plan.Node, reg *actions.Registry) bool {
 	if err != nil {
 		return false
 	}
-	p, err := a.Spec().Validate(n.Params)
+	p, err := a.Spec().Validate(n.ActionParams())
 	if err != nil {
 		return false
 	}
@@ -97,20 +97,10 @@ func pinnedReadOnlyHostExec(n plan.Node, reg *actions.Registry) bool {
 	return len(argv) > 0 && PinnedReadOnlyHostExec[argv[0]]
 }
 
-// lintParams validates the node's params, allowing the future resync marker
-// (`txn: resync`) without treating it as an action parameter.
+// lintParams validates the node's action parameters. Node options such as the
+// resync marker (`txn: resync`) are not action parameters and are left out.
 func lintParams(sp actions.Spec, n plan.Node) (actions.Params, error) {
-	raw := n.Params
-	if resync(n) && raw != nil {
-		cp := make(map[string]any, len(raw))
-		for k, v := range raw {
-			if k != "txn" {
-				cp[k] = v
-			}
-		}
-		raw = cp
-	}
-	return sp.Validate(raw)
+	return sp.Validate(n.ActionParams())
 }
 
 // resync reports whether the node is a creds resync re-apply. W7 adds the
