@@ -27,6 +27,7 @@
 </nav>
 <form method="post" action="/logout" class="inline"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><span class="user">{{.User}}</span> <button type="submit">Sign out</button></form>
 </header>{{end}}
+{{if .User}}{{if .Locked}}<div class="banner locked" role="alert"><strong>LOCKED</strong> plan signing is locked since {{ts .LockedSince}}; stopped: {{join .Stopped ", "}}. <a href="/unlock">Enter the passphrase</a>.</div>{{end}}{{end}}
 <main>
 {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 {{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}

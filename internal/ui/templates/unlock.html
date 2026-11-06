@@ -1,0 +1,10 @@
+{{define "content"}}
+<h1>Unlock plan signing</h1>
+<p>The controller restarted with nobody at the console, so plan signing is locked. Stopped: {{join .Data.Stopped ", "}}.</p>
+<p>Until it is unlocked the dead-man timers of in-flight changes fire and roll them back.</p>
+<form method="post" action="/unlock" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Operator passphrase <input name="passphrase" type="password" autocomplete="current-password" required></label>
+<button type="submit">Unlock</button>
+</form>
+{{end}}

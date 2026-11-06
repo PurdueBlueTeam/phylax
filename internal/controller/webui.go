@@ -64,6 +64,7 @@ func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 	}
 	srv, err := ui.New(ui.Config{
 		Accounts: storeAccounts{c.st}, Audit: audit, Agents: c, Ops: ops,
+		Unlock: func(_ context.Context, pass string) error { return c.Unlock([]byte(pass)) },
 		// The controls that stop a flood must work with a full disk: the
 		// per-host safe-mode toggle and the operator controls documented in
 		// ui.Config (the fleet safe mode and the kill switch).

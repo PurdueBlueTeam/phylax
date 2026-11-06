@@ -92,6 +92,9 @@ type Config struct {
 	Dashboard   DashboardSource
 	Ops         Ops // operator pages (dashboard data, alerts, plans, chains); nil: placeholders only
 	Logger      *slog.Logger
+	// Unlock enters the operator passphrase that unlocks plan signing after a
+	// restart (the LOCKED banner links to the form). Nil: no unlock form.
+	Unlock func(ctx context.Context, pass string) error
 
 	Addr             string   // default 127.0.0.1:8443
 	AllowNonLoopback bool     // permit a non-loopback Addr (e.g. never, by default)
@@ -584,6 +587,11 @@ type pageData struct {
 	Notice    string
 	Block     string // template to execute instead of the full page
 	Data      any
+	// Locked is the restart-safety state shown in the header banner on every
+	// page.
+	Locked      bool
+	LockedSince time.Time
+	Stopped     []string
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name string, pd pageData) {
@@ -591,6 +599,11 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	if t == nil {
 		http.Error(w, "no such template", http.StatusInternalServerError)
 		return
+	}
+	if s.cfg.Ops != nil && Principal(r.Context()) != "" {
+		if od, err := s.cfg.Ops.Overview(r.Context()); err == nil && od.Locked {
+			pd.Locked, pd.LockedSince, pd.Stopped = true, od.LockedSince, lockedStopped
+		}
 	}
 	pd.User = Principal(r.Context())
 	if pd.CSRF == "" {

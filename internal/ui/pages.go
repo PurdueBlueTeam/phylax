@@ -27,6 +27,8 @@ func (s *Server) routes() {
 	s.enrollRoutes()
 	s.Handle("GET /account", http.HandlerFunc(s.getAccount))
 	s.Handle("POST /account/password", http.HandlerFunc(s.postPassword))
+	s.Handle("GET /unlock", http.HandlerFunc(s.getUnlock))
+	s.Handle("POST /unlock", http.HandlerFunc(s.postUnlock))
 	s.Handle("POST /logout", http.HandlerFunc(s.postLogout))
 	// Everything else: authenticate first so unauthenticated probing learns nothing.
 	s.Handle("/", http.NotFoundHandler())

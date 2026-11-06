@@ -235,19 +235,24 @@ func drainSnapSoon(ch chan struct{}) {
 
 // writeSnapshots writes to every configured directory and records the result.
 func (c *Controller) writeSnapshots(ctx context.Context, pass func() []byte) {
-	if pass == nil || len(pass()) == 0 {
+	var p []byte
+	if pass != nil {
+		p = pass()
+	}
+	locked, _ := c.Locked()
+	if locked || len(p) == 0 {
 		c.setSnapshotStatus("skipped: locked")
 		return
 	}
 	for _, dir := range c.cfg.SnapshotDirs {
-		p, err := c.WriteSnapshot(ctx, dir, pass())
+		path, err := c.WriteSnapshot(ctx, dir, p)
 		if err != nil {
 			c.log.Error("snapshot failed", "dir", dir, "err", err)
 			c.setSnapshotStatus("error: " + err.Error())
 			continue
 		}
-		c.log.Info("snapshot written", "path", p)
-		c.setSnapshotStatus("wrote " + p)
+		c.log.Info("snapshot written", "path", path)
+		c.setSnapshotStatus("wrote " + path)
 	}
 }
 

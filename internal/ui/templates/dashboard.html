@@ -5,6 +5,7 @@
 {{define "pane-roundclock"}}<section class="pane" id="pane-roundclock"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
 {{define "pane-health"}}<section class="pane" id="pane-health"><h2>{{.Title}}</h2><ul>{{range .Lines}}<li>{{.}}</li>{{end}}</ul></section>{{end}}
 {{define "dash_ops"}}{{with .Data.Ops}}
+{{if .Locked}}<section class="pane" id="pane-locked"><h2>LOCKED</h2><p>Plan signing is locked since {{ts .LockedSince}}. Stopped: auto plans, facts, deadman_confirm, safe_mode toggles, snapshots.</p><p><a href="/unlock">Enter the passphrase</a></p></section>{{end}}
 <section class="pane" id="pane-overview"><h2>Agents</h2>
 <p>{{.Agents.Connected}} of {{.Agents.Total}} connected{{if .Agents.Silent}}, <span class="link-down">{{.Agents.Silent}} silent</span>{{end}}{{if .Agents.SafeMode}}, <strong>{{.Agents.SafeMode}} in safe mode</strong>{{end}}</p>
 <table><thead><tr><th>Host</th><th>State</th><th>Config</th><th>Spool</th></tr></thead><tbody>

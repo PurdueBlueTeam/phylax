@@ -258,6 +258,7 @@ func (o *WebOps) Overview(ctx context.Context) (ui.OpsDashboard, error) {
 		d.Campaigns = append(d.Campaigns, ui.CampaignBrief{ID: cp.ID, Name: cp.Name, Chains: len(cp.Chains), Last: cp.Last})
 	}
 	d.Health = o.health(d.Agents)
+	d.Locked, d.LockedSince = c.Locked()
 	return d, nil
 }
 

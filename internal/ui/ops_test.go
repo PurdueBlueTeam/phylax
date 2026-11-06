@@ -12,9 +12,11 @@ import (
 
 // fakeOps records calls and returns canned read models.
 type fakeOps struct {
-	mu      sync.Mutex
-	calls   []string
-	modules []ModuleRow
+	mu          sync.Mutex
+	calls       []string
+	modules     []ModuleRow
+	locked      bool
+	lockedSince time.Time
 }
 
 func (f *fakeOps) rec(s string) error {
@@ -31,7 +33,7 @@ func (f *fakeOps) called() string {
 
 func (f *fakeOps) Overview(context.Context) (OpsDashboard, error) {
 	return OpsDashboard{Agents: AgentSummary{Total: 1, Connected: 1, Rows: []AgentRow{{Host: "h<1>", State: "connected", Config: "applied"}}},
-		OpenAlerts: 2, AlertsBySev: []SevCount{{"high", 2}}}, nil
+		OpenAlerts: 2, AlertsBySev: []SevCount{{"high", 2}}, Locked: f.locked, LockedSince: f.lockedSince}, nil
 }
 func (f *fakeOps) Modules(context.Context) []ModuleRow { return f.modules }
 func (f *fakeOps) AgentDetail(_ context.Context, h string) (AgentDetail, error) {

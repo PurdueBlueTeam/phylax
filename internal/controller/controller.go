@@ -157,6 +157,9 @@ type Controller struct {
 	snapStatus string
 	snapSoonC  chan struct{}
 
+	// lock is the restart-safety flag (locked.go).
+	lock lockState
+
 	modMu   sync.Mutex
 	mods    map[string]*moduleRunState
 	runMu   sync.Mutex
@@ -290,6 +293,16 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		st.Close()
 		return nil, err
 	}
+	// A vault that is still locked means no passphrase was entered at start:
+	// plan signing is locked and the controller says so (R8).
+	if v := opt.Vault; v != nil {
+		if l, ok := v.(interface{ Locked() bool }); ok && l.Locked() {
+			c.setLocked(true)
+		}
+	}
+	if locked, since := c.Locked(); locked {
+		c.emitLocked(ctx, since)
+	}
 	return c, nil
 }
 
@@ -420,6 +433,9 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	c.log.Info("controller listening", "addr", ln.Addr().String(), "pin", c.id.Pin.String())
+	if locked, _ := c.Locked(); locked {
+		go c.lockedLoop(ctx)
+	}
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); c.watchSilence(ctx) }()

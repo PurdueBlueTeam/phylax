@@ -96,6 +96,10 @@ type OpsDashboard struct {
 	Chains      []ChainBrief
 	Campaigns   []CampaignBrief
 	Health      []string
+	// Locked and LockedSince are the restart-safety state: plan signing is
+	// locked until the operator passphrase is entered (R8).
+	Locked      bool
+	LockedSince time.Time
 }
 
 // AgentSummary counts agents and lists them for the dashboard.

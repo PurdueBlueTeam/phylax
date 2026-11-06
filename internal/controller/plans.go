@@ -1145,6 +1145,9 @@ func (rt *planRT) confirmLocked(id string) {
 	if rt.c.isLocalNode(n) {
 		return // no dead-man on controller-side nodes
 	}
+	if locked, _ := rt.c.Locked(); locked {
+		return // no signing while locked: the agent's timer rolls the change back
+	}
 	if idx, ok := rt.probes.of[id]; ok && !rt.probes.st[idx].after {
 		return // the confirm waits for the node's after-probe
 	}
