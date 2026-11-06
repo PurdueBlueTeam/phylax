@@ -446,7 +446,7 @@ func TestAckConsoleFromCLIStore(t *testing.T) {
 	if err := f.c.CreatePlan(ctx, p, "tester"); err != nil {
 		t.Fatal(err)
 	}
-	x := f.c.dx.Load()
+	x := f.c.dx
 	if x.acked(ctx, "cli-ack", "acl") {
 		t.Fatal("acked before anyone acknowledged")
 	}
@@ -496,7 +496,7 @@ func TestActionRoutingTable(t *testing.T) {
 
 func TestSidecarOffDispatchedToAgent(t *testing.T) {
 	f := newDevFixture(t) // device exec enabled
-	if f.c.dx.Load() == nil {
+	if f.c.dx == nil {
 		t.Fatal("device exec not enabled")
 	}
 	if f.c.isLocalNode(plan.Node{ID: "s", Action: "splunk.sidecar_off", Target: "debian-splunk"}) {

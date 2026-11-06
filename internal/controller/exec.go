@@ -85,7 +85,7 @@ func (x *devExec) isLocalNode(n plan.Node) bool {
 
 // isLocalNode reports whether the node runs on the controller.
 func (c *Controller) isLocalNode(n plan.Node) bool {
-	x := c.dx.Load()
+	x := c.dx
 	return x != nil && x.isLocalNode(n)
 }
 
@@ -262,7 +262,7 @@ func (x *devExec) keepSecrets(planID, node string, o actions.Output) []string {
 
 // localCheck is the dry-run check of a controller-side node.
 func (c *Controller) localCheck(ctx context.Context, planID string, class plan.ApprovalClass, n plan.Node) (plan.NodeCheck, bool) {
-	x := c.dx.Load()
+	x := c.dx
 	if x == nil || !x.isLocalNode(n) {
 		return plan.NodeCheck{}, false
 	}
@@ -278,7 +278,7 @@ func (c *Controller) localCheck(ctx context.Context, planID string, class plan.A
 // dispatchLocalLocked runs a node phase on the controller (rt.mu held).
 func (rt *planRT) dispatchLocalLocked(id string, nr *nodeRT, n plan.Node) {
 	c := rt.c
-	x := c.dx.Load()
+	x := c.dx
 	phase := nr.want
 	nr.inflight, nr.want = true, ""
 	// Recorded before the change starts: after a controller crash an apply with
