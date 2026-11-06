@@ -16,13 +16,6 @@ func TestAgentCheck12CatchesLegacyField(t *testing.T) {
 	}
 }
 
-func TestAgentCheck6CatchesOverBudget(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 35")
-	if errs := runAgentChecks(AgentCase{Factory: heldBytesLiarFactory(), Default: cfgWith("fat")}); errs["budget"] == nil {
-		t.Fatal("over budget not detected")
-	}
-}
-
 func TestAgentCheck7CatchesCrashOnEmitError(t *testing.T) {
 	t.Skip("unimplemented: W1 Task 35")
 	if errs := runAgentChecks(AgentCase{Factory: crashOnEmitErrFactory(), Default: cfgWith("fragile"), Load: someLoad()}); errs["link_loss"] == nil {

@@ -75,14 +75,6 @@ func emitsConnWithSrcIPFactory() agent.Factory {
 		return nil
 	})
 }
-func heldBytesLiarFactory() agent.Factory {
-	return agent.Factory{Name: "fat", Section: func(*plan.AgentConfig) (string, bool) { return "v1", true },
-		Build: func(agent.Env, *plan.AgentConfig) (agent.ModuleSpec, error) {
-			return agent.ModuleSpec{Module: fixtureModule{name: "fat", health: func() module.Health {
-				return module.Health{State: module.StateOK, Usage: module.Usage{HeldBytes: 1 << 40}}
-			}}}, nil
-		}}
-}
 func crashOnEmitErrFactory() agent.Factory {
 	return fixtureFactory("fragile", func(ctx context.Context, emit agent.Emit) error {
 		if err := emit(event.Event{Kind: "fragile.x"}); err != nil {
