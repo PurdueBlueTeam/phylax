@@ -224,4 +224,18 @@ CREATE TABLE module_migrations (
   applied INTEGER NOT NULL
 );
 `,
+	// 7: controller quota skipped runs (W1 Task 8b). An event refused by the
+	// disk quota is chain-verified and acknowledged past but its body is not
+	// stored; one row records each contiguous skipped run.
+	`
+CREATE TABLE quota_skips (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent    TEXT NOT NULL REFERENCES agents(id),
+  from_seq INTEGER NOT NULL,
+  to_seq   INTEGER NOT NULL,
+  reason   TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX quota_skips_agent ON quota_skips(agent, from_seq);
+`,
 }

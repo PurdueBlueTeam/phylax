@@ -80,12 +80,18 @@ type DashboardSource interface {
 
 // Config configures a Server. Zero values are safe defaults.
 type Config struct {
-	Accounts  AccountStore // default: in-memory
-	Agents    AgentLister  // default: none
-	Audit     AuditLog     // default: discard
-	Dashboard DashboardSource
-	Ops       Ops // operator pages (dashboard data, alerts, plans, chains); nil: placeholders only
-	Logger    *slog.Logger
+	Accounts AccountStore // default: in-memory
+	Agents   AgentLister  // default: none
+	Audit    AuditLog     // default: discard
+	// AuditExempt lists route patterns ("POST /agents/{host}/safe-mode",
+	// "POST /safe-mode", "POST /settings/kill-switch"). When the audit write
+	// fails for one, the request proceeds, the failure is logged, and the
+	// entry is kept in a bounded queue written first on the next successful
+	// audit.
+	AuditExempt []string
+	Dashboard   DashboardSource
+	Ops         Ops // operator pages (dashboard data, alerts, plans, chains); nil: placeholders only
+	Logger      *slog.Logger
 
 	Addr             string   // default 127.0.0.1:8443
 	AllowNonLoopback bool     // permit a non-loopback Addr (e.g. never, by default)
@@ -118,8 +124,13 @@ type Server struct {
 	// module registrations (registrar.go); written before serving.
 	regMu    sync.Mutex
 	modTiles []modTile
-	modGrids []modGrid
-	modPages []modPage
+
+	// auditMu serialises queue replay with recording, so queued entries are
+	// written before the next one.
+	auditMu    sync.Mutex
+	auditQueue []AuditEntry
+	modGrids   []modGrid
+	modPages   []modPage
 }
 
 type ctxKey int
@@ -269,11 +280,78 @@ func (s *Server) AuditAction(r *http.Request, action, detail string) error {
 	return s.audit(r, Principal(r.Context()), action, detail)
 }
 
+func (s *Server) auditEntry(r *http.Request, actor, action, detail string) AuditEntry {
+	return AuditEntry{Time: s.cfg.Now(), Actor: actor, Action: action, Remote: remoteIP(r), Detail: detail}
+}
+
 func (s *Server) audit(r *http.Request, actor, action, detail string) error {
 	if s.cfg.Audit == nil {
 		return nil
 	}
-	return s.cfg.Audit.Record(r.Context(), AuditEntry{Time: s.cfg.Now(), Actor: actor, Action: action, Remote: remoteIP(r), Detail: detail})
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	// A queued entry is written before the current one, so an exempt
+	// safe-mode or kill-switch action is not overtaken by later traffic.
+	for len(s.auditQueue) > 0 {
+		if err := s.cfg.Audit.Record(r.Context(), s.auditQueue[0]); err != nil {
+			return err
+		}
+		s.auditQueue = s.auditQueue[1:]
+	}
+	return s.cfg.Audit.Record(r.Context(), s.auditEntry(r, actor, action, detail))
+}
+
+// auditQueueMax bounds the entries held while the audit log is unavailable.
+const auditQueueMax = 64
+
+// queueAudit keeps an entry for the next successful audit. The oldest entry
+// is dropped when the queue is full.
+func (s *Server) queueAudit(r *http.Request, actor, action, detail string) {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	if len(s.auditQueue) >= auditQueueMax {
+		copy(s.auditQueue, s.auditQueue[1:])
+		s.auditQueue = s.auditQueue[:len(s.auditQueue)-1]
+	}
+	s.auditQueue = append(s.auditQueue, s.auditEntry(r, actor, action, detail))
+}
+
+// auditExempt reports whether r matches one of Config.AuditExempt. Patterns
+// are ServeMux patterns: an optional method and path segments, with {name}
+// matching one non-empty segment.
+func (s *Server) auditExempt(r *http.Request) bool {
+	for _, pattern := range s.cfg.AuditExempt {
+		if routeMatches(pattern, r.Method, r.URL.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func routeMatches(pattern, method, path string) bool {
+	if i := strings.IndexByte(pattern, ' '); i >= 0 {
+		if pattern[:i] != method {
+			return false
+		}
+		pattern = strings.TrimSpace(pattern[i+1:])
+	}
+	ps := strings.Split(pattern, "/")
+	as := strings.Split(path, "/")
+	if len(ps) != len(as) {
+		return false
+	}
+	for i := range ps {
+		if strings.HasPrefix(ps[i], "{") && strings.HasSuffix(ps[i], "}") {
+			if as[i] == "" {
+				return false
+			}
+			continue
+		}
+		if ps[i] != as[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func remoteIP(r *http.Request) string {
@@ -407,9 +485,14 @@ func (s *Server) protected(h http.Handler) http.Handler {
 				return
 			}
 			if err := s.audit(r, sess.user, "request", r.Method+" "+r.URL.Path); err != nil {
-				s.log.Error("ui: audit failed; refusing request", "err", err)
-				http.Error(w, "audit unavailable", http.StatusInternalServerError)
-				return
+				if s.auditExempt(r) {
+					s.queueAudit(r, sess.user, "request", r.Method+" "+r.URL.Path)
+					s.log.Error("ui: audit failed; request allowed by exemption", "err", err, "method", r.Method, "path", r.URL.Path)
+				} else {
+					s.log.Error("ui: audit failed; refusing request", "err", err)
+					http.Error(w, "audit unavailable", http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 		w.Header().Set("Cache-Control", "no-store")

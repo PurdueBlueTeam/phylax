@@ -55,6 +55,7 @@ type Ack struct {
 	Accepted   int // new events appended to the chain
 	Duplicates int // already-stored events matched on resend
 	Backfilled int // events at or below the restore point stored from a resend
+	Skipped    int // events chain-verified and acknowledged past but not stored (quota)
 }
 
 // Ingest verifies and stores a batch of events from one agent, in order. The
@@ -92,6 +93,21 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	var pending []*event.Event // unstored events below the restore point, not yet tied to it
 	var last *event.Event      // previous event in this batch, for link checks
 	var newly []event.Event    // events this transaction stored, for the ingest hook
+	q := s.quota.Load()
+	level := QuotaOK
+	if q != nil {
+		level = q.Level() // once per batch
+	}
+	var skipFrom, skipTo uint64
+	flushSkips := func() error {
+		if skipTo == 0 {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO quota_skips(agent, from_seq, to_seq, reason, at) VALUES (?,?,?,?,?)`,
+			agent, skipFrom, skipTo, "controller quota", time.Now().UnixNano())
+		skipFrom, skipTo = 0, 0
+		return err
+	}
 	for i := range evs {
 		if err := ctx.Err(); err != nil {
 			return start, err
@@ -192,6 +208,26 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 			chainErr = cerr(ErrBadHash, "")
 			break
 		}
+		ty, declared := event.Lookup(ev.Kind)
+		alert := declared && ty.Alert && (ev.Priority == event.PriorityHigh || ev.Priority == event.PriorityCritical)
+		if q != nil && !level.Admit(ev.Priority, alert) {
+			if skipTo != 0 && ev.Seq != skipTo+1 {
+				if err := flushSkips(); err != nil {
+					return start, err
+				}
+			}
+			if skipFrom == 0 {
+				skipFrom = ev.Seq
+			}
+			skipTo = ev.Seq
+			curSeq, curHash = ev.Seq, ev.Hash
+			ack.Skipped++
+			last = ev
+			continue
+		}
+		if err := flushSkips(); err != nil {
+			return start, err
+		}
 		if err := insertEvent(ctx, ins, ev); err != nil {
 			return start, err
 		}
@@ -210,6 +246,9 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 		last = ev
 	}
 
+	if err := flushSkips(); err != nil {
+		return start, err
+	}
 	itx := &IngestTx{ctx: ctx, tx: tx}
 	if h := s.hook.Load(); h != nil && len(newly) > 0 {
 		if err := (*h)(ctx, itx, newly); err != nil {
@@ -282,7 +321,10 @@ type Gap struct {
 
 // Gaps lists an agent's recorded gaps in order.
 func (s *Store) Gaps(ctx context.Context, agent string) ([]Gap, error) {
-	rows, err := s.r.QueryContext(ctx, `SELECT agent, from_seq, to_seq, reason, class, count, time_ns FROM gaps WHERE agent=? ORDER BY from_seq, id`, agent)
+	rows, err := s.r.QueryContext(ctx, `SELECT agent, from_seq, to_seq, reason, class, count, time_ns FROM gaps WHERE agent=?
+UNION ALL
+SELECT agent, from_seq, to_seq, reason, '', to_seq-from_seq+1, at FROM quota_skips WHERE agent=?
+ORDER BY from_seq, to_seq`, agent, agent)
 	if err != nil {
 		return nil, err
 	}

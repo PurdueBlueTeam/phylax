@@ -412,6 +412,10 @@ func (s *Store) CountAll(ctx context.Context) (events, audit int64, err error) {
 // GapTotals sums every recorded gap: the number of gap records and the events
 // they shed.
 func (s *Store) GapTotals(ctx context.Context) (gaps int, dropped int64, err error) {
-	err = s.r.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN count>0 THEN count ELSE to_seq-from_seq+1 END),0) FROM gaps`).Scan(&gaps, &dropped)
+	err = s.r.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN count>0 THEN count ELSE to_seq-from_seq+1 END),0) FROM (
+SELECT count, from_seq, to_seq FROM gaps
+UNION ALL
+SELECT to_seq-from_seq+1, from_seq, to_seq FROM quota_skips
+)`).Scan(&gaps, &dropped)
 	return
 }

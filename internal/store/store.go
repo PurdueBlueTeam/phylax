@@ -38,10 +38,11 @@ var (
 
 // Store is safe for concurrent use.
 type Store struct {
-	path string
-	w    *sql.DB // single writer connection
-	r    *sql.DB // read pool
-	hook atomic.Pointer[IngestHook]
+	path  string
+	w     *sql.DB // single writer connection
+	r     *sql.DB // read pool
+	hook  atomic.Pointer[IngestHook]
+	quota atomic.Pointer[Quota]
 }
 
 func fileSize(p string) int64 {

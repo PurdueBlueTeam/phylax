@@ -117,6 +117,9 @@ type Controller struct {
 	analysisDeadline time.Duration
 	bus              *eventBus
 
+	// quota is the controller data disk's shed level (quota.go).
+	quota *store.Quota
+
 	modMu   sync.Mutex
 	mods    map[string]*moduleRunState
 	runMu   sync.Mutex
@@ -177,6 +180,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
+	c.quota = store.NewQuota(func() (float64, error) { return diskUsedPct(cfg.DataDir) })
 	c.checks = newChecksHub(c)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()
@@ -303,6 +307,8 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() { defer wg.Done(); c.watchSilence(ctx) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); c.startQuota(ctx, quotaSampleEvery) }()
 	err = srv.Serve(ctx, ln)
 	wg.Wait()
 	return err
