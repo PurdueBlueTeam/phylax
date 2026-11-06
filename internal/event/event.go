@@ -31,7 +31,9 @@ type Event struct {
 	Seq      uint64         `json:"seq"`
 	Time     time.Time      `json:"time"`
 	Kind     string         `json:"kind"`
+	Schema   int            `json:"schema,omitempty"`
 	Priority Priority       `json:"prio"`
+	Tag      string         `json:"tag,omitempty"`
 	Fields   map[string]any `json:"fields,omitempty"`
 	PrevHash string         `json:"prev"` // hex sha256 of the previous event's Hash, "" for the first
 	Hash     string         `json:"hash"` // hex sha256 over the canonical body (everything except Hash)
