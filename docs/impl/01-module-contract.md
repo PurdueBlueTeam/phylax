@@ -24,13 +24,18 @@
 10. **Controller modules register with `module.Register`** from their package `init`, and `internal/module/all` blank-imports every module package so the binary and the CI checks see one list.
 11. **`Env.Subscribe(buf int, kinds ...string)`** keeps the buffer argument the built code has.
 12. **`RunAuto`'s triggering event** is passed as the reserved parameter `trigger` (`<agent>:<seq>`), recorded in the plan's `Approver` and never substituted into the template.
-13. **Core kind count is 29, not 28**: the design's table has 29 core rows (listed in Task 5) while its summary sentence says 28 (and so 167 kinds in all would be 168); Task 1 fixes the sentence.
-14. **`act_enabled` is per module block, fleet-wide.** The design's tiers flip it "for named hosts"; a per-host form is not designed. `shortcut: act_enabled per module only, upgrade when hosts.yml gets a per-host act entry` in `RunAuto`.
+13. **Core kind count is 29, not 28** at Task 5: the design's table had 29 core rows (listed in Task 5) while its summary sentence said 28. The 2026-11-06 review (R1, R8, R9) adds four core kinds (Task 5a), so the table now has 33 core kinds and 189 in all; CI generates the three counts from the table (Task 41).
+14. **`act_enabled` in the module block is the fleet default; the per-host form is in `overrides.yml`.** `Overrides.Act` (`act: {<module>: [<label expression>]}`) and `Overrides.SafeModeHosts` with `Manifest.ActEnabled(host, module)` (Task 11b); `RunAuto` reads the effective value. W4 renders it into the signed agent configs; `detect` no longer gates on its own flag and `respond.act_enabled` is the single master for tier 0 (R2, decided 2026-11-06).
 15. **The seam extras W3, W5, W6, W7 and W11 each assumed are W1's.** One name for exporting action registration: `actions.Register` (the design's name; W3's `RegisterExtra` and W6/W11's `RegisterFamily` are retired), with `actions.RegisterUndo`, `actions.Unsupported`, `Env.Now()` and `Env.Ext` (Task 2a). `Event.WithExtra` (`x_` prefix) and the extension fields of the common structs (Tasks 3a, 4a). `storetest.New` (Task 8a). `Host.Manifest()` and `Host.UpdateOverrides` (Task 17a). `LoadModuleTemplateFor`, `plans.Parse`/`ResolveLabels` and the root `plans` package in `CoreImports` (Task 22b).
 16. **`Env.Now` is a method, so the old field `Env.Now` becomes `Env.Clock`.** A Go type cannot have a field and a method of one name; W6 and W11 call `env.Now()`. The three places that set the field (`actions/helpers_test.go`, `e2e_test.go`, the agent) change in Task 2a.
 17. **`internal/module` may also import `internal/manifest`** (it imports no repo package), because `Host.Manifest()` returns the loaded manifest and `Host.UpdateOverrides` takes `*manifest.Overrides`. `manifest` must never import `module`.
 18. **The two plan options no workstream owned are W1's:** `expires_after` (Task 22a, the dead-man machinery with the confirm turned off) and `gate: auto` (Task 27a, `until:` conditions: time, probe, absence of an event). Templates spell them `expires_after: 30m` and `gate: auto` with `until:`; `ParseTemplate` translates (`translateNodeKeys`). W7 builds `window: scorer_quiet`, `gate: manual` and `txn:` and adds its keys to the same translator; W5 hardening and W10 backup depend on W7 Tasks 2 to 7 for `window:`.
 19. **Modules reach `overrides.yml` and per-device vault keys through `Host`.** `Host.UpdateOverrides` over `manifest.AppendOverrides` (Task 11a, with `Overrides.LearnedListeners`), and `Host.Secrets` accepts prefix grants (`cred/*`, Task 9a) so `devices` and `creds` need no fixed names in their block.
+
+20. **YAML keys equal JSON tags; durations are `module.Duration`.** A small wrapper over `time.Duration` that unmarshals `"90s"` or `"2m"` in YAML and JSON is the one exception to the one-to-one mapping (R11, Task 33).
+21. **Tables are projections of the module's own events, command events included.** Operator actions are typed command events the module emits through `Host.Emit`; conformance check 11 replays them (R10, Task 36).
+22. **The agent answers `busy`, not `failed`, over the step cap; a plan that touches a scored service defaults to `rollback_plan`; the probe runs inside the node and `deadman_confirm` waits for the after-probe** (R12, Tasks 27, 27b, 27c).
+23. **Tags cover only our own activity** (R6, Tasks 32 and 32a). **Controller disk quotas** (R9, Task 8b).
 
 ## Global Constraints
 
@@ -84,7 +89,7 @@
 | `internal/plan/plan.go`, `step.go` | `ExpiresAfterSec`, `GateUntil` | 22a, 27a |
 | `plans/plans.go` | `Template.Module`, `Parse`, `ResolveLabels` | 1, 22b |
 | `internal/plan/fact.go` | `ControlFact`, `FactSender`, limits | 1, 30 |
-| `internal/plan/lint/lint.go`, `ss000.go` | lint registry and `SS000` | 1, 21 |
+| `internal/plan/lint/lint.go`, `ss000.go`, `ss010.go`, `ss011.go` | lint registry, `SS000` (read-only), `SS010` (auto plans), `SS011` (rollback_plan for scored touches) | 1, 21, 27b |
 | `internal/agent/registry.go`, `module.go` | `Factory.Manifest`, `HealthReporter`, `Supervisor.Health`, `Subscribe` kinds | 13 |
 | `internal/agent/harness.go` | `Harness` for the conformance suite | 1, 15 |
 | `internal/agent/facts.go`, `window.go` | facts and the `work_window` effect | 31, 32 |
@@ -1223,6 +1228,83 @@ func TestSpoolGapShapeValidates(t *testing.T) {
 
 ---
 
+### Task 5a: Core kinds for the console-script alerts, a locked controller and the store quota
+
+Haiku-sized. The 2026-11-06 design review (R1, R8, R9) adds four core kinds to the Event kinds table and flags `enroll.refused` alert-class. The core count becomes 33 and the table total 189. Task 5's assertion of 29 core kinds is updated in this task's commit, not before.
+
+**Files:**
+- Modify: `internal/event/core.go`
+- Test: `internal/event/core_test.go`
+
+**Interfaces:**
+- Consumes: `Declare` (Task 3), the Task 5 core kinds.
+- Produces:
+
+```go
+const (
+	KindEnrollHashMismatch = "enroll.hash_mismatch"
+	KindEnrollNoShow       = "enroll.no_show"
+	KindControllerLocked   = "controller.locked"
+	KindStoreQuota         = "store.quota"
+)
+
+type EnrollHashMismatch struct { // the agent's hello binary_sha256 differs from the hash of the binary the controller served
+	Host     string `json:"host"`
+	Served   string `json:"served"`   // sha256 hex of the served binary
+	Reported string `json:"reported"` // sha256 hex the agent reported
+}
+type EnrollNoShow struct { // a host with a served bundle did not connect inside the enrollment window
+	Host      string `json:"host"`
+	WindowSec int    `json:"window_sec"`
+	Since     string `json:"since"` // RFC 3339, UTC: when the bundle was written
+}
+type ControllerLocked struct { // plan signing is locked after a restart
+	Since   string   `json:"since"`             // RFC 3339, UTC
+	Stopped []string `json:"stopped,omitempty"` // what is not running: "auto plans", "facts", "deadman_confirm", "safe_mode", "snapshots"
+}
+type StoreQuota struct { // the controller disk crossed a quota level
+	Level   string   `json:"level"`   // "ok", "bulk", "evidence", "critical"
+	UsedPct int      `json:"used_pct"`
+	Shed    []string `json:"shed,omitempty"` // classes now refused: "bulk", "evidence", "normal"
+}
+```
+
+| Kind | Struct | Alert | Priority |
+| --- | --- | --- | --- |
+| `enroll.hash_mismatch` | `EnrollHashMismatch` | yes | Critical |
+| `enroll.no_show` | `EnrollNoShow` | yes | High |
+| `controller.locked` | `ControllerLocked` | yes | Critical |
+| `store.quota` | `StoreQuota` | yes | High (the emitter raises it to Critical at the `critical` level) |
+
+`enroll.refused` becomes alert-class (`Alert: true`; its emitter already uses High). All four are schema 1 and emitted under agent `controller` through `EmitController`; this task only declares them (emitters: `enroll.hash_mismatch` and `enroll.no_show` in W2 Task 16 and W12, `controller.locked` in W12 Task 13a, `store.quota` in Task 8b).
+
+- [ ] **Step 1: Update the tests:**
+
+```go
+// core_test.go: coreAlert gains "enroll.refused", "enroll.hash_mismatch", "enroll.no_show", "controller.locked", "store.quota";
+// the kinds list gains the four new kinds; the length assertion becomes 33 ("table has 33 core kinds")
+func TestNewCoreKindsValidate(t *testing.T) {
+	for kind, v := range map[string]any{
+		KindEnrollHashMismatch: EnrollHashMismatch{Host: "h1", Served: "aa", Reported: "bb"},
+		KindEnrollNoShow:       EnrollNoShow{Host: "h1", WindowSec: 600, Since: "2026-11-07T14:00:00Z"},
+		KindControllerLocked:   ControllerLocked{Since: "2026-11-07T14:00:00Z", Stopped: []string{"auto plans"}},
+		KindStoreQuota:         StoreQuota{Level: "bulk", UsedPct: 91, Shed: []string{"bulk"}},
+	} {
+		e, err := New(kind, v)
+		if err != nil || Validate(e) != nil {
+			t.Errorf("%s: %v", kind, err)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run 'Core|NewCoreKinds' -v`. Expected: FAIL (`undeclared kind`).
+- [ ] **Step 3: Implement** the four structs, the constants and the `Declare` calls; flip `enroll.refused`'s `Alert`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: declare enroll.hash_mismatch, enroll.no_show, controller.locked, store.quota"`
+
+---
+
 ### Task 6: Agent core emitters through `event.New`
 
 **Files:**
@@ -1460,6 +1542,146 @@ func TestNewKeepsGivenTimes(t *testing.T) {
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/...`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "store: storetest.New seeded store for module tests"`
+
+---
+
+### Task 8b: Controller disk quotas, the shed order and the audit exemption (R9)
+
+The design (Event store and vault: Quotas) sets hard quotas on the controller's data disk with a fixed shed order: refuse bulk at 90% used, evidence at 95%, accept only high and critical events at 98%; alerts are never shed; safe mode and the kill switch are exempt from the audit-write refusal. The W14 bench reports store growth; if it reports a level above `ok` it says so in its Overview line.
+
+**Files:**
+- Create: `internal/store/quota.go`, `internal/controller/quota.go`
+- Modify: `internal/store/ingest.go` (admission), `internal/store/store.go` (migration for `quota_skips`), `internal/ui/ui.go` (`Config.AuditExempt`), `internal/controller/controller.go` (start the sampler), `internal/controller/agent.go` (chunk answers)
+- Test: `internal/store/quota_test.go`, `internal/controller/quota_test.go`, `internal/ui/audit_exempt_test.go`
+
+**Interfaces:**
+- Consumes: `Store.Ingest`, `Store.Gaps`, `Store.GapTotals`, `Store.DiskSize`, `event.Lookup` (alert flag), `EmitController` (Task 16), `event.StoreQuota` (Task 5a), `ui.Server.protected`.
+- Produces:
+
+```go
+// package store
+type QuotaLevel int
+
+const (
+	QuotaOK       QuotaLevel = iota
+	QuotaBulk                // >= 90% used: refuse bulk events and bulk transfers
+	QuotaEvidence            // >= 95%: also refuse alert evidence chunks and pcap slices
+	QuotaCritical            // >= 98%: accept only high and critical events
+)
+
+func (l QuotaLevel) String() string // "ok", "bulk", "evidence", "critical"
+
+// Admit reports whether an event is stored at this level. alert is true when the kind is alert-class
+// (event.Lookup(kind).Alert) and the priority is high or critical, i.e. the event becomes an alert row: it is always admitted.
+func (l QuotaLevel) Admit(prio event.Priority, alert bool) bool
+
+// AdmitChunk reports whether a content-addressed transfer of the given class ("bulk" | "evidence") is accepted.
+func (l QuotaLevel) AdmitChunk(class string) bool
+
+type Quota struct{ /* used func() (float64, error); level atomic; hysteresis 2 points */ }
+
+func NewQuota(used func() (usedPct float64, err error)) *Quota
+func (q *Quota) Level() QuotaLevel
+// Sample re-reads the usage and returns the new level and whether it changed. Rising crosses at 90/95/98;
+// falling steps down only when usage is 2 points below the threshold (hysteresis).
+func (q *Quota) Sample() (QuotaLevel, bool)
+func (s *Store) SetQuota(q *Quota) // Ingest consults q.Level() once per batch
+
+// Ingest, for an event the level does not admit: the event is chain-verified like any other (seq, prev, hash),
+// the agent's head advances over it, its body is NOT stored, and the run is recorded in quota_skips
+// (agent, from_seq, to_seq, reason "controller quota", at); Ack.Accepted does not count it, a new field Ack.Skipped does.
+// Gaps() and GapTotals() include the skipped runs (reason "controller quota").
+```
+
+```go
+// package controller
+func (c *Controller) startQuota(ctx context.Context, every time.Duration) // samples; on a level change emits event.StoreQuota
+//   (priority High; Critical at QuotaCritical; "ok" is emitted on recovery at Normal priority but is not alert-class traffic
+//   because the ingest rule needs high or critical); a refused chunk (QuotaLevel.AdmitChunk false) is answered with the
+//   chunk error code "quota" and the agent retries later.
+// package ui
+// Config gains: AuditExempt []string // route patterns ("POST /agents/{host}/safe-mode", "POST /safe-mode", "POST /settings/kill-switch");
+// when the audit write fails for a request matching one, the request proceeds, the failure is logged, and the entry
+// is kept in a bounded in-memory queue (64) that is written first on the next successful audit.
+```
+
+Usage is `statfs` of the filesystem holding the data directory (Used / Total); `NewQuota` takes the function so tests drive it. `shortcut: usage is the whole filesystem's, not the data directory's, upgrade when the data disk is shared`.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestQuotaLevelAdmit(t *testing.T) {
+	type c struct {
+		l      QuotaLevel
+		prio   event.Priority
+		alert  bool
+		want   bool
+	}
+	for i, k := range []c{
+		{QuotaOK, event.PriorityBulk, false, true},
+		{QuotaBulk, event.PriorityBulk, false, false},
+		{QuotaBulk, event.PriorityNormal, false, true},
+		{QuotaEvidence, event.PriorityNormal, false, true},
+		{QuotaCritical, event.PriorityNormal, false, false},
+		{QuotaCritical, event.PriorityHigh, false, true},
+		{QuotaCritical, event.PriorityCritical, false, true},
+		{QuotaCritical, event.PriorityBulk, true, true}, // an alert is never shed
+	} {
+		if got := k.l.Admit(k.prio, k.alert); got != k.want {
+			t.Errorf("case %d: %v", i, got)
+		}
+	}
+	if QuotaBulk.AdmitChunk("bulk") || !QuotaBulk.AdmitChunk("evidence") || QuotaEvidence.AdmitChunk("evidence") {
+		t.Fatal("chunk classes")
+	}
+}
+func TestQuotaSampleHysteresis(t *testing.T) {
+	pct := 50.0
+	q := NewQuota(func() (float64, error) { return pct, nil })
+	for _, s := range []struct {
+		pct  float64
+		want QuotaLevel
+	}{{89, QuotaOK}, {90, QuotaBulk}, {95, QuotaEvidence}, {98, QuotaCritical}, {97, QuotaCritical}, {95.9, QuotaCritical},
+		{95.5, QuotaCritical}, {95, QuotaEvidence}, {92.5, QuotaEvidence}, {87.9, QuotaOK}} {
+		pct = s.pct
+		if got, _ := q.Sample(); got != s.want {
+			t.Errorf("%.1f: got %v want %v", s.pct, got, s.want)
+		}
+	}
+}
+func TestIngestSkipsRefusedAndKeepsChain(t *testing.T) {
+	// storetest store with agent "h1"; quota level forced to QuotaBulk; ingest a sealed batch seq 1..4 with priorities
+	// normal, bulk, bulk, high
+	// want: Ack.Seq == 4, Accepted == 2, Skipped == 2; Events(h1) returns seq 1 and 4 only; a following batch (seq 5, prev = hash of seq 4)
+	// is accepted; Gaps(h1) contains one gap 2..3 with reason "controller quota"; GapTotals counts it
+}
+func TestIngestNeverSkipsAlerts(t *testing.T) {
+	// level QuotaCritical; a bulk-priority event of an alert-class kind with priority bulk is not an alert (needs high or critical): skipped;
+	// a critical detect.alert-like event of an alert-class kind is stored
+}
+func TestIngestSkippedEventStillChainChecked(t *testing.T) {
+	// level QuotaBulk; a bulk event with a wrong hash is rejected with ErrChain, not silently skipped
+}
+// controller/quota_test.go
+func TestQuotaEmitsOnCrossing(t *testing.T) {
+	// controller with a fake usage function; set 91, Sample via the ticker hook -> one store.quota event, level "bulk", Alert-class priority High;
+	// set 98.5 -> one more at Critical priority with shed containing "normal"; set 10 -> one with level "ok"
+}
+func TestChunkRefusedAtEvidenceLevel(t *testing.T) {
+	// level QuotaEvidence: an evidence chunk from a test agent is answered with error code "quota"; a bulk chunk too; at QuotaOK both succeed
+}
+// ui/audit_exempt_test.go
+func TestAuditExemptRouteSurvivesAuditFailure(t *testing.T) {
+	// Config.Audit returns an error; Config.AuditExempt lists "POST /agents/{host}/safe-mode"
+	// want: POST to that route is served (not 500); any other POST route returns 500 "audit unavailable";
+	// after the audit recovers, the queued entry is written before the next one
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/ ./internal/controller/ ./internal/ui/ -run 'Quota|IngestSkips|IngestNever|AuditExempt|ChunkRefused' -v`. Expected: FAIL (`undefined: QuotaLevel`).
+- [ ] **Step 3: Implement** as specified. `quota_skips` is a new migration; `Ingest` skips only after the chain checks pass; the ingest hook never sees a skipped event.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/ ./internal/controller/ ./internal/ui/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "store: disk quotas with a shed order, skipped runs and an audit exemption for safe mode"`
 
 ---
 
@@ -1761,6 +1983,88 @@ func TestAppendOverridesConcurrent(t *testing.T) {
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "manifest: AppendOverrides and learned listeners"`
+
+---
+
+### Task 11b: Per-host switches in `overrides.yml`: `act` and `safe_mode_hosts` (R2)
+
+Haiku-sized. The design (Configuration: per-host switches) puts the per-host form of `act_enabled` and of safe mode in `overrides.yml`, because the module block is frozen with the repository: `act: { <module>: [<label expression>] }` and `safe_mode_hosts: [<label expression>]`. W1 owns the schema, the validation and the two resolver methods; W4 renders the effective `act_enabled` into each host's `AgentConfig` and the Settings page edits the lists. Nothing here sends a control message: `RunAuto` (Task 26) reads `ActEnabled`, and the existing per-host `SetSafeMode` stays the way W2 turns safe mode off for a host.
+
+**Files:**
+- Modify: `internal/manifest/types.go` (`Overrides.Act`, `Overrides.SafeModeHosts`), `internal/manifest/validate.go`, `internal/manifest/modules.go`
+- Test: `internal/manifest/act_test.go`
+
+**Interfaces:**
+- Consumes: `ParseLabels`, `LabelExpr.Match`, `ModuleBlock.ActEnabled` (Task 11), `AppendOverrides` (Task 11a).
+- Produces:
+
+```go
+// Overrides gains:
+Act           map[string][]string `yaml:"act,omitempty" json:"act,omitempty"`                         // module name -> label expressions
+SafeModeHosts []string            `yaml:"safe_mode_hosts,omitempty" json:"safe_mode_hosts,omitempty"` // label expressions
+
+// ActEnabled is the effective act switch of a module on a host: the module block's act_enabled, or a match of any
+// expression listed under the module in Overrides.Act. An overrides entry only adds hosts; it never turns off a module
+// whose block says true. A host matches on its labels plus its own name (an implicit label), so a single host is named by its name.
+func (m *Manifest) ActEnabled(host, module string) bool
+
+// SafeModeHostSet returns the sorted host names matching any Overrides.SafeModeHosts expression.
+func (m *Manifest) SafeModeHostSet() []string
+```
+
+Rules: a key of `Act` must match `^[a-z][a-z0-9_]*$` and name a module block that exists in `m.Modules` or a module registered in `module.Registered()` is not checked here (the manifest package must not import `module`; `phylax manifest lint` reports an `act` key without a `modules/<name>.yml`); every expression must parse with `ParseLabels`; at most 64 expressions per module and 64 in `safe_mode_hosts`; an expression that matches no host is a lint warning (`RuleOverridesNoHost`, severity warn), not a load error, so a typo is visible but the file still loads. `shortcut: act can only add hosts, upgrade if an operator needs to switch a module off for one host while its block says on (use safe mode meanwhile)`.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestActEnabledPerHost(t *testing.T) {
+	m := actFixture(t) // hosts web1 (labels linux, web) and db1 (linux, db); modules/respond.yml has act_enabled: false, modules/firewall.yml has act_enabled: true
+	m.Overrides.Act = map[string][]string{"respond": {"web1"}, "hardening": {"linux && !db"}}
+	cases := []struct {
+		host, module string
+		want         bool
+	}{{"web1", "respond", true}, {"db1", "respond", false}, {"web1", "hardening", true}, {"db1", "hardening", false},
+		{"db1", "firewall", true}, {"web1", "absent", false}}
+	for _, c := range cases {
+		if got := m.ActEnabled(c.host, c.module); got != c.want {
+			t.Errorf("%s/%s: got %v", c.host, c.module, got)
+		}
+	}
+}
+func TestSafeModeHostSet(t *testing.T) {
+	m := actFixture(t)
+	m.Overrides.SafeModeHosts = []string{"db", "web1"}
+	if got := m.SafeModeHostSet(); !slices.Equal(got, []string{"db1", "web1"}) {
+		t.Fatalf("%v", got)
+	}
+}
+func TestOverridesActValidated(t *testing.T) {
+	dir := t.TempDir()
+	bad := []func(*Overrides){
+		func(o *Overrides) { o.Act = map[string][]string{"Respond": {"web1"}} },
+		func(o *Overrides) { o.Act = map[string][]string{"respond": {"a &&"}} },
+		func(o *Overrides) { o.SafeModeHosts = []string{"a b"} },
+		func(o *Overrides) { o.Act = map[string][]string{"respond": make([]string, 65)} },
+	}
+	for i, f := range bad {
+		if err := AppendOverrides(dir, func(o *Overrides) error { f(o); return nil }); err == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	ok := func(o *Overrides) error { o.Act = map[string][]string{"respond": {"web1"}}; o.SafeModeHosts = []string{"web1"}; return nil }
+	if err := AppendOverrides(dir, ok); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestOverridesActNoHostIsLintWarning(t *testing.T) {
+	// act: {respond: [nosuchlabel]} loads; Lint(m) contains a RuleOverridesNoHost finding with SevWarn naming "respond"
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/manifest/ -run 'ActEnabled|SafeModeHostSet|OverridesAct' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified (use `HostsMatching` plus the implicit host-name label).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "manifest: per-host act and safe_mode_hosts in overrides"`
 
 ---
 
@@ -2389,7 +2693,7 @@ func TestAnalyzerDeadline(t *testing.T) {
 - Consumes: `plan.Node`, `plan.Plan`, `plan.ApprovalClass` (Task 1); `actions.Registry.Get`, `Spec().Validate(params)`, `Action.Touches`.
 - Produces: `Register`, `Rules`, `Run`, `Finding`, `Ctx`, `Rule`; rule `SS000` registered from `init`.
 
-`SS000` applies when `Ctx.Class` is `auto_readonly` or `auto` (no finding for `click` or `standing`). For `auto_readonly`, a node passes only if it is not a gate, its action exists, `Spec().ReadOnly`, `Risk == RiskNone`, `Touches(params)` is empty and the action is not `host.exec`. For `auto`, a node is refused if its action is unknown, `host.exec`, of risk `destructive`, or in the click-only set `proc.kill_tree`, `ad.account.krbtgt_reset`, `palo.revert`, `backup.restore` (the set is a package variable `ClickOnly`). Finding messages name the condition.
+`SS000` applies when `Ctx.Class` is `auto_readonly` (no finding for any other class). A node passes only if it is not a gate, its action exists, `Spec().ReadOnly`, `Risk == RiskNone`, `Touches(params)` is empty and the action is not `host.exec`. The auto-plan rule is its own id, `SS010` (file `ss010.go`, design M5): it applies when `Ctx.Class` is `auto`, and a node is refused if its action is unknown, `host.exec`, of risk `destructive`, or in the click-only set `proc.kill_tree`, `ad.account.krbtgt_reset`, `palo.revert`, `backup.restore` (the set is a package variable `ClickOnly`). Finding messages name the condition.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -2424,11 +2728,12 @@ func TestSS000ReadOnly(t *testing.T) {
 		t.Fatal("SS000 must not apply to click plans")
 	}
 }
-func TestSS000AutoRefusesClickOnly(t *testing.T) {
+func TestSS010AutoRefusesClickOnly(t *testing.T) {
 	reg := actions.Core()
 	p := plan.Plan{Nodes: []plan.Node{node("x", "host.exec", map[string]any{"argv": []any{"/bin/true"}})}}
-	if f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg}); len(f) == 0 {
-		t.Fatal("host.exec allowed in an auto plan")
+	f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg})
+	if len(f) == 0 || f[0].Rule != "SS010" {
+		t.Fatal("host.exec allowed in an auto plan, or reported under the wrong id")
 	}
 }
 func TestRulesSorted(t *testing.T) {
@@ -2436,7 +2741,7 @@ func TestRulesSorted(t *testing.T) {
 	for _, r := range Rules() {
 		ids = append(ids, r.ID)
 	}
-	if !slices.IsSorted(ids) || !slices.Contains(ids, "SS000") {
+	if !slices.IsSorted(ids) || !slices.Contains(ids, "SS000") || !slices.Contains(ids, "SS010") {
 		t.Fatal(ids)
 	}
 }
@@ -2831,12 +3136,12 @@ func TestProposalsPage(t *testing.T) {
 - Produces: `(*Controller).RunAuto(ctx, mod, template, params) (string, error)`; `Options.Probe func(ctx context.Context, service string) error`; `(*moduleHost).RunAuto`.
 
 Conditions, checked in this order; the first failure creates a proposal with `Reason` naming it and returns `module.ErrProposed`:
-1. the module block exists with `act_enabled: true` (`shortcut` per deviation 14);
+1. the module's effective act switch on every target host is true: `Manifest.ActEnabled(host, mod)` (Task 11b: the block's `act_enabled` or an `overrides.yml` `act` entry matching the host);
 2. `template` is in the block's `auto` list;
 3. the template loads and expands (`trigger` is not substituted);
 4. every target host has a heartbeat received in the last 15 s with `SafeMode == false` (no heartbeat = unknown = fail: Review Focus 4);
-5. `lint.Run(..., Class: ClassAuto)` has no finding;
-6. every node whose action's `Touches` is non-empty and whose target host carries a scored service (`manifest.Services` with `scored: true` on that host) has a probe: `Options.Probe != nil` (else reason `probe cannot run`);
+5. `lint.Run(..., Class: ClassAuto)` has no finding (rules `SS010` and `SS011`);
+6. every node with `plan.ScoredTouch(...)` non-empty (its `Touches` hits a manifest-scored service on its target host; the manifest `health:` block decides until discovery has learned the live set, Task 27b) has a probe: `Options.Probe != nil` (else reason `probe cannot run`);
 7. the breaker for (module, template, host) is closed (Task 28; until then always closed).
 On success: `Class = ClassAuto`, `OnFailure = rollback_plan`, `Approver = "auto:" + mod + "/" + template` plus `" trigger " + params["trigger"]` when given; create, approve, apply.
 
@@ -2907,15 +3212,15 @@ func TestRunAutoStarts(t *testing.T) {
 
 ---
 
-### Task 27: Probe before and after each scored node of an `auto` plan
+### Task 27: Probe inside each node that touches a scored service; `deadman_confirm` after the after-probe (R12)
 
 **Files:**
 - Modify: `internal/controller/plans.go` (dispatch and result handling for nodes of `ClassAuto` plans), `internal/controller/auto.go`
 - Test: `internal/controller/auto_probe_test.go`
 
 **Interfaces:**
-- Consumes: `Options.Probe`; the plan engine's node dispatch and rollback paths (`dispatch`, `onStepResult`, `RollbackOrder`, `MarkRolledBack`).
-- Produces: for a node of a `ClassAuto` plan whose target carries scored services and whose action touches anything: before dispatch, `Probe(ctx, service)` for each scored service on the target, and a red probe fails the node with reason `before-probe red: <service>` (nothing applied); after the node verifies, the same probes, and a red probe rolls the node back through the plan's `rollback_plan` path with reason `after-probe red: <service>`. Probes are bounded: one retry after 5 s (`c.probeRetry`, overridable in tests), then red.
+- Consumes: `Options.Probe`; the plan engine's node dispatch and rollback paths (`dispatch`, `onStepResult`, `RollbackOrder`, `MarkRolledBack`, the `deadman_confirm` send); `plan.ProbeGroups` and `plan.ScoredTouch` (Task 27b).
+- Produces: for a node of a plan of any class that touches a scored service (`ScoredTouch` non-empty), the probe runs inside the node, not as a separate node. Per probe group (Task 27b: one group per host and shared lock set; a node with its own `deadman` is its own group): before the first node of the group is dispatched, `Probe(ctx, service)` for each scored service of the group, and a red probe fails the node with reason `before-probe red: <service>` (nothing applied); after the last node of the group verifies (immediately after the node for a `deadman` node), the same probes, and a red probe rolls the group back through the plan's `rollback_plan` path with reason `after-probe red: <service>`. **`deadman_confirm` for a node with a dead-man window is sent only after its after-probe has passed**; on a red probe it is not sent, so the agent's own timer also rolls the node back. Probes are bounded: one retry after 5 s (`c.probeRetry`, overridable in tests), then red. One probe per group and phase: a ten-node pack on one host runs two probes, not twenty.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -2927,6 +3232,15 @@ func TestAutoAfterProbeRollsBack(t *testing.T) {
 	// RunAuto(... "t1" ...) then Wait(planID)
 	// want: node state rolled_back, reason contains "after-probe red: web"; the temp file content is the original
 }
+func TestDeadmanConfirmWaitsForAfterProbe(t *testing.T) {
+	// click plan, one deadman file.write node touching scored service "web"; Probe: nil before, error after
+	// want: no deadman_confirm control was sent for the node (OnControlSent saw none); the agent's timer (shortened in the test) rolls the file back;
+	// with a green after-probe the confirm is sent exactly once and only after the probe call
+}
+func TestOneProbePerGroupAndPhase(t *testing.T) {
+	// plan with five file.write nodes on h1 sharing the lock content:web, all touching "web"; count Probe calls
+	// want: 2 (one before, one after); with one of the five carrying deadman: 2+2 = 4
+}
 func TestAutoBeforeProbeStops(t *testing.T) {
 	// same setup; Probe always errors
 	// want: node failed with "before-probe red: web"; the agent received no apply step (OnStepSent saw none)
@@ -2936,7 +3250,112 @@ func TestAutoBeforeProbeStops(t *testing.T) {
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run AutoAfter\|AutoBefore -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified, touching only the `ClassAuto` branch.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "controller: scorer-mimic probe around scored nodes of auto plans"`
+- [ ] **Step 5: Commit.** `git commit -am "controller: scorer-mimic probe inside nodes that touch a scored service, confirm after the after-probe"`
+
+---
+
+### Task 27b: A plan that touches a scored service defaults to `rollback_plan`; probe groups (R12)
+
+Haiku-sized. The design (Plans, Dead-man switch, scorer-mimic probe) says: a plan that touches a scored service defaults to `rollback_plan` and a template naming another policy for it is a lint error; "touches" means a node's `Touches` hits a service the manifest scores (the manifest `health:` block decides until discovery has learned the live set); nodes that share a host and a lock set share one probe per phase, except a node with its own dead-man window, which is probed on its own.
+
+**Files:**
+- Create: `internal/plan/lint/ss011.go`, `internal/plan/probegroups.go`
+- Modify: `internal/controller/plantemplates.go` (default `on_failure`), `internal/plan/lint/lint.go` (register)
+- Test: `internal/plan/lint/ss011_test.go`, `internal/plan/probegroups_test.go`
+
+**Interfaces:**
+- Consumes: `lint.Register`, `Ctx.Manifest`, `Action.Touches`, `Action.Locks`, `plan.Plan.OnFailure` (Task 22 constants).
+- Produces:
+
+```go
+// package plan
+// ScoredTouch returns the manifest-scored services on the node's target host that the node's Touches hits.
+// A service is scored when services.yml says scored: true; until discovery has learned the live set the services named
+// by the manifest health: block are the scored set (no learned-set argument exists on purpose).
+func ScoredTouch(m *manifest.Manifest, n Node, touches []actions.Touch) []string
+
+// ProbeGroup is a set of nodes of one plan on one host that share one before-probe and one after-probe.
+type ProbeGroup struct {
+	Host     string
+	Services []string // scored services to probe, sorted
+	Nodes    []string // node ids in plan order
+}
+
+// ProbeGroups returns the groups: nodes that touch a scored service, target the same host and have overlapping Locks
+// (transitively) form one group; a node with Deadman set is always its own group (its confirm waits for its own after-probe).
+func ProbeGroups(p Plan, scored map[string][]string /* node id -> scored services touched */, locks map[string][]string /* node id -> locks */) []ProbeGroup
+
+// package lint: rule SS011 (Class click, standing, auto): a plan with any ScoredTouch whose OnFailure is explicitly set
+// to stop_dependents or continue is a finding "plan touches a scored service: on_failure must be rollback_plan".
+// An omitted on_failure is not a finding: ExpandTemplate sets rollback_plan for such a plan.
+```
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestDefaultRollbackPlanForScoredTouch(t *testing.T) {
+	// template with one file.write node on h1 (scored service web, path under the web root) and no on_failure
+	// -> expanded plan.OnFailure == rollback_plan; a template whose nodes touch nothing scored keeps stop_dependents
+}
+func TestSS011RejectsOtherPolicy(t *testing.T) {
+	// same template with on_failure: continue -> lint finding SS011 naming the node; with rollback_plan -> none
+}
+func TestProbeGroupsShareLocks(t *testing.T) {
+	// nodes a, b on h1 locks [content:web] and [content:web, path:x], node c on h1 locks [sshd], node d on h2 locks [content:web]
+	// all touch scored services: groups {a,b}, {c}, {d}
+}
+func TestProbeGroupDeadmanIsAlone(t *testing.T) {
+	// node b has Deadman 90s and shares a lock with a: groups {a}, {b}
+}
+func TestScoredTouchUsesManifestHealthBeforeDiscovery(t *testing.T) {
+	// manifest service "ecom-http" scored with a health: block on h1; a node whose Touches names its config path -> ["ecom-http"];
+	// a node on h1 touching an unscored path -> empty
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/... -run 'Rollback|SS011|ProbeGroup|ScoredTouch' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/... ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plan: rollback_plan default for scored touches (SS011) and probe groups"`
+
+---
+
+### Task 27c: The agent answers `busy`, not `failed`, over the step cap (R12)
+
+Haiku-sized. Today a valid step over the 8-step cap is answered `failed` (`internal/agent/exec.go`: "agent busy: too many steps executing"), which fires `on_failure` and, on an `auto` plan, a whole-plan rollback. The design: the agent answers `busy`, which the controller treats as retry, and the controller keeps per-host in-flight steps below the cap.
+
+**Files:**
+- Modify: `internal/plan/result.go` (`OutcomeBusy`), `internal/agent/exec.go`, `internal/controller/plans.go` (dispatch limit and retry), `docs/protocol.md`
+- Test: `internal/agent/busy_test.go`, `internal/controller/busy_test.go`
+
+**Interfaces:**
+- Consumes: `x.sem` (cap `n`, 8 by default), `finishStep`, the plan engine's dispatch and `onStepResult`.
+- Produces: `plan.OutcomeBusy = "busy"` (accepted by result validation); the agent answers `busy` with the step's digest and no state change when `sem` is full (the step is not recorded as running, so a re-send is processed normally); the controller limits in-flight steps per host to `MaxHostInflight = 6` (a field of `Options`, default 6, below the agent cap) and, on a `busy` result, re-queues the same step after `BusyRetry` (default 2 s, `Options.BusyRetry`, up to 30 retries, then the node fails with `agent busy for 60 s`). A `busy` result never counts toward `on_failure`, never records an audit failure and never opens the auto breaker.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestAgentAnswersBusyOverCap(t *testing.T) {
+	// agent harness with exec cap 2 and a slow test action; send three signed apply steps for different nodes
+	// want: two accepted, the third result Outcome == plan.OutcomeBusy; the third node is not in the running set
+}
+func TestBusyResultValidates(t *testing.T) { /* plan.Result{Outcome: "busy"} passes validation; "bogus" still fails */ }
+func TestControllerKeepsInflightBelowCap(t *testing.T) {
+	// one host, 12 independent ready nodes, a fake agent that holds results; want: never more than MaxHostInflight steps sent before a result returns
+}
+func TestControllerRetriesBusy(t *testing.T) {
+	// fake agent answers busy to the first send of node n then verified; want: node n verified, on_failure never invoked, no plan.rollback event
+	// after 31 busy answers: node failed with "agent busy"
+}
+func TestBusyOnAutoPlanDoesNotRollBack(t *testing.T) {
+	// RunAuto plan, agent answers busy twice for node 2, then ok: plan ends verified; the breaker count is unchanged
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ ./internal/controller/ -run 'Busy|Inflight' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/ ./internal/agent/ ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "exec: busy answer over the step cap, per-host in-flight limit, retry on busy"`
 
 ---
 
@@ -3247,7 +3666,7 @@ func TestUnknownControlRefused(t *testing.T) {
 
 **Interfaces:**
 - Consumes: `event.ControllerFact` (Task 31), `internal/atomicfile`.
-- Produces: `work_window` fact data `{window string, tag string, until RFC 3339 string, end bool}` opens, extends or (with `end: true`) ends the window; the window is persisted at `<StateDir>/work_window.json` atomically; while `now < until`, every event the agent emits whose `Tag` is empty gets the window's tag; at `until` it ends by itself, with or without a link. An event that already carries a plan tag keeps it.
+- Produces: `work_window` fact data `{window string, tag string, user string, until RFC 3339 string, for string (a Go duration), end bool}` opens, extends or (with `end: true`) ends the window; the window is persisted at `<StateDir>/work_window.json` atomically. **Tags cover only our own activity (R6):** while the window is open, an event gets the window's tag only if its `Tag` is empty, its kind is change-class (`file_change`, `inventory.row`, `audit.rules_changed`, `winevt.sec_event`; the set is `window.ChangeClass`) and it is attributed to the claimed user (its `user` field equals the window's `user`); process, network, authentication and honeytoken events are never stamped. The window ends by a monotonic duration: `for` counted from the agent's receipt on `Agent.mono` (a monotonic source, default `time.Since(start)`), so changing the system clock neither extends nor ends it; `until` is display only. It ends by itself at the deadline with or without a link. An event that already carries a plan tag keeps it. `shortcut: attribution by the user field, a change by another process of the same user is tagged; the window's remaining time is persisted every 10 s and downtime does not count, upgrade when the controller can end windows after a reconnect`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3256,13 +3675,20 @@ func TestWorkWindowStampsTag(t *testing.T) {
 	dir := t.TempDir()
 	h, _ := NewHarness(HarnessOptions{Host: "h1", StateDir: dir, Factories: []Factory{emitterFactory("wx")}}) // emits "wx.e" on demand
 	now := time.Now()
-	h.setNow(func() time.Time { return now })
+	mono := time.Duration(0)
+	h.setMono(func() time.Duration { return mono })
 	h.Fact(event.ControllerFact{ID: "ww", Fact: "work_window", TS: now, TTL: time.Hour,
-		Data: map[string]any{"window": "w1", "tag": "window:w1", "until": now.Add(10 * time.Minute).UTC().Format(time.RFC3339)}})
-	// trigger one emit -> last emitted event has Tag "window:w1"
+		Data: map[string]any{"window": "w1", "tag": "window:w1", "user": "alice", "for": "10m", "until": now.Add(10 * time.Minute).UTC().Format(time.RFC3339)}})
+	// emit file_change with user alice -> Tag "window:w1"
+	// emit file_change with user mallory -> Tag ""
+	// emit process_start (user alice), auth_event, conn, honeytokens.read -> Tag "" (never stamped)
 	// an emit with Tag "plan:p1" keeps "plan:p1"
-	now = now.Add(11 * time.Minute)
-	// trigger one emit -> Tag ""
+	mono = 11 * time.Minute
+	// emit file_change with user alice -> Tag ""
+}
+func TestWorkWindowIgnoresWallClock(t *testing.T) {
+	// open a 10 minute window; set the wall clock (h.setNow) one hour ahead and one hour back: a file_change by the claimed user is still tagged
+	// until mono passes 10 minutes, and untagged after, whatever the wall clock says
 }
 func TestWorkWindowSurvivesRestart(t *testing.T) {
 	// open a window ending in 10 minutes in harness 1; build harness 2 on the same StateDir
@@ -3280,18 +3706,95 @@ func TestWorkWindowEnd(t *testing.T) {
 
 ---
 
+### Task 32a: Plan tags only on events from the step's own process tree (R6)
+
+Haiku-sized. No task stamped plan tags on events: `actions.WithTag` records resource tags only. The design (Execution engine: Tagging and adoption, "What may be tagged") stamps a plan tag only on events whose process descends from the step's own child; an event from any other process on the host is untagged even while a step runs.
+
+**Files:**
+- Create: `internal/agent/tagscope.go`
+- Modify: `internal/agent/agent.go` (`emit` consults the scope), `internal/actions/env.go` (register spawned children), `internal/actions/host_exec.go` (the `host.exec` runner registers its child)
+- Test: `internal/agent/tagscope_test.go`
+
+**Interfaces:**
+- Consumes: the `pid`, `ppid` and `pid_start` payload fields of `process_start`, `file_change` and `conn` (Task 4/4a), `actions.Tag`.
+- Produces:
+
+```go
+// package agent
+type TagScope struct{ /* guarded map: pid+start -> plan tag */ }
+
+func NewTagScope() *TagScope
+// Register adds the step's own child process (pid and start time) under the plan tag.
+func (s *TagScope) Register(planTag string, pid int, startTime uint64)
+// Release removes every process registered under planTag (called when the step ends).
+func (s *TagScope) Release(planTag string)
+// Tag returns the plan tag for an event: for a process_start whose ppid (with the parent's start time when the event carries it)
+// is registered, the child is registered too (descent) and the tag is returned; for any other kind whose pid is registered, the tag;
+// otherwise "". Window tags are separate (Task 32).
+func (s *TagScope) Tag(kind string, fields map[string]any) string
+```
+
+An event that already has a `Tag` keeps it. `shortcut: descent is followed through process_start events the agent sees (audit, winevt); a child started before the agent's sensor attaches is untagged, upgrade when the executor can read /proc/<pid>/task children`. A pid is matched together with its start time so a reused pid is not tagged.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestTagScopeChildAndDescendants(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 5000)
+	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "pid_start": uint64(5001)}); got != "plan:p1" {
+		t.Fatalf("child: %q", got)
+	}
+	if got := s.Tag("process_start", map[string]any{"pid": 102, "ppid": 101}); got != "plan:p1" {
+		t.Fatalf("grandchild: %q", got)
+	}
+	if got := s.Tag("file_change", map[string]any{"pid": 102}); got != "plan:p1" {
+		t.Fatalf("file_change from a descendant: %q", got)
+	}
+}
+func TestTagScopeIgnoresOtherProcesses(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 5000)
+	for _, f := range []map[string]any{{"pid": 900, "ppid": 1}, {"pid": 901, "ppid": 4}, {"pid": 100, "pid_start": uint64(9999)}} {
+		if got := s.Tag("process_start", f); got != "" {
+			t.Errorf("%v tagged %q", f, got)
+		}
+	}
+}
+func TestTagScopeRelease(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 5000)
+	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100})
+	s.Release("plan:p1")
+	if s.Tag("file_change", map[string]any{"pid": 101}) != "" {
+		t.Fatal("descendant still tagged after the step ended")
+	}
+}
+func TestEmitStampsOnlyTheStepTree(t *testing.T) {
+	// harness: a host.exec step that runs a child; emit a process_start for its child (tagged) and one for an unrelated pid (untagged)
+	// while the step runs; after it ends neither is tagged
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/agent/ -run 'TagScope|StampsOnlyTheStepTree' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/agent/ ./internal/actions/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "agent: plan tags only on events from the step's own process tree"`
+
+---
+
 ### Task 33: JSON Schema of module config blocks
 
 **Files:**
 - Modify: `internal/module/schema.go`
-- Create: `internal/module/all/schema_test.go`, `manifest/schema/modules/` (generated files)
+- Create: `internal/module/duration.go`, `internal/module/duration_test.go`, `internal/module/all/schema_test.go`, `manifest/schema/modules/` (generated files)
 - Test: `internal/module/schema_test.go`
 
 **Interfaces:**
 - Consumes: `plan.BlockFor` (Task 12), `module.Registered`, `module.Configurable`, `agent.Registered()` (Task 1).
-- Produces: `module.Schema(v any) ([]byte, error)`; one `manifest/schema/modules/<name>.schema.json` per contract module; the check that committed files equal the generated ones (`go test ./internal/module/all/ -run Schema -update` rewrites them).
+- Produces: `module.Duration` (R11, the one exception to the one-to-one YAML mapping), `module.Schema(v any) ([]byte, error)`; one `manifest/schema/modules/<name>.schema.json` per contract module; the check that committed files equal the generated ones (`go test ./internal/module/all/ -run Schema -update` rewrites them).
 
-Mapping: struct → `object` with `properties` from json tags (embedded structs flattened), `additionalProperties: false`, `required` = fields without `omitempty`; `string`, `bool` → `boolean`, ints → `integer`, floats → `number`, `time.Duration` → `integer` with `"description": "nanoseconds"`, slices → `array` with `items`, `map[string]T` → `object` with `additionalProperties` = schema of T, pointers → the pointee, `any` → `{}`. Output is indented JSON with sorted keys and `"$schema": "https://json-schema.org/draft/2020-12/schema"`, `"title": <name>`.
+Mapping: struct → `object` with `properties` from json tags (embedded structs flattened), `additionalProperties: false`, `required` = fields without `omitempty`; `string`, `bool` → `boolean`, ints → `integer`, floats → `number`, `module.Duration` → `string` with `"pattern": "^[0-9]+(ns|us|ms|s|m|h)([0-9]+(ns|us|ms|s|m|h))*$"` (a bare `time.Duration` in a settings struct is an error from `Schema`: R11), slices → `array` with `items`, `map[string]T` → `object` with `additionalProperties` = schema of T, pointers → the pointee, `any` → `{}`. Output is indented JSON with sorted keys and `"$schema": "https://json-schema.org/draft/2020-12/schema"`, `"title": <name>`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3306,7 +3809,7 @@ func TestSchemaOfStruct(t *testing.T) {
 		Hosts  []string          `json:"hosts,omitempty"`
 		Inner  inner             `json:"inner"`
 		Map    map[string]string `json:"map,omitempty"`
-		Window time.Duration     `json:"window,omitempty"`
+		Window Duration          `json:"window,omitempty"`
 	}
 	b, err := Schema(cfg{})
 	if err != nil {
@@ -3323,6 +3826,40 @@ func TestSchemaOfStruct(t *testing.T) {
 	if s["additionalProperties"] != false || props["level"].(map[string]any)["type"] != "integer" {
 		t.Fatalf("%s", b)
 	}
+}
+// internal/module/duration.go: type Duration struct{ time.Duration }; UnmarshalJSON and UnmarshalYAML accept a string ("90s", "2m", "1h30m") and
+// reject a number, a negative value and an empty string; MarshalJSON and MarshalYAML write d.String().
+func TestDurationRoundTrip(t *testing.T) {
+	var s struct {
+		Dead Duration `json:"dead" yaml:"dead"`
+	}
+	if err := yaml.Unmarshal([]byte("dead: 90s\n"), &s); err != nil || s.Dead.Duration != 90*time.Second {
+		t.Fatalf("%v %v", s, err)
+	}
+	if err := json.Unmarshal([]byte(`{"dead":"2m"}`), &s); err != nil || s.Dead.Duration != 2*time.Minute {
+		t.Fatalf("%v %v", s, err)
+	}
+	b, _ := json.Marshal(s)
+	if string(b) != `{"dead":"2m0s"}` {
+		t.Fatalf("%s", b)
+	}
+	for _, bad := range []string{`{"dead":90}`, `{"dead":"-5s"}`, `{"dead":""}`, `{"dead":"soon"}`} {
+		if json.Unmarshal([]byte(bad), &s) == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+}
+func TestSchemaRejectsBareTimeDuration(t *testing.T) {
+	type bad struct {
+		Common
+		D time.Duration `json:"d"`
+	}
+	if _, err := Schema(bad{}); err == nil {
+		t.Fatal("a bare time.Duration in a settings struct must be an error")
+	}
+}
+func TestSchemaOfDuration(t *testing.T) {
+	// Schema of a struct with a Duration field: the property is {"type":"string","pattern":...}; "90s", "2m" and "1h30m" match the pattern, "90" does not
 }
 // internal/module/all/schema_test.go
 func TestModuleSchemasCommitted(t *testing.T) {
@@ -3442,7 +3979,7 @@ func TestAgentChecks4to7Pass(t *testing.T) {
 
 **Interfaces:**
 - Consumes: Tasks 34 and 35; `plan.BlockFor`; `controller.New`, `RunModules`, `ModuleHealth` (Task 19), `hostFor` through `RunModules`; `module.Configurable`, `module.AnalyzerProvider`.
-- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 11: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON).
+- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 11: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON) and `tables_replay` (check 11, R10: for a module with `Manifest().Tables`, run it over `c.Seed` plus `c.Commands` (the module's own command events, committed through `Host.Emit` like the operator would), dump its `<module>_*` tables, drop and re-create them, replay the module's committed events and its content files through the writer, and compare: the rebuilt rows must equal the dump; a module whose table holds data no event carries fails with the table and column named). `ControllerCase` gains `Commands []event.Event`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3472,12 +4009,22 @@ func TestControllerCheck9CatchesLooseConfig(t *testing.T) {
 		t.Fatal("unknown key accepted")
 	}
 }
+func TestControllerCheck11CatchesUnreplayableTable(t *testing.T) {
+	// a module whose writer also inserts a row from a UI handler without emitting an event (table ctltest_notes)
+	c := ControllerCase{Module: sideWriterModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
+	if errs := runControllerChecks(c); errs["tables_replay"] == nil || !strings.Contains(errs["tables_replay"].Error(), "ctltest_notes") {
+		t.Fatal("table that cannot be rebuilt from events not detected")
+	}
+}
+func TestControllerCheck11PassesCommandEvents(t *testing.T) {
+	// the same table written only from a command event kind ctltest.note (in Emits, passed in ControllerCase.Commands) rebuilds identically
+}
 func TestControllerChecksPass(t *testing.T) {
 	Controller(t, ControllerCase{Module: goodControllerModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)})
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check8|Check9|Check11|ControllerChecks' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check8|Check9|Check11|ControllerChecks|Replay' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified. The controller harness is a real `controller.New` in `t.TempDir()` with `AgentListen: "127.0.0.1:0"`, `UIListen: "off"` and a manifest directory holding a minimal topology, one host and `modules/<name>.yml`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "conformance: reconfiguration, strict blocks, controller checks, analyser determinism"`
@@ -3495,7 +4042,7 @@ func TestControllerChecksPass(t *testing.T) {
 - Consumes: `agent.Registered()`, `module.Registered()`, `event.Declared()`, `PreContract`, `AllowedLibraries`, `CoreImports`, `phylax_design.md`.
 - Produces these tests:
   - `TestNoSiblingImports` (check 9, bug 15 guard): for every contract module (a registered agent factory or controller module with a manifest, not in `PreContract`), `go list -deps -f '{{.ImportPath}}' ./<pkg>/...` contains no other module's package (from `ModulePackages`) and nothing under `internal/` outside `CoreImports`, `AllowedLibraries` and its own tree; and its `internal/agent/mods/<name>*.go` files import only core packages, the allowed libraries and its own package (parsed with `go/parser`). `internal/enroll` is never allowed.
-  - `TestKindTable` (T46): parse the "Event kinds" table of `phylax_design.md` (rows between the header `| Kind | Class |` and the next blank line); every declared kind outside the test prefixes (`ttest.`, `ctltest.`, `regtest.`) has a row with the same schema, alert flag and class (`common` for the eight common kinds, `core` for the 29, `module` otherwise); every common and core row is declared; every row whose emitter is a contract module is declared; every contract module's `Emits` kinds have rows naming it as emitter; every `Consumes` entry has a row.
+  - `TestKindTable` (T46): parse the "Event kinds" table of `phylax_design.md` (rows between the header `| Kind | Class |` and the next blank line); every declared kind outside the test prefixes (`ttest.`, `ctltest.`, `regtest.`) has a row with the same schema, alert flag and class (`common` for the eight common kinds, `core` for the 33 (Tasks 5 and 5a), `module` otherwise); every common and core row is declared; every row whose emitter is a contract module is declared; every contract module's `Emits` kinds have rows naming it as emitter; every `Consumes` entry has a row.
   - `TestPreContractShrinks`: every registered factory or controller module without a manifest is in `PreContract`; every `PreContract` name that now has a manifest fails the test ("remove X from PreContract").
   - `TestConformanceTestPresent`: every contract module's package directory has a `_test.go` file containing `conformance.Agent(` or `conformance.Controller(`.
   - `TestLibrariesStateless`: each `AllowedLibraries` package that exists has no `init` function calling `Register`, `Declare` or `RegisterFactory`, and no package-level `var` of map, slice or pointer type assigned outside `init` (parsed with `go/parser`; `shortcut: syntactic check, upgrade to go/analysis if a library hides state behind a constructor`).
@@ -3673,7 +4220,7 @@ func TestHealthPageModuleTable(t *testing.T) {
 
 **Interfaces:**
 - Consumes: the conformance package (Tasks 34 to 37).
-- Produces: `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v3-redesign` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
+- Produces: `TestKindCounts` (M1): the three numbers in the Event kinds prose of `phylax_design.md` ("There are N kinds: 8 common kinds, C core kinds and M module kinds") equal the counts computed from the table, and the test names in the T46 row ("All twelve checks") equal the conformance suite's check list length; a drift fails CI. `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v3-redesign` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
 
 - [ ] **Step 1: Remove the skip:**
 
@@ -3717,6 +4264,12 @@ Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom
 | One package, registration file, config block with `enabled`/`act_enabled`, unknown fields an error, schema from struct | 11, 12, 33, 36 (check 9) |
 | Declared typed events, `Declare`/`Lookup`/`New`/`Decode`, schema versions | 3, 4, 5 |
 | Envelope `Schema` and `Tag`, protocol minor | 2 |
+| Kinds for the console-script alerts, a locked controller and the store quota (R1, R8, R9) | 5a |
+| Disk quotas, shed order, audit exemption (R9) | 8b |
+| Per-host `act` and `safe_mode_hosts` (R2) | 11b |
+| Probe inside the node, confirm after the after-probe, `rollback_plan` default, `busy` (R12) | 27, 27b, 27c |
+| Tags only on our own activity (R6) | 32, 32a |
+| `module.Duration` (R11); table replay (R10) | 33, 36 |
 | Canonical fields of common kinds, `x_` prefix, rules reject others (CI half) | 4, 35 (check 12) |
 | Kind table single source, compared with the registry and `Consumes` (T46) | 37 |
 | Capability manifest, published by `phylax modules` and in `hello` | 1, 7, 14, 40 |

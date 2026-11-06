@@ -1889,13 +1889,13 @@ Precondition: W2 merged `session.terminate_predating{account | source, before}` 
 - Produces:
 
 ```go
-type Session struct{ ID, User, Source string; Start time.Time }
+type Session struct{ ID, User, Source string; Start time.Time; LogonType string; OwnsServiceProcess bool } // LogonType: rdp | ssh | network | console | service | batch | other; OwnsServiceProcess: the session owns a process of a manifest service (process.unit or binaries)
 type EvictParams struct{ Before, Now time.Time; Scored bool; CutoffMS int64; ExemptSources []string }
 func EvictionPolicy(ss []Session, p EvictParams) (kill, flag []Session)
 // session.terminate_predating gains params: scored bool, cutoff_ms int (>= 0), exempt_sources string (comma-separated addresses)
 ```
 
-Rules: a session that began at or after `Before` is untouched. Admin and service accounts (`Scored` false): kill every session that began before `Before`. Scored accounts: kill only a session that began before `Before`, whose age at `Now` is at least `CutoffMS`, whose source parses as an address not in `ExemptSources`, and whose `Start` is non-zero; a session older than the cutoff from an exempt source is flagged; any session that cannot be classified (zero start, unparseable or empty source) is flagged, never killed; `CutoffMS == 0` (no delay measured yet) means flag-only: nothing is killed.
+Rules (design R5, 2026-11-06): only interactive logon types (`rdp`, `ssh`, `network`, `console`) are eligible for any account class; a session of another logon type, or with `OwnsServiceProcess`, is never killed and is flagged instead (a Windows service logon session or a long-lived database connection owned by the rotated account stays). A session that began at or after `Before` is untouched. Admin accounts (`Scored` false): kill every eligible session that began before `Before`. Scored accounts: kill only a session that began before `Before`, whose age at `Now` is at least `CutoffMS`, whose source parses as an address not in `ExemptSources`, and whose `Start` is non-zero; a session older than the cutoff from an exempt source is flagged; any session that cannot be classified (zero start, unparseable or empty source) is flagged, never killed; `CutoffMS == 0` (no delay measured yet) means flag-only: nothing is killed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1916,7 +1916,11 @@ func TestEvictionPolicyTable(t *testing.T) { // T49 CI half
 	k2, f2 := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: true, CutoffMS: 0, ExemptSources: nil})
 	// flag-only: len(k2) == 0; every session older than Before is flagged
 	k3, _ := EvictionPolicy(ss, EvictParams{Before: before, Now: now, Scored: false})
-	// plain eviction: kills every session with a non-zero Start before Before: old-red, old-from-scorer-src, unclassifiable, before-but-young
+	// plain eviction: kills every eligible session with a non-zero Start before Before: old-red, old-from-scorer-src, unclassifiable, before-but-young
+}
+func TestEvictionNeverEndsServiceSessions(t *testing.T) {
+	// sessions: {svc-logon, LogonType "service"}, {db-conn, LogonType "network", OwnsServiceProcess true}, {rdp-old, "rdp"}, all older than Before
+	// plain and scored policies: kill == [rdp-old] only (scored additionally needs its cutoff rules); svc-logon and db-conn are flagged, never killed
 }
 func TestTerminateActionParams(t *testing.T) { /* negative cutoff_ms rejected; scored true without cutoff_ms defaults to flag-only; the action output lists killed and flagged ids */ }
 ```
@@ -2163,7 +2167,7 @@ func TestAcceptRecordsApprover(t *testing.T) { /* accepting (Prepare from the pr
 
 **Interfaces:**
 - Consumes: `DeriveBreakGlassTypeable`, the manifest accounts, `Registrar`, `creds.t0` events.
-- Produces: `phylax creds sheet -manifest <dir> -secret-file <path> [-epoch N]` printing, offline, every host's `sysadmin`, root and local Administrator, the domain admins and service accounts, the Palo `admin` and VyOS `vyos` accounts with their derived values and a checkbox per step; scored users never appear; `(*Module).T0Enter(ctx, secret, by)` derives and stores the values in the vault once the controller is up (a POST action, audited); `(*Module).Tick(ctx, host, account, by)` emits `creds.t0` (an owner name is required). Unscored rotation after enrollment uses `plans/creds/unscored-rotation.yml` through `Host.Propose`; any successful admin authentication from a source other than the controller after rotation is left to `detect` rule D9. Pages: `/credentials` (inventory with masked secrets and reveal as an audited POST, open proposals, the PCR list screen with staged tick, countdown, window remaining and reply form, the transaction log, the `reverted` queue), a host-grid column "creds handled" (verified when the host's T+0 rotation is ticked and no row is `reverted` or open), a tile (open transactions, reverted rows). Controller conformance: starts locked (`degraded`, vault gap), stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration.
+- Produces: `phylax creds sheet -manifest <dir> -secret-file <path> [-epoch N]` printing, offline, every host's `sysadmin`, root and local Administrator, the domain admins, the Palo `admin` and VyOS `vyos` accounts (the interactive admin identities; service and application accounts never appear, they rotate later by probed plan, design R4) with their derived values and an urgent-hardening step (Zerologon first on the DC) and a checkbox per step; scored users never appear; `(*Module).T0Enter(ctx, secret, by)` derives and stores the values in the vault once the controller is up (a POST action, audited); `(*Module).Tick(ctx, host, account, by)` emits `creds.t0` (an owner name is required). Unscored rotation after enrollment uses `plans/creds/unscored-rotation.yml` through `Host.Propose`; any successful admin authentication from a source other than the controller after rotation is left to `detect` rule D9. Pages: `/credentials` (inventory with masked secrets and reveal as an audited POST, open proposals, the PCR list screen with staged tick, countdown, window remaining and reply form, the transaction log, the `reverted` queue), a host-grid column "creds handled" (verified when the host's T+0 rotation is ticked and no row is `reverted` or open), a tile (open transactions, reverted rows). Controller conformance: starts locked (`degraded`, vault gap), stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration.
 
 - [ ] **Step 1: Write the failing tests**
 

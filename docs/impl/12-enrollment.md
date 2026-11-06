@@ -15,9 +15,9 @@
 - **Built now, for 2026-11-07, together with W0, W1 and W2.** David scoped the Invitational build to W0, W1, W2 and W12; W3 to W11 come later. W12 therefore depends on nothing from W3 to W11 except what it does itself. The README row says "W7 seams (`internal/checks/probe` ntlm, winrm)"; this plan replaces that edge. **Task 1 performs exactly W7 Task 1 Steps 1 to 3 ("1A", the probe extraction)**, with W7's names, file moves, tests and commit message copied. When Task 1 merges, W7 starts at its Step 4 ("1B"); W7's plan needs one line saying 1A was done by W12 (not edited here). If W7 1A has already merged when this plan is built, skip Task 1 and run its verification step only.
 - **Entry gate:** W0, W1 and W2 merged (W2 Tasks 2, 3 and 5 included: `Bundle.Safe`, `Controller.WriteBundles`, `phylax serve -bundles`, safe mode at first run, `e.sh` and `e.ps1`). Branch `v4-enrollment`, cut from `v3-redesign`.
 - **Order inside the plan:** what the event needs first (Tasks 2 to 7: package, events, bootstrap handler and one-liner, SSH push, `set-controller`, CLI), then the WinRM push and the operator page (Tasks 8 to 11), then recovery (Tasks 12 and 13), then self-protection and the `agent.*` family (Tasks 14 to 18), then the lab (Task 19). Each task leaves `make build build-windows vet test race` green.
-- **W2's code moves, it is not rewritten.** `Bundle.Safe`, `BundleOptions` and `WriteBundles` move from `internal/controller/bundles.go` into `internal/enroll` with their tests; the old files are deleted in the same commit. `writeBundles` in `cmd/phylax/serve.go`, `adoptBootstrap` and the `-bundles`, `-advertise`, `-bundle-ttl`, `-bundle-safe` flags keep their behaviour. `tools/invitational/e.sh` and `e.ps1` stay as W2 wrote them (they serve the Invitational kit and keep working); the signed one-liner of Task 4 is the production path, and the console scripts do not change.
+- **W2's code moves, it is not rewritten.** `Bundle.Safe`, `BundleOptions` and `WriteBundles` move from `internal/controller/bundles.go` into `internal/enroll` with their tests; the old files are deleted in the same commit. `writeBundles` in `cmd/phylax/serve.go`, `adoptBootstrap` and the `-bundles`, `-advertise`, `-bundle-ttl`, `-bundle-safe` flags keep their behaviour. `tools/invitational/e.sh` and `e.ps1` stay as W2 wrote them (they serve the Invitational kit and keep working); the signed one-liner of Task 4 is the production path. The console scripts' own text does not change, but the enrollment watch W2 Task 3a added (binary hash in `hello`, `enroll.hash_mismatch`, `enroll.no_show`, bundle removal once a host connects, alert-class `enroll.refused`) moves into `internal/enroll` with the rest of the bundle code and keeps its tests (R1, decided 2026-11-06).
 
-## Design gaps found while writing this plan (Task 2 or the named task writes each into `phylax_design.md` in the same commit)
+## Design gaps found while writing this plan (accepted by David on 2026-11-06 as written; already written into `phylax_design.md` by the review pass, M19 to M29, so the named task checks the design text instead of writing it)
 
 1. **Re-enrollment restarts the event chain at seq 1, and the store forbids that.** A new reservation gives a fresh VM, so its spool starts at 1 while the store holds `last_seq = N` for the host (`ReplaceAgentKey` keeps the chain). Chosen: `Store.ArchiveAgent` moves the old chain to the id `<host>~<n>` (tables `events`, `gaps`, `alerts`) and the host starts a new chain under its own name (Task 3). `shortcut: archived rows are not re-verified under their new id, upgrade when a chain-verify command exists`.
 2. **The WinRM push cannot upload a 40 MB binary.** SOAP chunks are about 4 KB, so roughly 9,000 round trips. Chosen: the WinRM push runs the Windows one-liner (Task 4) through the shell, so the host downloads the binary from the bootstrap handler over the pinned connection; the host must reach the controller, which it must anyway (Task 9).
@@ -661,6 +661,64 @@ func TestRestoreResendForgedHistoryRefused(t *testing.T)
 
 ---
 
+### Task 12a: The restore epoch is `max(snapshot, reported)+1` (R7)
+
+`store.Restore` raises the epoch by one from the snapshot's epoch E, so a second restore from the same or an older snapshot produces E+1 again, and agents that accepted `(E+1, s)` from the first restored controller reject everything from the second. The design (Controller recovery): `hello` carries the agent's highest accepted epoch, the restored controller uses `max(snapshot epoch, all reported)+1`, and until every enrolled agent has reported the controller signs nothing and shows "restored: waiting for N agents".
+
+**Files:**
+- Modify: `internal/link/message.go` (`Hello.Epoch`), `internal/agent/agent.go` (send `plan.FileSeqStore.Load().Epoch`), `internal/store/backup.go` (`RaiseEpoch`), `internal/controller/agent.go` (record a report in `hello`), `internal/controller/restorewait.go` (new), `docs/protocol.md`
+- Test: `internal/store/epoch_test.go`, `internal/controller/restorewait_test.go`, `internal/e2e/restore_test.go` (extends Task 12)
+
+**Interfaces:**
+- Consumes: `store.Restore`, `Store.Epoch`, `Store.Epochs`, agent rows with `RestoredSeq > 0`, the signing path (`Controller.sign*`, `PlanSigner`).
+- Produces:
+
+```go
+// link.Hello gains:
+Epoch uint64 `json:"epoch,omitempty"` // highest epoch of a signed config or step this agent has accepted (its sequence mark)
+
+// package store
+// RaiseEpoch sets the epoch to max(current, atLeast), appending an epochs row with reason when it rose. It returns the epoch in force.
+func (s *Store) RaiseEpoch(ctx context.Context, atLeast uint64, reason string) (uint64, error)
+
+// package controller
+// SigningReady is false after a restore until every agent enrolled in the snapshot has sent a hello (reporting its epoch) or an operator
+// released the wait. Plan signing, facts and deadman_confirm check it; a refused call says "restored: waiting for N agents".
+func (c *Controller) SigningReady() (ready bool, waiting []string)
+// ReleaseRestoreWait ends the wait for the named agents (or all when none are named), recording the epoch in force and the operator in the audit trail.
+func (c *Controller) ReleaseRestoreWait(ctx context.Context, by string, hosts ...string) error
+```
+
+Rules: on a `hello` with `Epoch >= current`, the controller calls `RaiseEpoch(ctx, h.Epoch+1, "agent reported epoch N")`; the wait set is the agents with `RestoredSeq > 0` at start; a hello removes its host from the set. The wait is held in memory plus the `restore_wait` kv key, so a controller restart during the wait keeps waiting. A normal start (no restore) has an empty set and `SigningReady` is true. `shortcut: a controller restored twice at once is not detected, upgrade if two controllers could ever hold one snapshot`.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestRaiseEpoch(t *testing.T) {
+	// st at epoch 3: RaiseEpoch(2) returns 3 and adds no row; RaiseEpoch(7, "r") returns 7, Epoch() == 7, Epochs() ends with {7, "r"}
+}
+func TestHelloCarriesEpoch(t *testing.T) {
+	// the in-package test agent with a sequence mark (epoch 5, seq 9): its hello has Epoch == 5
+}
+func TestRestoreTwiceFromSameSnapshot(t *testing.T) {
+	// e2e: snapshot at epoch 1; restore #1 -> epoch 2; agent h1 accepts a step signed at (2, 1); stop; restore #2 from the same snapshot -> store epoch 2 again;
+	// h1 reconnects with hello Epoch 2 -> controller epoch raised to 3; a step signed after SigningReady is (3, n) and h1 accepts it;
+	// without the raise the agent refuses it (pin the failure first)
+}
+func TestSigningWaitsForAgents(t *testing.T) {
+	// restored controller with agents h1 and h2 in the snapshot; before any hello SigningReady() is false with waiting [h1 h2]; a plan approve is refused
+	// with "restored: waiting for 2 agents"; after both hellos it is true; ReleaseRestoreWait(ctx, "driver", "h2") releases only h2 and writes an audit entry
+}
+func TestRestoreWaitSurvivesRestart(t *testing.T) { /* stop and start the controller on the same data dir mid-wait: still waiting for the same hosts */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/ ./internal/controller/ ./internal/e2e/ -run 'RaiseEpoch|HelloCarriesEpoch|RestoreTwice|SigningWaits|RestoreWait' -count=1`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "recovery: restore epoch from agent reports, signing waits for agents"`
+
+---
+
 ### Task 13: Controller snapshot and `serve -restore`
 
 **Files:**
@@ -700,6 +758,53 @@ func TestServeRestoreFlag(t *testing.T) // cmd/phylax: write a snapshot from a l
 - [ ] **Step 3: Implement.** `Backup(StateOnly)` into a temp dir, tar the files (regular files only, fixed list), `age.Encrypt(w, scryptRecipient)` with `SetWorkFactor(15)` (`shortcut: scrypt work factor 15 (about 100 ms), raise when snapshots are rare`), write through `atomicfile.Write`. Decrypt with a 64 MiB `io.LimitReader`. The design edit lists the files in the snapshot.
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "recovery: encrypted controller snapshots and serve -restore"`
+
+---
+
+### Task 13a: A locked controller says so (R8)
+
+After a crash or reboot with nobody at the console, plan signing and secret access stay locked until the passphrase is entered: auto plans, facts, `deadman_confirm` and safe-mode toggles stop, and in-flight dead-man timers fire and roll back applied changes. Nothing surfaced that state. The design (Controller recovery: restart safety): a critical `controller.locked` alarm and a LOCKED banner; the dead-man is unchanged (fail-safe). One flag drives the banner, the alarm and the snapshot writer's "skipped" state (Task 13).
+
+**Files:**
+- Create: `internal/controller/locked.go`
+- Modify: `internal/controller/controller.go` (set the flag at start when a vault exists and no passphrase is held; clear it in the unlock handler), `internal/controller/snapshot.go` (`RunSnapshots` reports `skipped: locked` from the flag), `internal/ui/` (header banner and Overview tile), `internal/controller/webops.go` (`Overview.Locked`)
+- Test: `internal/controller/locked_test.go`, `internal/ui/locked_test.go`
+
+**Interfaces:**
+- Consumes: `EmitController`, `event.ControllerLocked` (W1 Task 5a), the notify path for alert-class events, Task 13's `RunSnapshots(pass func() []byte)`.
+- Produces:
+
+```go
+// Locked reports whether plan signing is locked (a vault exists and no passphrase has been entered since start), and since when.
+func (c *Controller) Locked() (locked bool, since time.Time)
+// Unlock is the existing passphrase entry; on success it clears the flag and emits controller.locked is not repeated.
+// At start with Locked() true the controller emits one event.ControllerLocked at PriorityCritical (Stopped: auto plans, facts,
+// deadman_confirm, safe_mode, snapshots) and re-emits it every 5 minutes until unlocked, so notify keeps ringing.
+// webops: Overview gains Locked bool, LockedSince time.Time. ui: a red LOCKED banner in the page header on every page and a tile on the Overview
+// naming what is stopped; the banner links to the unlock form.
+```
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestStartLockedEmitsCritical(t *testing.T) {
+	// controller on a data dir with a vault file, no passphrase: Locked() true; Latest(controller, controller.locked) is Critical with Stopped containing "deadman_confirm";
+	// an alert row exists (alert-class) for it
+}
+func TestLockedReemitsUntilUnlock(t *testing.T) {
+	// clock moved by 5 minutes twice: three events; after Unlock none more, Locked() false
+}
+func TestNoVaultIsNotLocked(t *testing.T) { /* no vault file: Locked() false, no event */ }
+func TestSnapshotWriterSkipsWhileLocked(t *testing.T) { /* RunSnapshots with the flag set writes nothing and reports "skipped: locked" in its status; after unlock the next tick writes */ }
+func TestDeadmanStillFiresWhileLocked(t *testing.T) { /* a plan node with deadman in flight at restart: no confirm is sent while locked and the agent's timer rolls back (unchanged behaviour, pinned) */ }
+// ui
+func TestLockedBannerOnEveryPage(t *testing.T) { /* GET / and /agents with Overview.Locked: body contains "LOCKED" and the stopped list; unlocked: absent */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ ./internal/ui/ -run 'Locked|SkipsWhileLocked|DeadmanStillFires' -count=1`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: LOCKED banner and critical alarm while plan signing is locked"`
 
 ---
 

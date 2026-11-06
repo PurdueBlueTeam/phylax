@@ -27,6 +27,7 @@
 | Synthetic agents are real `agent.Agent` values with one synthetic module, enrolled with real tokens through W2's bundles, behind a cut-able TCP proxy | "Real internal/link + spool code" and a real enrollment; the proxy drops every connection for the partition without touching agent code |
 | Pass criteria are the four the envelope gives; every other number is measured and reported | Design decision 9; the envelope is a sizing figure. The four: p99 event-to-commit at most 10 s outside the partition and its recovery; zero gap events and zero shed after a 60 s partition; each agent reconnects once within 35 s of restore (30 s backoff cap plus handshake); all agents catch up |
 | `bench load` requires `-lab`, and bench hosts exist only in a lab manifest copy | It writes synthetic events into the target controller's store permanently; one flag prevents pointing it at a controller with real data |
+| The controller disk quota level and the events it skipped are reported when W1 Task 8b is merged (R9, 2026-11-06): `Ctl.QuotaLevel` (the highest level reached in the interval: `ok`, `bulk`, `evidence`, `critical`) and `Ctl.SkippedEvents`; the report prints both with the store size, and any level above `ok` is shown at the top of the report | The Invitational collects far more data than a normal run and the bench is where store growth is read; a skipped event is a gap, so the zero-gap pass criterion already fails if the quota sheds during a run |
 | Controller process CPU and RSS are Linux-only (`/proc/self`); other systems report 0 | The controller runs on Linux (`ubuntu-wkst`); `shortcut:` comment |
 
 ## Global Constraints
@@ -153,6 +154,8 @@ type Ctl struct {
 	CPUMs      uint64             `json:"cpu_ms"`      // controller process CPU time used in the interval
 	RSSBytes   uint64             `json:"rss_bytes"`
 	StoreBytes int64              `json:"store_bytes"` // database plus WAL
+	QuotaLevel    string          `json:"quota_level,omitempty"`   // highest store quota level in the interval (W1 Task 8b); empty before it merges
+	SkippedEvents uint64          `json:"skipped_events,omitempty"` // events the quota refused in the interval
 	Agents     int                `json:"agents"`
 	Connected  int                `json:"connected"`
 	QueryMS    map[string]float64 `json:"query_ms,omitempty"` // "overview", "health", "events"
@@ -206,6 +209,13 @@ type Source interface {
 	Agents() []AgentSample
 	StoreBytes() int64
 	QueryTimes(ctx context.Context) map[string]float64
+}
+
+// QuotaSource is optional: a Source that also implements it gets QuotaLevel and SkippedEvents in the ctl record
+// (the controller's benchSource implements it once W1 Task 8b is merged; the recorder type-asserts).
+type QuotaSource interface {
+	QuotaLevel() string      // highest level since the last call, then reset
+	SkippedEvents() uint64   // cumulative; the recorder records the difference
 }
 
 type Recorder struct{ /* src, log, interval, proc, prev */ }

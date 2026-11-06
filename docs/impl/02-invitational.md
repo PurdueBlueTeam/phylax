@@ -21,6 +21,7 @@
 - No clipboard between consoles and outside: every command a person types is short; scripts are fetched from the controller by URL; results leave over the network (Nextcloud, by hand), never typed.
 - Windows scripts target PowerShell 5.1 (Server 2019/2022, Windows 11): no `?:`, no `-Parallel`, no `ForEach-Object -Parallel`, no `&&`.
 - Size limits: pcap rings 100 MB x 20 per capture process; internet probe downloads capped at 100 MB per host class; log archives skip files over 1 GB each (record the skip).
+- Console scripts (R1, 2026-11-06): the typed line stays about 70 characters with no pin; Task 3a detects a swapped binary, a host that never connects and a refused enrollment instead, and removes each served bundle once its host connects. The residual risk (a trojan that lies about its own hash) is accepted.
 - The Invitational tiers are unchanged by A-AUTO (design, Operations): Tier A everywhere with every `act_enabled` false; Tier B on non-scored accounts and one canary host; Tier C only in the second half.
 
 ## Review Focus
@@ -233,6 +234,74 @@ Expected: PASS (existing tests too).
 git add cmd/phylax
 git commit -m "serve: write enrollment bundles; agent starts in safe mode from the bundle"
 ```
+
+---
+
+### Task 3a: Enrollment watch for the console scripts (R1, decided 2026-11-06)
+
+The console scripts fetch the kit, the binary and each host's bundle over plain HTTP, on a typed line too short for a pin. David's decision: keep the line, and detect instead. The agent reports its own binary hash in `hello`; the controller alerts on a mismatch with the binaries it served, alerts when a bundled host never connects inside the enrollment window or its enrollment is refused, and removes each `<host>.json` from the served directory once that host connects; bundles are not served after the window. Residual risk, accepted: a trojan that lies about its own hash. `e.sh` and `e.ps1` do not change. This is today's v3 code (`c.alert`); W1 Task 5a declares the kinds and W12 keeps the behaviour when the enrollment moves into `internal/enroll`.
+
+**Files:**
+- Create: `internal/controller/enrollwatch.go`
+- Modify: `internal/link/message.go` (`Hello.BinarySHA256`), `internal/agent/agent.go` (send it), `internal/controller/agent.go` (call the watch after `authorize`), `cmd/phylax/serve.go` (flags `-served-dir`, `-enroll-window`)
+- Test: `internal/controller/enrollwatch_test.go`, `internal/agent/binaryhash_test.go`, `cmd/phylax/bundles_test.go`
+
+**Interfaces:**
+- Consumes: `Controller.WriteBundles` (Task 2), `Controller.alert(host, kind, detail)`, `Controller.authorize`, `link.Hello`, the clock `c.now`.
+- Produces:
+
+```go
+// link.Hello gains:
+BinarySHA256 string `json:"binary_sha256,omitempty"` // sha256 hex of the running agent binary (os.Executable); "" when unreadable
+
+// package controller
+// WatchEnrollment starts the watch for the bundles in dir. It hashes the files named in served (the binaries the web
+// root serves: phylax and phylax.exe, those that exist) and, until window has elapsed:
+//  - a hello from a watched host whose BinarySHA256 is empty or matches none of the served hashes raises
+//    alert kind "enroll.hash_mismatch" (detail: host, served hashes, reported hash);
+//  - the first accepted connection of a watched host removes dir/<host>.json (the bundle token is consumed anyway);
+//  - at the end of the window every watched host that never connected raises "enroll.no_show", and every remaining
+//    dir/<host>.json is removed (bundles are served only during enrollment).
+// "enroll.refused" already raises an alert for a refused token or an unknown host; it becomes alert-class in W1 Task 5a.
+func (c *Controller) WatchEnrollment(dir string, hosts []string, served []string, window time.Duration) error
+
+// Options gains: EnrollTimer func(d time.Duration, f func()) (stop func()) // default time.AfterFunc; tests drive it
+// cmd/phylax serve flags: -served-dir DIR (the directory the web root serves; phylax and phylax.exe are hashed), -enroll-window DURATION (default = -bundle-ttl)
+```
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestHelloCarriesBinaryHash(t *testing.T) {
+	// the in-package test agent builds its hello: BinarySHA256 equals the sha256 of os.Executable()
+}
+func TestWatchHashMismatchAlerts(t *testing.T) {
+	// served file "phylax" with known bytes; a test agent for host h1 whose hello says BinarySHA256 of other bytes
+	// want: one alert kind "enroll.hash_mismatch" for h1; an agent reporting the served hash raises none;
+	// an agent reporting "" raises one (detail "no binary hash reported")
+}
+func TestWatchRemovesBundleOnConnect(t *testing.T) {
+	// WriteBundles for h1 and h2, WatchEnrollment; h1 connects with a valid token
+	// want: dir/h1.json is gone, dir/h2.json remains
+}
+func TestWatchNoShowAndCleanup(t *testing.T) {
+	// EnrollTimer captured; h1 connects, h2 never; fire the timer
+	// want: alert "enroll.no_show" for h2 only; dir/h2.json removed; no further alerts after the window for a late hello (the watch is over)
+}
+func TestWatchRefusedEnrollmentAlerts(t *testing.T) {
+	// a test agent presents a wrong token for h1: alert kind "enroll.refused" (existing behaviour, pinned here) and dir/h1.json stays until the window ends
+}
+func TestWatchServedFileMissing(t *testing.T) {
+	// WatchEnrollment with a served path that does not exist returns an error naming it (no silent empty set)
+}
+// cmd/phylax: TestServeEnrollWindowFlags: -served-dir without -bundles is an error containing "-bundles"; with both, the watch starts (observed through a test hook)
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ ./internal/agent/ ./cmd/phylax/ -run 'BinaryHash|Watch|EnrollWindow' -count=1`. Expected: FAIL to compile (`undefined: WatchEnrollment`).
+- [ ] **Step 3: Implement** as specified. `shortcut: the served set is hashed once at start, a binary replaced on disk afterwards is not re-hashed, upgrade when W12 serves from the bootstrap handler`.
+- [ ] **Step 4: Run, expect PASS.** Run: `CGO_ENABLED=1 go test -race ./internal/controller/ ./internal/agent/ ./cmd/phylax/ -count=1`. Expected: PASS.
+- [ ] **Step 5: Runbook.** Task 14's runbook gains: pass `-served-dir /srv/phylax/web -enroll-window 30m` with `-bundles`; read the alerts on the console (`enroll.hash_mismatch`, `enroll.no_show`, `enroll.refused` mean stop and look); stop the web server when the window ends; if the segment is shared with red, read the hash from the controller console, not from script output.
+- [ ] **Step 6: Commit.** `git commit -am "serve: enrollment watch (binary hash in hello, no-show, bundle removal)"`
 
 ---
 
@@ -716,7 +785,7 @@ On Server 2019, Server 2022, Windows 11 and the DC: `e.ps1`, `c1-capture.ps1` (d
 
 - [ ] **Step 3: T70, observe mode changes nothing**
 
-Run `c2-facts` before enrolling the agent and after one hour of observe mode; `diff -r` the two output directories ignoring the agent's own files (`/var/lib/phylax`, `/opt/phylax`, the `phylax` unit, the audit rules the audit module adds: this is the one documented host setting, data doc C0). Expected: no other difference in listeners, accounts, firewall, services. Record it.
+Run `c2-facts` before enrolling the agent and after one hour of observe mode; `diff -r` the two output directories ignoring the agent's own files, the decoys module's listeners and the honeytoken files it plants (the three exceptions the design's T70 lists) (`/var/lib/phylax`, `/opt/phylax`, the `phylax` unit, the audit rules the audit module adds: this is the one documented host setting, data doc C0). Expected: no other difference in listeners, accounts, firewall, services. Record it.
 
 - [ ] **Step 4: Unverified claims from "What exists today"**
 

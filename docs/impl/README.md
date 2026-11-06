@@ -162,7 +162,7 @@ The core-default `health` agent module is core, not a catalogue module; W1 retro
 | `modules/<name>.yml`, host `modules:`, labels and label expressions, module block JSON Schema (Manifest) | W1 |
 | Plan template `target: {labels: ...}` expansion (Plans) | W5 (first user: hardening packs) |
 | Dead-man fire reconciled while connected (bug 8), real executor always wired (bug 5) | W2 |
-| `session.terminate_predating` (Local accounts) | W2 (admin and service accounts); W7 adds the scored-account rules |
+| `session.terminate_predating` (Local accounts) | W2 (interactive admin identities; interactive logon types only, never a session owning a manifest service process); W7 adds the scored-account rules |
 | Agent `fetch` handler and chunk transfers (bug 4, Wire protocol) | W11 |
 | Enrollment, bootstrap, controller recovery and resend verification; self-protection; `agent.*` actions | W12 |
 | Overview roles and unstaffed, host x step grid, Since you left (UI shell, Operations) | W10 |
