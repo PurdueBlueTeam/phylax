@@ -222,6 +222,9 @@ func (m *Heartbeat) Validate() error {
 		if err := checkStr("health module", name, 64, true); err != nil {
 			return err
 		}
+		if err := checkStr("health state", string(h.State), MaxHealthState, false); err != nil {
+			return err
+		}
 		if len(h.Detail) > MaxHealthDetail {
 			return invalid("heartbeat: health %s detail too long", name)
 		}
