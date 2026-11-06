@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -34,23 +35,37 @@ func (m fixtureModule) Health() module.Health {
 	return module.Health{State: module.StateOK}
 }
 
+func fixtureSection(c *plan.AgentConfig) (string, bool) {
+	if c == nil || c.Host == "" {
+		return "", false // a fixture has no typed block: an empty config carries none
+	}
+	return c.Host + "/" + itoa(c.Version), true
+}
+
+func itoa(v uint64) string { return strconv.FormatUint(v, 10) }
+
 func fixtureFactory(name string, start func(context.Context, agent.Emit) error) agent.Factory {
-	return agent.Factory{Name: name, Section: func(*plan.AgentConfig) (string, bool) { return "v1", true },
+	return agent.Factory{Name: name, Section: fixtureSection,
 		Build: func(agent.Env, *plan.AgentConfig) (agent.ModuleSpec, error) {
 			return agent.ModuleSpec{Module: fixtureModule{name: name, start: start}}, nil
 		}}
 }
 
 func goodFactory() agent.Factory { return fixtureFactory("good", nil) }
+
+// leakGone is never closed: leakyFactory's goroutine outlives the module, so
+// the stop check has a real leak to catch.
+var leakGone = make(chan struct{})
+
 func leakyFactory() agent.Factory {
 	return fixtureFactory("leaky", func(ctx context.Context, _ agent.Emit) error {
-		go func() { <-ctx.Done() }()
+		go func() { <-leakGone }()
 		<-ctx.Done()
 		return nil
 	})
 }
 func neverOKFactory() agent.Factory {
-	return agent.Factory{Name: "neverok", Section: func(*plan.AgentConfig) (string, bool) { return "v1", true },
+	return agent.Factory{Name: "neverok", Section: fixtureSection,
 		Build: func(agent.Env, *plan.AgentConfig) (agent.ModuleSpec, error) {
 			return agent.ModuleSpec{Module: fixtureModule{name: "neverok", health: func() module.Health {
 				return module.Health{State: module.StateRestarting}
@@ -93,7 +108,7 @@ func forgetfulFactory() agent.Factory {
 	return fixtureFactory("forget", nil)
 }
 func cfgWith(name string) *plan.AgentConfig  { return &plan.AgentConfig{Host: "h1"} }
-func cfgWith2(name string) *plan.AgentConfig { return &plan.AgentConfig{Host: "h1"} }
+func cfgWith2(name string) *plan.AgentConfig { return &plan.AgentConfig{Host: "h1", Version: 2} }
 func someLoad() []event.Event                { return []event.Event{{Kind: "agent.resumed"}} }
 
 type looseSettings struct{ N int }
