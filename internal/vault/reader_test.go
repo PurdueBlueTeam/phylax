@@ -6,7 +6,6 @@ import (
 )
 
 func TestScoped(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 9")
 	v, _ := newVault(t)
 	if _, err := v.Put("a", NewSecretString("one"), ""); err != nil {
 		t.Fatal(err)
