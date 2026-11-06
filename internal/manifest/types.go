@@ -40,6 +40,7 @@ type Manifest struct {
 	Integrations map[string]Integration // integrations.yml
 	Policy       Policy                 // policy.yml
 	Overrides    Overrides              // overrides.yml
+	Modules      map[string]ModuleBlock // modules/*.yml
 	Loaded       []string               // files that were present
 }
 
@@ -119,14 +120,16 @@ type Device struct {
 
 // Host is one machine.
 type Host struct {
-	Segment           string     `yaml:"segment" json:"segment"`
-	IP                string     `yaml:"ip" json:"ip"`                             // address or "dhcp"
-	Public            string     `yaml:"public,omitempty" json:"public,omitempty"` // public NAT address
-	OS                OS         `yaml:"os" json:"os"`
-	Roles             []string   `yaml:"roles,omitempty" json:"roles,omitempty"`
-	Class             string     `yaml:"class,omitempty" json:"class,omitempty"`                             // server (default) | workstation
-	DefaultCredential string     `yaml:"default_credentials,omitempty" json:"default_credentials,omitempty"` // secret name, never a value
-	Hardening         *Hardening `yaml:"hardening,omitempty" json:"hardening,omitempty"`
+	Segment           string          `yaml:"segment" json:"segment"`
+	Modules           map[string]bool `yaml:"modules,omitempty" json:"modules,omitempty"`
+	Labels            []string        `yaml:"labels,omitempty" json:"labels,omitempty"`
+	IP                string          `yaml:"ip" json:"ip"`                             // address or "dhcp"
+	Public            string          `yaml:"public,omitempty" json:"public,omitempty"` // public NAT address
+	OS                OS              `yaml:"os" json:"os"`
+	Roles             []string        `yaml:"roles,omitempty" json:"roles,omitempty"`
+	Class             string          `yaml:"class,omitempty" json:"class,omitempty"`                             // server (default) | workstation
+	DefaultCredential string          `yaml:"default_credentials,omitempty" json:"default_credentials,omitempty"` // secret name, never a value
+	Hardening         *Hardening      `yaml:"hardening,omitempty" json:"hardening,omitempty"`
 	// DomainMember names the domain controller host this host joins. The
 	// renderers emit the complete member-to-DC allowance set (DNS, Kerberos,
 	// LDAP, SMB, RPC, NTP) so default-deny egress cannot break domain auth.
@@ -524,6 +527,16 @@ type Overrides struct {
 	AdoptedDrift     []OverrideEntry   `yaml:"adopted_drift,omitempty" json:"adopted_drift,omitempty"`
 	InjectChanges    []OverrideEntry   `yaml:"inject_changes,omitempty" json:"inject_changes,omitempty"`
 	AcceptedFindings []AcceptedFinding `yaml:"accepted_findings,omitempty" json:"accepted_findings,omitempty"`
+	LearnedListeners []LearnedListener `yaml:"learned_listeners,omitempty" json:"learned_listeners,omitempty"`
+}
+
+// LearnedListener is a port on which scorer traffic was seen arriving.
+type LearnedListener struct {
+	Host     string `yaml:"host" json:"host"`
+	Proto    string `yaml:"proto" json:"proto"` // tcp | udp
+	Port     uint16 `yaml:"port" json:"port"`
+	Reason   string `yaml:"reason" json:"reason"`
+	Observed string `yaml:"observed" json:"observed"` // RFC 3339, UTC
 }
 
 // OverrideEntry is a generic dated note on a host or service.

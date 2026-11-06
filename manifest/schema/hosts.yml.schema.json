@@ -52,6 +52,18 @@
           "ip": {
             "type": "string"
           },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "modules": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "type": "object"
+          },
           "os": {
             "additionalProperties": false,
             "properties": {

@@ -69,6 +69,39 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "learned_listeners": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "observed": {
+                "type": "string"
+              },
+              "port": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "proto": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "host",
+              "proto",
+              "port",
+              "reason",
+              "observed"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         }
       },
       "type": "object"
