@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -62,7 +63,27 @@ func (b *eventBus) publish(evs []event.Event)    {}
 
 // hostsMatching resolves a label expression against the loaded manifest.
 func (c *Controller) hostsMatching(expr string) ([]string, error) {
-	panic("unimplemented: W1 Task 22b")
+	c.cfgs.mu.Lock()
+	m := c.cfgs.in
+	c.cfgs.mu.Unlock()
+	var man *manifest.Manifest
+	if m != nil {
+		man = m.Manifest
+	}
+	if man == nil {
+		if c.cfg.ManifestPath == "" {
+			return nil, errors.New("no manifest is loaded")
+		}
+		var err error
+		if man, err = manifest.LoadDir(c.cfg.ManifestPath, manifest.Options{}); err != nil {
+			return nil, err
+		}
+	}
+	e, err := manifest.ParseLabels(expr)
+	if err != nil {
+		return nil, err
+	}
+	return man.HostsMatching(e), nil
 }
 
 var _ = context.Background

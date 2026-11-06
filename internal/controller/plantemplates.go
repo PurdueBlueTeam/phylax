@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
+	"github.com/PurdueBlueTeam/phylax/plans"
 )
 
 // Plan templates are YAML files in the plans directory (design: plans/). A
@@ -78,6 +79,15 @@ func LoadTemplate(dir, name string) (plan.Plan, error) {
 	if !templateNameRE.MatchString(name) {
 		return p, fmt.Errorf("bad template name %q", name)
 	}
+	raw, err := readTemplateFile(dir, name)
+	if err != nil {
+		return p, err
+	}
+	return ParseTemplate(raw)
+}
+
+// readTemplateFile reads <dir>/<name>.yml or .yaml, capped.
+func readTemplateFile(dir, name string) ([]byte, error) {
 	var raw []byte
 	var err error
 	for _, ext := range []string{".yml", ".yaml"} {
@@ -86,10 +96,7 @@ func LoadTemplate(dir, name string) (plan.Plan, error) {
 			break
 		}
 	}
-	if err != nil {
-		return p, err
-	}
-	return ParseTemplate(raw)
+	return raw, err
 }
 
 func readCapped(path string, max int64) ([]byte, error) {
@@ -210,24 +217,79 @@ func translateExpiresAfter(n map[string]any) error {
 
 var moduleNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
-// LoadModuleTemplate loads plansRoot/<mod>/<name> and refuses a template whose
-// `module:` names another module.
+// LoadModuleTemplate loads plansRoot/<mod>/<name> with no label resolver; a
+// pack with a label variable therefore errors.
 func LoadModuleTemplate(plansRoot, mod, name string) (plan.Plan, error) {
+	return LoadModuleTemplateFor(plansRoot, mod, name, nil)
+}
+
+// LoadModuleTemplateFor loads plansRoot/<mod>/<name> and refuses a template
+// whose `module:` names another module. A file with a top-level `vars:` or a
+// node with `each:` is a pack (plans.Parse, label resolution, Template.Expand);
+// any other file is the controller file format (ParseTemplate).
+func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error) {
 	var p plan.Plan
 	if !moduleNameRE.MatchString(mod) {
 		return p, fmt.Errorf("bad module name %q", mod)
 	}
-	p, err := LoadTemplate(filepath.Join(plansRoot, mod), name)
+	if !templateNameRE.MatchString(name) {
+		return p, fmt.Errorf("bad template name %q", name)
+	}
+	raw, err := readTemplateFile(filepath.Join(plansRoot, mod), name)
 	if err != nil {
 		return p, err
+	}
+	if isPack(raw) {
+		tpl, err := plans.Parse(raw)
+		if err != nil {
+			return p, fmt.Errorf("%s/%s: %w", mod, name, err)
+		}
+		if tpl.Module != mod {
+			return p, fmt.Errorf("%s/%s: template is for module %q, not %q", mod, name, tpl.Module, mod)
+		}
+		ov, err := plans.ResolveLabels(tpl, hosts)
+		if err != nil {
+			return p, fmt.Errorf("%s/%s: %w", mod, name, err)
+		}
+		cat, err := plans.NewCatalog()
+		if err != nil {
+			return p, fmt.Errorf("%s/%s: %w", mod, name, err)
+		}
+		expanded, err := tpl.Expand(cat, ov)
+		if err != nil {
+			return p, fmt.Errorf("%s/%s: %w", mod, name, err)
+		}
+		p = *expanded
+		p.Module, p.Template = tpl.Module, name
+		return p, nil
+	}
+	p, err = ParseTemplate(raw)
+	if err != nil {
+		return p, fmt.Errorf("%s/%s: %w", mod, name, err)
 	}
 	if p.Module != mod {
 		return p, fmt.Errorf("%s/%s: template is for module %q, not %q", mod, name, p.Module, mod)
 	}
+	p.Template = name
 	return p, nil
 }
 
-// LoadModuleTemplateFor loads a module template, resolving label variables.
-func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error) {
-	panic("unimplemented: W1 Task 22b")
+// isPack reports the pack format: a top-level `vars:` or a node with `each:`.
+func isPack(raw []byte) bool {
+	var doc map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return false // the real parser reports the syntax error
+	}
+	if _, ok := doc["vars"]; ok {
+		return true
+	}
+	nodes, _ := doc["nodes"].([]any)
+	for _, n := range nodes {
+		if m, ok := n.(map[string]any); ok {
+			if _, ok := m["each"]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }

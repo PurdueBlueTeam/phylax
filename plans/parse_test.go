@@ -3,8 +3,7 @@ package plans
 import "testing"
 
 func TestResolveLabelsExpandsEach(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22b")
-	tpl, err := Parse([]byte("id: x\nmodule: hardening\nvars:\n  dcs: {labels: dc}\nnodes:\n- {id: a, each: dcs, action: ad.zerologon_check, target: ${host}}\n"))
+	tpl, err := Parse([]byte("id: x\nmodule: hardening\nvars:\n  dcs: {labels: dc}\nnodes:\n- {id: a, each: dcs, action: ad.zerologon_check, target: '${host}'}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,12 +19,10 @@ func TestResolveLabelsExpandsEach(t *testing.T) {
 }
 
 func TestUnresolvedLabelVarIsAnError(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22b")
 	// Expand without ResolveLabels -> error mentioning "is not a list"
 }
 
 func TestParseRejectsUnknownField(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22b")
 	if _, err := Parse([]byte("id: x\nbogus: 1\n")); err == nil {
 		t.Fatal("unknown field accepted")
 	}
