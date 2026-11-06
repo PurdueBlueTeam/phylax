@@ -367,7 +367,7 @@ func (a *agentConn) drain(ctx context.Context) error {
 			if e.Kind == store.KindGap {
 				c.bs.gap(e)
 			} else {
-				c.bs.stored(e, now, st.hb.ClockSkew)
+				c.bs.stored(e, now, -st.hb.ClockSkew)
 			}
 		}
 		c.captureObserve(ctx, run, ack.Seq) // controller-scope rules over network events (capture_ingest.go)

@@ -22,7 +22,10 @@ type benchStats struct {
 }
 
 // stored counts one stored (non-gap) event: its class, its JSON size and its
-// age at the commit, corrected by the agent's clock skew.
+// age at the commit. skew is subtracted from the raw age, so it is the
+// controller clock minus the agent clock at the last heartbeat; AgentStatus.
+// ClockSkew has the opposite sign (agent minus controller), so drain negates
+// it.
 func (b *benchStats) stored(e event.Event, now time.Time, skew time.Duration) {
 	class := int(e.Priority)
 	if class < 0 || class >= bench.NumClasses {
