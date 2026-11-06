@@ -84,6 +84,7 @@ type Controller struct {
 	st    *store.Store
 	tok   *Tokens
 	now   func() time.Time
+	clk   clock
 	enrMu sync.Mutex // serialises enrollment decisions
 
 	mu     sync.Mutex
@@ -166,7 +167,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	if opt.ResumeGrace <= 0 {
 		opt.ResumeGrace = opt.StepTimeout
 	}
-	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
+	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now, clk: realClock{},
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}

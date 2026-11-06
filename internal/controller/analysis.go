@@ -15,6 +15,7 @@ import (
 const (
 	analysisDefaultDeadline = 10 * time.Second
 	analysisDebounce        = time.Second
+	analysisMaxWait         = 10 * time.Second
 	analysisBusBuf          = 1024
 )
 
@@ -88,42 +89,63 @@ func (c *Controller) runAnalyzers(ctx context.Context, m module.ControllerModule
 }
 
 // runAnalyzer runs one analyser's trigger and Every timers, one run at a time.
+// A trigger is debounced, but never postponed beyond analysisMaxWait from the
+// first pending trigger, so a stream of inputs cannot starve the analyser.
 func (c *Controller) runAnalyzer(ctx context.Context, h *moduleHost, st *moduleRunState, a module.Analyzer, trig <-chan struct{}) {
+	clk := c.clk
+	if clk == nil {
+		clk = realClock{}
+	}
 	var tick <-chan time.Time
 	if a.Every > 0 {
-		t := time.NewTicker(a.Every)
+		t := clk.NewTicker(a.Every)
 		defer t.Stop()
-		tick = t.C
+		tick = t.C()
 	}
-	var timer *time.Timer
-	var debounce <-chan time.Time
-	defer func() {
-		if timer != nil {
-			timer.Stop()
+	var debounce, maxWait timer
+	var debounceC, maxWaitC <-chan time.Time
+	pending := false
+	stopPending := func() {
+		if debounce != nil {
+			debounce.Stop()
 		}
-	}()
+		if maxWait != nil {
+			maxWait.Stop()
+		}
+		debounceC, maxWaitC = nil, nil
+		pending = false
+	}
+	defer stopPending()
+	run := func() {
+		stopPending()
+		c.runAnalyzerOnce(ctx, h, st, a)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-trig:
-			if timer == nil {
-				timer = time.NewTimer(analysisDebounce)
+			if debounce == nil {
+				debounce = clk.NewTimer(analysisDebounce)
 			} else {
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(analysisDebounce)
+				debounce.Reset(analysisDebounce)
 			}
-			debounce = timer.C
-		case <-debounce:
-			debounce = nil
-			c.runAnalyzerOnce(ctx, h, st, a)
+			debounceC = debounce.C()
+			if !pending {
+				pending = true
+				if maxWait == nil {
+					maxWait = clk.NewTimer(analysisMaxWait)
+				} else {
+					maxWait.Reset(analysisMaxWait)
+				}
+				maxWaitC = maxWait.C()
+			}
+		case <-debounceC:
+			run()
+		case <-maxWaitC:
+			run()
 		case <-tick:
-			c.runAnalyzerOnce(ctx, h, st, a)
+			run()
 		}
 	}
 }
