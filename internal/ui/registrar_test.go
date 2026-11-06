@@ -11,7 +11,6 @@ import (
 )
 
 func TestRegistrarPage(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 10")
 	e := newEnv(t, nil)
 	on := true
 	r := e.s.Registrar("demo", func() bool { return on })
@@ -31,7 +30,6 @@ func TestRegistrarPage(t *testing.T) {
 }
 
 func TestRegistrarActionNeedsCSRF(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 10")
 	e := newEnv(t, nil)
 	r := e.s.Registrar("demo", func() bool { return true })
 	r.Action("go", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }))
@@ -45,7 +43,6 @@ func TestRegistrarActionNeedsCSRF(t *testing.T) {
 }
 
 func TestRegistrarTiles(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 10")
 	e := newEnv(t, nil)
 	on := true
 	r := e.s.Registrar("demo", func() bool { return on })
@@ -69,7 +66,6 @@ func TestRegistrarTiles(t *testing.T) {
 }
 
 func TestRegistrarRejectsBadRoute(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 10")
 	e := newEnv(t, nil)
 	defer func() {
 		if recover() == nil {

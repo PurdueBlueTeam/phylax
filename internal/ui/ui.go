@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -113,6 +114,12 @@ type Server struct {
 	hosts    map[string]bool
 	dummy    string // hash verified for unknown users to equalise timing
 	handler  http.Handler
+
+	// module registrations (registrar.go); written before serving.
+	regMu    sync.Mutex
+	modTiles []modTile
+	modGrids []modGrid
+	modPages []modPage
 }
 
 type ctxKey int
