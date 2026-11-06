@@ -418,6 +418,8 @@ func TestHoldIgnoresStaleOpenWindowAfterEnd(t *testing.T) {
 
 ### Task 4: `gate: manual`, `txn:` and the agent's PCR flag (Sonnet)
 
+> **Carried from W1 (2026-11-06).** Until this task lands, W1's `SS010` reads the resync marker from a node's own `txn: resync` param (`lintParams` strips it for the lint only), so the template author asserts it. Replace it with a controller-set transaction field that only the `creds` resync path can set, make `SS010` read that, and delete the param fallback. Test: a template node that carries `txn: resync` itself is refused in an `auto` plan when it sets a protected account's password (`app_mysql`, `mssql_query` emit `OpSetPassword`).
+
 **Files:**
 - Modify: `internal/plan/plan.go` (`Node.Ask/Reply/Choices/Txn`, `Approval.Reply`), `internal/plan/step.go` (`StepBody.Txn`, copied by `Signer.Issue`), `internal/controller/plans.go` (`ApproveGateReply`, `ApproveNode` refuses a manual gate), `internal/agent/exec.go` (`req.PCR = s.Txn != ""`)
 - Test: `internal/plan/manualgate_test.go`, `internal/controller/manualgate_test.go`, `internal/agent/pcr_flag_test.go`
