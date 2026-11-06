@@ -8,23 +8,23 @@
 
 **Tech Stack:** Go 1.27.2 (mise), standard library (`crypto/ecdh`, `crypto/hkdf`, `net/http/cookiejar`), `golang.org/x/crypto/ssh`, `gopkg.in/yaml.v3`, `modernc.org/sqlite` (module tables), `filippo.io/age` (vault, already used). No new modules in `go.mod`.
 
-**Spec:** `phylax_design.md` (v4): "The module contract" and "Event kinds"; module sections "Scoring and credentials" (`checks` 5331, `scorer` 5591, `vantage` 5805, `creds` 5987); core "Execution engine" (the scoring-safety lint and its three sanctioned exceptions, lint registration, the scorer-mimic probe, plan and node options `window`, `gate: manual`, `txn`, controller executor, session eviction), "Wire protocol" (fact subtypes `round_clock`, `scorer_probe_result`, `creds_txn`; sealed secrets), "Local accounts"; Appendix F (PCR list rules) and G (fingerprint table); Test matrix T14, T15, T30, T35, T37, T39, T49, T50, T51 (and T16, T48, T66 as consumers); Known bug 20 (probe half). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1) Interfaces blocks; `docs/impl/03-telemetry.md` (W3) for `auth_event`, `net.canary_result`, `inventory.probe_result`, `actions.Register`; `docs/impl/05-integrity-hunting.md` (W5) for `hunt.finding`. The `capture.flow` and `capture.txn` kinds come from W6's seams (`internal/capture/kinds.go`); this plan names them only through the README dependency row.
+**Spec:** `phylax_design.md` (v4): "The module contract" and "Event kinds"; module sections "Scoring and credentials" (`checks` 5331, `scorer` 5591, `vantage` 5805, `creds` 5987); core "Execution engine" (the scoring-safety lint and its three sanctioned exceptions, lint registration, the scorer-mimic probe, plan and node options `window`, `gate: manual`, `txn`, controller executor, session eviction), "Wire protocol" (fact subtypes `round_clock`, `scorer_probe_result`, `creds_txn`; sealed secrets), "Local accounts"; Appendix F (PCR list rules) and G (fingerprint table); Test matrix T14, T15, T30, T35, T37, T39, T49, T50, T51 (and T16, T48, T66 as consumers); Known bug 20 (probe half). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1) Interfaces blocks; `docs/impl/03-telemetry.md` (W3) for `auth_event`, `net.canary_result`, `inventory.probe_result`, `actions.Register`; `docs/impl/05-integrity-hunting.md` (W5) for `hunt.finding`. The `conn` kind (with `source: capture`) and `capture.txn` come from W6's seams (`internal/capture/kinds.go`); this plan names them only through the README dependency row.
 
 ## Design gaps and decisions (Task 1 writes each into `phylax_design.md` in the same commit)
 
-1. **Table names must start with the module name.** W1's `ModuleDB.Migrate` refuses a table that does not start with `<module>_`. Renames: `checks` to `checks_check`, `check_results` to `checks_result`; `credentials` to `creds_account`, `cred_credlist` to `creds_credlist`, `pcr_txn` to `creds_txn`, `pcr_row` to `creds_row`. `scorer_*` and `vantage_*` keep the design's names. The core migrations drop `checks`, `check_results` and `credentials` (Task 30); nothing is deployed, so there is no data migration.
+1. **Table names must start with the module name.** W1's `ModuleDB.Migrate` refuses a table that does not start with `<module>_`. Renames: `checks` to `checks_check`, `check_results` to `checks_result`; `credentials` to `creds_account`, `pcr_txn` to `creds_txn`, `pcr_row` to `creds_row`. There is no `cred_credlist` table (S4): the credlist label of a scored account is read from `scorer`'s account groups (`scorer.account` `group`, kept in step by `scorer`'s `operator.edit` group edits) and the per-credlist PCR state is the latest `creds.state` event per (account, host, credlist), held in memory (Task 39). `scorer_*` and `vantage_*` keep the design's names. The core migrations drop `checks`, `check_results` and `credentials` (Task 30); nothing is deployed, so there is no data migration.
 2. **Plan node options `window: scorer_quiet`, `gate: manual` and `txn:` are specified in the core but built by nobody.** W1 builds approval classes, not these options; the agent never sets `actions.Request.PCR`, so the scoring guard's PCR exception is unreachable. W7 builds them (Tasks 3 and 4); W1 builds the two other core plan options (`expires_after` Task 22a, `gate: auto` Task 27a) and the template key translator `translateNodeKeys` in `internal/controller/plantemplates.go` that Tasks 3 and 4 extend (`max_hold: 120s` to `max_hold_sec`, `gate: manual` to a gate node whose `ask`/`reply`/`choices` this plan validates). `hardening` (W5) and `backup` (W10) also use `window:`; they depend on Tasks 2 to 7 here.
 3. **A controller module cannot see an agent-run step's outcome or output.** W1's `agent.step_result` is emitted for controller-side actions only. The doctor needs collected output and `creds` needs to know a host change finished. Task 5 emits `agent.step_result` for every step result and adds optional `output` and `reply` fields to `event.AgentStepResult`.
-4. **No secret write path for modules, and `stepSecrets` serves honeytokens only.** `creds` must store a pending password and ship it to `user.set_password` and `pcr.verify`. Task 6 adds `vault.Writer` and widens `stepSecrets` to plans with `Module == "creds"` and a node `txn`, for the vault prefix `pcr/` only. `shortcut: write access is granted to the module named creds in moduleHost.Secrets, upgrade to a manifest field when a second module writes secrets.`
+4. **No secret write path for modules, and `stepSecrets` serves honeytokens only.** `creds` must store a pending password and ship it to `user.set_password` and to the `probe.run` step `pcr_verify`. Task 6 adds `vault.Writer` and widens `stepSecrets` to plans with `Module == "creds"` and a node `txn`, for the vault prefix `pcr/` only. `shortcut: write access is granted to the module named creds in moduleHost.Secrets, upgrade to a manifest field when a second module writes secrets.`
 5. **"Sealed to the host's enrolled key" has no implementation.** Agents have a P-256 identity (`internal/link/identity.go`) and the controller stores it in `agents.pubkey`. Task 7 adds `link.SealSecret` and `(*link.Identity).OpenSecret` (ECIES: P-256 ECDH, HKDF-SHA256, AES-256-GCM, the agent id as associated data) and `agent.Env.OpenSealed`; the controller seals with the public key it stores in `agents.pubkey`.
 6. **`internal/parsers/txn` imports `internal/scorer`** (`Txn.Features`), a shared library depending on a module. Task 1 deletes `Txn.Features` and adds `scorer.FeaturesFromTxn`; parser tests that classify fixtures keep importing `scorer` (test-only edge, `shortcut:` comment).
-7. **`pcr.generate` is not an action.** Generation is a module step (a UI action of `creds`) and needs no plan node. The `creds` manifest lists `pcr.verify` only; the design text is corrected.
+7. **Neither `pcr.generate` nor `pcr.verify` is a plan action.** Generation is a module step (a UI action of `creds`) and needs no plan node. Verification is the `probe.run` step named `pcr_verify` that `vantage` runs on the Kali (S4: no `pcr.verify` action, no verify sub-role); the `creds` manifest lists no action of its own and uses that step. The design's `creds` Actions row still names `pcr.generate`; Task 1 Step 7 corrects it as before (flagged for the integrator).
 8. **`Env.Probe` runs on the controller.** The design says the controller process runs no scheduled probes; the executor's probe is on demand and uses the library from the controller host, the in-LAN reference vantage. Agent-side `Env.Probe` is not supplied (agents hold no vault credentials; W1 Task 27 probes controller-side).
 9. **Scored-account eviction needs inputs the agent does not have** (the measured round delay, the scorer-labelled sources). `session.terminate_predating` (W2) gains the params `scored` (bool), `cutoff_ms` and `exempt_sources` (comma-separated); the module fills them from `scorer.clock` and `scorer.round`. The policy is a pure function (`actions.EvictionPolicy`, Task 40).
 10. **Fact data shapes are not defined.** Task 1 adds `plan.RoundClock`, `plan.CredsTxnFact` and `plan.ProbeResultFact` and the extrapolation `RoundClock.Window`.
 11. **Check and flow content has no loader path.** `checks/{checks,flows,doctor}/` are root-level content directories (Appendix D); the controller module reads them from `Config.ContentDir` (default `checks`), the way plans are read from `plans/`. Added to `modules/checks.yml`.
 12. **Agent settings carry integers, not durations,** matching the built settings (`IntervalSec`, `MaxDeferSec`); the design's `time.Duration` sketch is corrected.
-13. **Inputs from workstreams that have not merged** (`detect.alert` W4, `traceback.change` W8, `deps.graph` W8, `honeytokens.sighting` W9, `chains.item` W8, `hunt.finding` W5) cannot be in a manifest's `Consumes` until declared (`Manifest.Validate` and conformance check 12). Every handler takes a plain Go struct; Task 47 adds the thin adapters and the `Consumes` entries once the kinds exist.
+13. **Inputs from workstreams that have not merged** (`detect.alert` W4, `traceback.change` W8, `deps.graph` W8, `deception.sighting` W9, `chains.item` W8, `hunt.finding` W5) cannot be in a manifest's `Consumes` until declared (`Manifest.Validate` and conformance check 12). Every handler takes a plain Go struct; Task 47 adds the thin adapters and the `Consumes` entries once the kinds exist.
 14. **Lint id namespace `CR###`** is added for the `creds` transaction rule (`CR001`), next to `SS`, `FW`, `DEP`.
 15. **The design orders Kali verification two ways.** `vantage` says it runs before the human submits; `creds` (the A7.Q6 builder check, authoritative) says the window covers the host change and the submit and verification runs after the window. The plan follows `creds`; a failed verify then holds a revert to the next quiet window (Task 43). The `vantage` text is corrected.
 16. **`max_accounts_per_txn` contradicts "one transaction covers one account".** Read as the size of one typed-list batch (`Engine.Prepare`); `max_open_txns` caps open transactions. The design text says so.
@@ -40,6 +40,7 @@
 - A module imports only the core packages and the shared libraries (W1 Global Constraints). `checks`, `scorer`, `vantage` and `creds` import none of each other; `vantage` and `checks` import `internal/checks/probe` only; `internal/creds/pcr` imports nothing from the repo except `internal/vault`.
 - Times stored in UTC. Passwords never appear in an event, a table, a log, a plan's JSON, an `Err` string or a config file in clear: they pass through `vault.RedactString`, travel as `vault.Secret`, in step secrets, or sealed.
 - Scoring safety: probes touch only allowlisted IP literals of our own; `bad_attempts` stays 0; a scored account's password changes only inside a PCR transaction; nothing here connects to, scans or probes the scorer's addresses, and no code reads Quotient (`/api/credlists` is not an input).
+- `act_enabled` and `autonomy` exist only on `creds` (it embeds `module.Actor`); `checks`, `scorer` and `vantage` carry `enabled` only and reject the others as unknown fields. Per-module rate and burst default from the manifest (`ModuleLimits` overrides are optional). How far a `creds` template goes is its engine `autonomy` setting and the attempt ledger, not a `creds` ladder.
 - Observe mode: probes and flows without effects run, the doctor collects only, `scorer` learns and publishes, proposals appear, no transaction starts and no automatic re-apply runs.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
@@ -67,7 +68,6 @@
 | `internal/scorer/{kinds,module,config,feed,tables,accounts,groups,sla_feed,risk,facts,ui}.go` | the `scorer` module around the built estimator, classifier, discovery and tracker | 1, 23-29 |
 | `rules/scorer/fingerprints.json` | the fingerprint table as data (Appendix G) | 23 |
 | `internal/vantage/{kinds,module,controller,exposure,verify,zerologon,smbwinrm,rdpauth,ui}.go` | the `vantage` module | 1, 31-36 |
-| `rules/vantage/{vantage.yml,dangerous_ports.yml}` | V1 to V4 and the dangerous-port list | 32, 36 |
 | `internal/creds/{kinds,module,config,tables,words,txn,proposal,lint,sheet,ui}.go` | the `creds` module around the built generator, records and break-glass | 1, 38-46 |
 | `internal/creds/pcr/{engine,csv}.go` | the PCR engine (moved from `internal/scorer`) | 37 |
 | `rules/creds/words.txt`, `plans/creds/{scored-change,resync,unscored-rotation}.yml` | content | 38, 41 |
@@ -90,7 +90,7 @@ Done by a stronger model. Extracts the probe library, moves the PCR engine, decl
 - Create: every test file named in Tasks 2 to 47 with each test body as given in its Step 1 and `t.Skip("unimplemented: W7 Task N")` as the first statement; helpers they share
 
 **Interfaces:**
-- Consumes: W1 Tasks 1 to 5 names (`event.Declare`, `event.New`, `event.Type`, `module.Manifest`, `module.Common`, `module.Health`, `module.ControllerModule`, `module.Host`, `agent.Factory`, `plan.ModuleLimits`, `conformance.PreContract`); W3 `actions.Register`; W6 seams' `capture.flow` and `capture.txn` kind names.
+- Consumes: W1 Tasks 1 to 5 names (`event.Declare`, `event.New`, `event.Type`, `module.Manifest`, `module.Common`, `module.Health`, `module.ControllerModule`, `module.Host`, `agent.Factory`, `plan.ModuleLimits`, `conformance.PreContract`, `module.Actor`); W3 `actions.Register`; W6 seams' `conn` (`source: capture`) and `capture.txn` kind names.
 - Produces (exact; later tasks and other workstreams use these):
 
 ```go
@@ -163,7 +163,7 @@ type VantageSettings struct {
 	ModuleLimits
 	Allowlist []string; ScanIntervalSec, ScanFirstDelaySec, QuietWaitSec int
 	TCPRate, TCPConcurrency, TCPConnectTimeoutMS, UDPRate, UDPWaitMS int
-	PreWindow []time.Time; DangerousPorts []string
+	PreWindow []time.Time
 	CanaryTCP, CanaryUDP []int; CanaryDedupSec, CanaryMaxEventsPerSec, CanaryMaxConns, CanaryReadTimeoutMS int
 	VerifyTimeoutSec int; ProbeZerologon, ProbeSMB, ProbeWinRM bool
 	ScoredServices []ScoredPort // the manifest's scored set on our public addresses, for DiffExposure
@@ -209,10 +209,10 @@ func (c *Controller) quietWindow(ctx context.Context, need time.Duration) (open 
 func FeaturesFromTxn(t txn.Txn) Features
 
 // ---- internal/scorer/kinds.go ---- (priorities: round Normal, clock Normal, service Normal, item_set Bulk, login Normal, account Normal,
-//   proposal Normal, blocked High+Alert, silent Normal, sla High+Alert, note Normal, risk Normal)
+//   proposal Normal, blocked High+Alert, silent Normal, sla High+Alert, risk Normal; no scorer.note: the hand-entered verdict is operator.edit, S4)
 const (KindRound = "scorer.round"; KindClock = "scorer.clock"; KindService = "scorer.service"; KindItemSet = "scorer.item_set"
 	KindLogin = "scorer.login"; KindAccount = "scorer.account"; KindProposal = "scorer.proposal"; KindBlocked = "scorer.blocked"
-	KindSilent = "scorer.silent"; KindSLA = "scorer.sla"; KindNote = "scorer.note"; KindRisk = "scorer.risk")
+	KindSilent = "scorer.silent"; KindSLA = "scorer.sla"; KindRisk = "scorer.risk")
 type RoundSource struct{ Addr string `json:"addr"`; Score float64 `json:"score"` }
 type RoundEvent struct {
 	Round int `json:"round"`; Start time.Time `json:"start"`; End time.Time `json:"end"`; Conns int `json:"conns"`
@@ -236,7 +236,7 @@ type ProposalEvent struct{ Kind, Service string; Sample string; Prefilled map[st
 type BlockedEvent struct{ Service string; RoundsMissed int; Window string; DenyRefs []EventRefPair }
 type SilentEvent struct{ Since time.Time }
 type SLAEvent struct{ Service, Level string; Streak, Penalties int; Source string } // level: warn|critical|penalty; source: probe|capture|note
-type NoteEvent struct{ Service, Verdict string; Round int; By, Text string }       // verdict: up|down
+type NoteRecord struct{ Service, Verdict string; Round int; Text string }            // the `record` of operator.edit{module: scorer, op: note}; verdict: up|down; by and at are the event's
 type RiskService struct {
 	Service string `json:"service"`; Weight, LostPoints, PointsPerMinuteDown float64; DownSince *time.Time `json:"down_since,omitempty"`; Cause string `json:"cause"`
 }
@@ -249,14 +249,13 @@ type Config struct { // modules/scorer.yml
 	Fingerprints string; ReplayWindow time.Duration; Risk struct{ PointsPerService float64; EventMinutes int }
 }
 
-// ---- internal/vantage/kinds.go ---- (priorities: scan Normal, exposure_change High, canary_hit High, pcr_verify Normal (Critical on failure, set after New), probe Normal, refused High+Alert)
+// ---- internal/vantage/kinds.go ---- (priorities: scan Normal, exposure_change High+Alert, canary_hit High+Alert, probe Normal (Critical+Alert for a failed pcr_verify or a positive zerologon, set after New), refused High+Alert; no correlation rules: these are alert-class kinds, S4)
 const (KindScan = "vantage.scan"; KindExposureChange = "vantage.exposure_change"; KindCanaryHit = "vantage.canary_hit"
-	KindPCRVerify = "vantage.pcr_verify"; KindProbe = "vantage.probe"; KindRefused = "vantage.refused")
+	KindProbe = "vantage.probe"; KindRefused = "vantage.refused")
 type ScanEvent struct{ Hosts []string; TCPOpen, UDPOpen []string; DurationMS int64; Evidence string }
-type ExposureChange struct{ Host string; Port int; Proto, Change string; Scored bool } // change: newly_open|closed|declared_closed|dangerous_open
+type ExposureChange struct{ Host string; Port int; Proto, Change string; Scored bool } // change: newly_open|closed|declared_closed
 type CanaryHit struct{ Host, Source string; Port int; Proto string; Suppressed int }
-type PCRVerify struct{ Account, Credlist, Service string; OK bool; Err string }
-type ProbeEvent struct{ Probe, Host, Result, Evidence string }                        // probe: zerologon|smb_exposure|winrm_exposure
+type ProbeEvent struct{ Probe, Host, Result, Evidence, Account, Credlist, Service, Err string; OK bool } // probe: zerologon|smb_exposure|winrm_exposure|pcr_verify; the last five only for pcr_verify, credential-free (S4: pcr_verify is a probe.run step, not a kind)
 type RefusedScan struct{ Target, Reason string }
 // ---- internal/vantage/config.go ----
 type Config struct { module.Common `yaml:",inline"`; Allowlist []string; Scan ScanYAML; Canary CanaryYAML; Verify struct{ Timeout time.Duration }; ExposureProbes struct{ Zerologon, SMB, WinRM bool } }
@@ -273,7 +272,7 @@ type RevertedEvent struct{ Host string; Accounts, Credlists []string; Reason str
 type NoticeEvent struct{ Txn, What string }
 type T0Event struct{ Host, Account, Step, By string }
 // ---- internal/creds/config.go ----
-type Config struct { module.Common `yaml:",inline"`; Generation GenConfig; PCR PCRConfig; Revert struct{ OnReenroll bool }; BreakGlass struct{ Epoch int }; ProposalRules []string }
+type Config struct { module.Common `yaml:",inline"`; module.Actor `yaml:",inline"` /* creds acts: act_enabled and autonomy; checks, scorer and vantage embed Common only and reject both */; Generation GenConfig; PCR PCRConfig; Revert struct{ OnReenroll bool }; BreakGlass struct{ Epoch int }; ProposalRules []string }
 ```
 
 - [ ] **Step 1 (1A): Extract the probe library.** `git mv` the files, change the package clause to `probe`, fix every importer (`internal/controller/{checks_hub,report_test}.go`, `internal/vantage/*.go`, `internal/capture`, `internal/parsers/*` tests). The old `internal/checks/*.go` library files do not remain. Add the `TFTP`, `NTP` constants, `Item.Skew` and `Options.RDPAuth` as stubs (`Types()` returns 18; the dispatcher reports class `config` for the two new types until Tasks 8 and 9).
@@ -289,9 +288,9 @@ func TestTypesListsEighteen(t *testing.T) { if n := len(Types()); n != 18 { t.Fa
 
 - [ ] **Step 3 (1A): Verify and commit.** Run: `make build build-windows vet test race`. Expected: PASS (the moved tests pass unchanged). `git commit -am "probe: extract internal/checks/probe as the shared stateless library"`. Open pull request 1A, merge after review.
 - [ ] **Step 4 (1B): Move the runner, `Compare` and the PCR engine** as listed, with only package clause and import fixes. Delete `Engine.PlanForRecord`, `SyncRecord`, `CredsState` and `Generate` from `pcr`; Task 37 and Task 39 re-home their logic in `creds`, and the tests that called them move into those tasks' skipped files.
-- [ ] **Step 5 (1B): Write the stubs.** Types and constants exactly as above; `init` in each `kinds.go` with the `event.Declare` calls (`Fields` is the zero payload struct); module `Manifest()` per the design's capability tables (name, sides, OS, privilege, roles, budget, tables with the renamed names, content, actions, pages; `Consumes` only kinds declared today: `capture.flow`, `capture.txn`, `auth_event`, `inventory.probe_result`, `net.canary_result`, `devices.deny`, `devices.traffic`, `agent.enrolled`, `agent.reenrolled`, `agent.step_result`, plus the four modules' own kinds); `Start` returns `module.ErrNoConfig` when the block is absent and otherwise reports `unavailable` with the gap `unimplemented: W7`; agent factories in `internal/agent/mods/{checks,vantage}.go` whose `Section` returns `false` until their tasks. Function bodies `panic("unimplemented: W7 Task N")` except where a test of this task needs them. Add the new fields to existing structs (zero-value safe, `omitempty`), delete `parsers/txn.Txn.Features`, add `scorer.FeaturesFromTxn`, and change the parser tests that call `.Features()`.
+- [ ] **Step 5 (1B): Write the stubs.** Types and constants exactly as above; `init` in each `kinds.go` with the `event.Declare` calls (`Fields` is the zero payload struct); module `Manifest()` per the design's capability tables (name, sides, OS, privilege, roles, budget, tables with the renamed names, content, actions, pages; `Consumes` only kinds declared today: `conn`, `capture.txn`, `operator.edit` (W1), `auth_event`, `inventory.probe_result`, `net.canary_result`, `devices.deny`, `devices.traffic`, `agent.enrolled`, `agent.reenrolled`, `agent.step_result`, plus the four modules' own kinds); `Start` returns `module.ErrNoConfig` when the block is absent and otherwise reports `unavailable` with the gap `unimplemented: W7`; agent factories in `internal/agent/mods/{checks,vantage}.go` whose `Section` returns `false` until their tasks. Function bodies `panic("unimplemented: W7 Task N")` except where a test of this task needs them. Add the new fields to existing structs (zero-value safe, `omitempty`), delete `parsers/txn.Txn.Features`, add `scorer.FeaturesFromTxn`, and change the parser tests that call `.Features()`.
 - [ ] **Step 6 (1B): Write the skipped tests and shared helpers** (`internal/checks/helpers_test.go` fake-store builder `newChecksHost`, `internal/scorer/feed_helpers_test.go` capture-fixture builders `txnEvent(proto, port, user, ok)` and `burst(at, n)`, `internal/creds/txn_helpers_test.go` a fake plan runner `fakeRunner` that records started templates and lets a test deliver `agent.step_result` events, `internal/controller/modtest_w7_test.go`). Task 1's own tests, not skipped: `TestKindsDeclared` in each of the four packages (every constant is `event.Lookup`-able, schema 1, priority and alert flag as listed) and `TestManifestsValid` (`Manifest.Validate()` nil for the four).
-- [ ] **Step 7 (1B): Apply the 17 gaps to `phylax_design.md`** (one bullet each under the module sections they touch, plus the corrected table names, the removal of `pcr.generate` from the `creds` Actions row, the `CR` lint namespace, the `ContentDir` key in `modules/checks.yml`, and Appendix D lines for `internal/checks/probe`, `internal/creds/pcr`, `rules/creds`, `plans/creds`, `rules/scorer`, `rules/vantage`, `checks/`).
+- [ ] **Step 7 (1B): Apply the 17 gaps to `phylax_design.md`** (one bullet each under the module sections they touch, plus the corrected table names, the removal of `pcr.generate` from the `creds` Actions row, the `CR` lint namespace, the `ContentDir` key in `modules/checks.yml`, and Appendix D lines for `internal/checks/probe`, `internal/creds/pcr`, `rules/creds`, `plans/creds`, `rules/scorer`, `checks/`; `rules/vantage` is not created).
 - [ ] **Step 8 (1B): Verify and commit.** Run: `make build build-windows vet test race`, then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W7 Task'`. Expected: all pass; the count equals the number of skipped tests written. `git commit -am "scoring-creds: W7 seams (kinds, stubs, settings, core hooks, skipped tests, design gaps)"`. Open pull request 1B, merge after review.
 
 ---
@@ -511,7 +510,7 @@ func TestGateApprovalEmitsReply(t *testing.T) {
 
 **Interfaces:**
 - Consumes: built `Vault.Put/Get/Delete`, `vault.Reader`, `vault.Scoped` (W1), W1 `moduleHost.Secrets`.
-- Produces: `func ScopedWriter(v *Vault, patterns []string) Writer` (a pattern ending in `/*` matches any name with that prefix, any other pattern is exact; a name outside every pattern returns `ErrNotAllowed` from `Get`, `Put` and `Delete`); `stepSecrets` allows the vault prefix `pcr/` for the actions `user.set_password`, `ad.account.reset_password` and `pcr.verify` (param `password`) only when `p.Module == "creds"` and `n.Txn != ""`.
+- Produces: `func ScopedWriter(v *Vault, patterns []string) Writer` (a pattern ending in `/*` matches any name with that prefix, any other pattern is exact; a name outside every pattern returns `ErrNotAllowed` from `Get`, `Put` and `Delete`); `stepSecrets` allows the vault prefix `pcr/` for the actions `user.set_password`, `ad.account.reset_password` and `probe.run` with name `pcr_verify` (param `password`) only when `p.Module == "creds"` and `n.Txn != ""`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -990,7 +989,7 @@ func (m *Module) Retire(ctx context.Context, id, by string) error
 func (m *Module) AcceptCurrent(ctx context.Context, id, by string) error       // rewrites the expected response from the latest passing result
 ```
 
-Facts go to the service's host (`ControlMsg{Hosts: [host], Fact: "scorer_probe_result", ID: "probe:"+service, TTL}`); a failed `Control` is logged and skipped. Nothing is ever removed automatically: a `stale` proposal marks the row `stale: true` only. Every lifecycle change is written to the manifest overrides (`overrides.yml` through `atomicfile`) and takes effect at once.
+Facts go to the service's host (`ControlMsg{Hosts: [host], Fact: "scorer_probe_result", ID: "probe:"+service, TTL}`); a failed `Control` is logged and skipped. Nothing is ever removed automatically: a `stale` proposal marks the row `stale: true` only. Every lifecycle change is written to the manifest overrides (`overrides.yml` through `atomicfile`), is emitted as one core `operator.edit` (`module: checks`; `op` `add`, `edit`, `pause`, `resume`, `accept_proposal`, `make_check`, `accept_current` or `retire`; `record` the whole check record; S4: no per-module edit kinds) through `Host.Emit`, and takes effect at once; `checks_check` is a replay of those events and the `health:` records.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -998,7 +997,8 @@ Facts go to the service's host (`ControlMsg{Hosts: [host], Fact: "scorer_probe_r
 func TestProbeFactSentAfterLANFaithful(t *testing.T) { /* fake Host recording ControlMsg: lan faithful result -> one fact, Data decodes to ProbeResultFact{OK: scorer_ok, Source "lan"}, TTL >= 90 s; kali result -> Source "external"; sweep result -> none */ }
 func TestProposalLifecycle(t *testing.T) {
 	// scorer.proposal kind new -> row state proposed, origin discovered; Accept -> active and the override file has the check;
-	// a stale proposal never deletes an active row; Retire -> retired; AcceptCurrent rewrites Items from the latest passing result
+	// a stale proposal never deletes an active row; Retire -> retired; AcceptCurrent rewrites Items from the latest passing result;
+	// every call emits one operator.edit{module: checks, op, subject: id, record: the whole check record, by, at} and rebuilding checks_check from those events plus the services.yml health: records gives the same rows
 }
 func TestOverridesWrittenAtomically(t *testing.T) { /* crash-injection: temp file left behind never corrupts overrides.yml (atomicfile) */ }
 ```
@@ -1242,7 +1242,7 @@ func (o *Overrides) MarkNotScored(user string) error
 func (h Host) EffectiveLabels() []string                                     // package manifest: Labels plus "role_<r>" for every role
 ```
 
-`Start` decodes `Config`, migrates, loads the fingerprint table from `Config.Fingerprints` (parse failure: health `degraded`, gap "no fingerprint table loaded"), and runs one writer goroutine that projects its own kinds into the tables. **Replay:** on start the module feeds the last `ReplayWindow` of stored `capture.flow`, `capture.txn`, `auth_event` and `checks.result` events through the same code the live path uses (Tasks 24 to 27) with emission suppressed, so the estimator, discovery and tracker are rebuilt; the tables hold the rest.
+`Start` decodes `Config`, migrates, loads the fingerprint table from `Config.Fingerprints` (parse failure: health `degraded`, gap "no fingerprint table loaded"), and runs one writer goroutine that projects its own kinds and its `operator.edit` events into the tables (`op: note` into `scorer_note`; the group ops `rename_group`, `merge`, `split`, `mark_not_scored` into `scorer_account`). **Replay:** on start the module feeds the last `ReplayWindow` of stored `conn` (`source: capture`), `capture.txn`, `auth_event` and `checks.result` events through the same code the live path uses (Tasks 24 to 27) with emission suppressed, so the estimator, discovery and tracker are rebuilt; the tables hold the rest.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1276,7 +1276,7 @@ func TestEffectiveLabelsImplyRoles(t *testing.T) { /* host with roles [check_run
 - Test: `internal/scorer/feed_test.go`, `internal/scorer/facts_test.go`
 
 **Interfaces:**
-- Consumes: `Estimator.Observe/ObserveBurst/Tick/Estimate/SafeFor`, `Classifier.Classify`, `capture.flow` (inbound connection starts) decoded into a local permissive struct `CaptureFlow{Time time.Time; Client, Server netip.AddrPort; Proto string; Dir string}` (field names confirmed against W6's `internal/capture/kinds.go` in Step 3; a decode failure drops the event and counts a gap), `plan.RoundClock`, `Host.Control`.
+- Consumes: `Estimator.Observe/ObserveBurst/Tick/Estimate/SafeFor`, `Classifier.Classify`, `conn` events with `source: capture` (inbound connection starts; other sources are ignored) decoded into a local permissive struct `CaptureFlow{Time time.Time; Client, Server netip.AddrPort; Proto string; Dir string}` (field names confirmed against W6's `internal/capture/kinds.go` in Step 3; a decode failure drops the event and counts a gap), `plan.RoundClock`, `Host.Control`.
 - Produces:
 
 ```go
@@ -1401,7 +1401,7 @@ func TestPlaintextParsersFlagUUIDPasswords(t *testing.T) { /* smtp, imap, pop3, 
 - Test: `internal/scorer/sla_feed_test.go`, `internal/scorer/sla_test.go`
 
 **Interfaces:**
-- Consumes: `SLATracker.ObserveRound/Discard/Verdict/Calibration`, `checks.result` (faithful, `scorer_ok`, `vantage`), capture-inferred outcomes (a refused or reset connection, a failed login, a wrong content reply from the service in `CaptureTxn.OK`), `scorer.note`, `scorer.round.dropped`.
+- Consumes: `SLATracker.ObserveRound/Discard/Verdict/Calibration`, `checks.result` (faithful, `scorer_ok`, `vantage`), capture-inferred outcomes (a refused or reset connection, a failed login, a wrong content reply from the service in `CaptureTxn.OK`), `operator.edit` (`module: scorer`, `op: note`), `scorer.round.dropped`.
 - Produces:
 
 ```go
@@ -1412,7 +1412,7 @@ type SLAFeed struct{ /* pending[round][service] candidates with a source rank */
 func NewSLAFeed(t *SLATracker, settle time.Duration) *SLAFeed
 func (s *SLAFeed) Add(round int, svc string, src string, out Outcome)        // src: note | capture | kali | lan
 func (s *SLAFeed) Close(round int, now time.Time) []event.Event             // applies the best source per (round, service) after settle; emits scorer.sla
-func (s *SLAFeed) Note(n NoteEvent, round int) []event.Event                // Verdict(round, svc, pass) on history
+func (s *SLAFeed) Note(n NoteRecord, round int) []event.Event                // Verdict(round, svc, pass) on history
 ```
 
 Precedence per round and service: note, capture, kali probe, lan probe; a higher source overrides a lower for that round, a lower fills a round no higher source covers; `strict_ok` never counts; unknown neither advances nor resets; a dropped round is `Discard`ed. Alerts: `warn` at threshold-2, `critical` at threshold-1, `penalty` at the threshold; with `per_round` the first failed round already alerts (it costs).
@@ -1475,7 +1475,7 @@ func TestRiskNothingDownEmitsEmptyRanking(t *testing.T) { /* no sla events: one 
 
 **Interfaces:**
 - Consumes: `Registrar`, `Host.Emit`, tables.
-- Produces: `/scorer` (round clock: Delay, Jitter, confidence, last burst, next window, dropped rounds; learned services with coverage; learned accounts and credlist groups with rename, merge, split and mark-not-scored; proposals and stale flags; recent fingerprint verdicts; the Up/Down note form), a strip on `/services` and the Overview (round clock, SLA streaks, risk ranking) as a tile; the note form POST action `note` emits `scorer.note` (`by` = the operator's login). Health: `ok`; `degraded` while the estimate is provisional or no capture feed arrives for a host that should have one; `unavailable` with no capture events; gaps "round clock provisional", "no fingerprint table loaded", "capture not feeding from <host>", "scorer silent".
+- Produces: `/scorer` (round clock: Delay, Jitter, confidence, last burst, next window, dropped rounds; learned services with coverage; learned accounts and credlist groups with rename, merge, split and mark-not-scored; proposals and stale flags; recent fingerprint verdicts; the Up/Down note form), a strip on `/services` and the Overview (round clock, SLA streaks, risk ranking) as a tile; the note form POST action `note` emits one core `operator.edit` (`module: scorer`, `op: note`, `record` = service, verdict, round, text; `by` = the operator's login), and the group actions (`rename_group`, `merge`, `split`, `mark_not_scored`) emit the same kind with the full resulting groups and also write `overrides.yml` (S4: no `scorer.note` kind). Health: `ok`; `degraded` while the estimate is provisional or no capture feed arrives for a host that should have one; `unavailable` with no capture events; gaps "round clock provisional", "no fingerprint table loaded", "capture not feeding from <host>", "scorer silent".
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1483,7 +1483,7 @@ func TestRiskNothingDownEmitsEmptyRanking(t *testing.T) { /* no sla events: one 
 func TestScorerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\nfingerprints: ../../rules/scorer/fingerprints.json\n", Seed: seedScorerEvents(), Now: time.Unix(1e9, 0)})
 }
-func TestNoteFormEmitsNote(t *testing.T) { /* POST action note {service ecom-http, verdict down, round 12, text "portal shows down"}: a scorer.note with By == the session login; GET page shows it */ }
+func TestNoteFormEmitsNote(t *testing.T) { /* POST action note {service ecom-http, verdict down, round 12, text "portal shows down"}: an operator.edit{module scorer, op note} with by == the session login and one scorer_note row; GET page shows it */ }
 func TestHealthDegradedWhileProvisional(t *testing.T) { /* fewer than min_bursts: degraded with gap "round clock provisional"; no capture events at all: unavailable */ }
 func TestMarkNotScoredAction(t *testing.T) { /* POST mark_not_scored {user}: overrides.yml updated, scorer.account no longer re-learns until seen again */ }
 ```
@@ -1522,7 +1522,7 @@ func TestNoOldChecksPaths(t *testing.T) {
 
 ---
 
-### Task 31: `vantage`: one agent module with three sub-roles, no `scorer` import
+### Task 31: `vantage`: one agent module with two sub-roles, no `scorer` import
 
 **Files:**
 - Create: `internal/vantage/module.go`, `internal/vantage/gate.go`
@@ -1534,13 +1534,13 @@ func TestNoOldChecksPaths(t *testing.T) {
 - Produces:
 
 ```go
-type Module struct{ /* scanner, canary, verify by role */ }
-func New(cfg Config, env agent.Env) (*Module, error)       // agent.Module "vantage"; HealthReporter; roles scanner and canary switch the sub-parts, the verify service is always built
-func Active() *Module                                       // the running instance, for the pcr.verify action (shortcut: one agent per process)
+type Module struct{ /* scanner and canary by role */ }
+func New(cfg Config, env agent.Env) (*Module, error)       // agent.Module "vantage"; HealthReporter; roles scanner and canary switch the two sub-parts; verification is no sub-role, `VerifyService` backs the `pcr_verify` probe step (Task 33)
+func Active() *Module                                       // the running instance, for the pcr_verify probe step (shortcut: one agent per process)
 func (m *Module) refuse(target, reason string)             // emits vantage.refused (RefusedScan), High, deduplicated
 ```
 
-The three old agent modules (`vantage.scanner`, `vantage.verify`, `vantage.canary`) become one module `vantage`; `Section` is enabled when `Modules.Vantage != nil`; the allowlist check is a hard check in the agent (scans, canary replies are inbound-only, verify targets). The gate is a local 12-line adapter over `Env.Fact("round_clock")` and `plan.RoundClock.Window` (`shortcut: duplicated in checks, hoist to agent.Env when a third module needs it`). The `scorer.Verifier` implementation `RemoteVerifier` is deleted (the controller starts verification with a plan, Task 33); `LocalTransport` stays for the lab.
+The three old agent modules (`vantage.scanner`, `vantage.verify`, `vantage.canary`) become one module `vantage` with two sub-roles, `scanner` and `canary`; verification is not a sub-role but the `probe.run` step `pcr_verify` (Task 33); `Section` is enabled when `Modules.Vantage != nil`; the allowlist check is a hard check in the agent (scans, canary replies are inbound-only, verify targets). The gate is a local 12-line adapter over `Env.Fact("round_clock")` and `plan.RoundClock.Window` (`shortcut: duplicated in checks, hoist to agent.Env when a third module needs it`). The `scorer.Verifier` implementation `RemoteVerifier` is deleted (the controller starts verification with a plan, Task 33); `LocalTransport` stays for the lab.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1548,7 +1548,7 @@ The three old agent modules (`vantage.scanner`, `vantage.verify`, `vantage.canar
 func TestVantageAgentConformance(t *testing.T) {
 	conformance.Agent(t, conformance.AgentCase{Factory: factoryNamed(t, "vantage"), Default: kaliCfg(1), Reconfig: kaliCfg(2), KeepKey: "vantage.last_scan", Load: canaryLoad()})
 }
-func TestRolesSwitchSubparts(t *testing.T) { /* Roles [scanner]: scanner on, canary listener not bound; [canary]: reverse; [] with block non-nil: only verify */ }
+func TestRolesSwitchSubparts(t *testing.T) { /* Roles [scanner]: scanner on, canary listener not bound; [canary]: reverse; [] with block non-nil: neither sub-part, the pcr_verify step still answers */ }
 func TestRefusesNonAllowlistedScanTarget(t *testing.T) { /* settings Allowlist 127.0.0.0/8, a scan request for 203.0.113.9: nothing dialled, one vantage.refused, event validates */ }
 func TestKindsAreDeclaredAndTagged(t *testing.T) { /* every emitted event validates; canary hits and scans carry no vantage.check names; grep guard: no "vantage.check" in the package */ }
 func TestNoScorerImport(t *testing.T) { /* go list -deps ./internal/vantage excludes internal/scorer and internal/checks */ }
@@ -1557,87 +1557,85 @@ func TestNoScorerImport(t *testing.T) { /* go list -deps ./internal/vantage excl
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/agent/mods/ -run 'Conformance|RolesSwitch|RefusesNon|KindsAre|NoScorerImport' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/ ./internal/agent/...`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "vantage: one agent module with scanner, canary and verify sub-roles"`
+- [ ] **Step 5: Commit.** `git commit -am "vantage: one agent module with scanner and canary sub-roles"`
 
 ---
 
-### Task 32: `vantage`: dangerous ports, scored ports closed, pre-window scan
+### Task 32: `vantage`: scored ports closed, pre-window scan
 
 **Files:**
-- Create: `internal/vantage/exposure.go`, `rules/vantage/dangerous_ports.yml`
+- Create: `internal/vantage/exposure.go`
 - Modify: `internal/vantage/scan.go` (`Diff`, `DiffExposure`), `internal/vantage/module.go`
 - Test: `internal/vantage/exposure_test.go`
 
 **Interfaces:**
-- Consumes: `plan.VantageSettings.ScoredServices`, `PreWindow`, `DangerousPorts`.
+- Consumes: `plan.VantageSettings.ScoredServices`, `PreWindow`.
 - Produces:
 
 ```go
-type Dangerous struct{ Proto string; Port uint16; UnlessScoredKind string } // 135, 139, 445 unless smb, 3389 unless rdp, 23, 5985, 5986 unless winrm, 3306, 5432, 6379, 27017, 9200
-func LoadDangerous(fsys fs.FS) ([]Dangerous, error)
-// Diff gains: DangerousOpen []Finding; ScoredClosed []Finding
-func DiffExposure(declared Exposure, observed Observed, scanned []netip.Addr, danger []Dangerous, scoredKinds map[netip.Addr]map[string]bool) Diff
+// Diff gains: ScoredClosed []Finding
+func DiffExposure(declared Exposure, observed Observed, scanned []netip.Addr) Diff   // no dangerous-port list (S4)
 func NextScanAt(now time.Time, last time.Time, interval time.Duration, pre []time.Time) time.Time
 ```
 
-The scan is diffed against the scored set only (no public decoys). `newly_open` fires once until the port closes; a scored port that is closed fires `closed` with `scored: true`; an open port on the dangerous list fires `dangerous_open` unless the manifest scores that service; a cancelled scan emits nothing; a full-range scan starts 10 minutes before each pre-window time; the scan waits `quiet_wait` for a quiet window when a clock feed exists and runs at its low rate otherwise.
+The scan is diffed against the scored set only (no public decoys). `newly_open` fires for any open port that is not a scored service, whatever the port number (135, 445 and 3389 included), once until the port closes; a scored port that is closed fires `closed` with `scored: true`; a cancelled scan emits nothing; a full-range scan starts 10 minutes before each pre-window time; the scan waits `quiet_wait` for a quiet window when a clock feed exists and runs at its low rate otherwise. There is no `dangerous_ports.yml` and no `dangerous_open` change (S4).
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestDangerousOpenUnlessScored(t *testing.T) { /* 445 open, smb not scored: dangerous_open; smb scored: not dangerous (and not newly_open); 3306 open: dangerous_open; 5985 with winrm scored: none */ }
+func TestAnyUndeclaredPortIsNewlyOpen(t *testing.T) { /* 135, 445, 3389 and 9200 open and not scored: four newly_open findings; 445 open with smb scored: none; no dangerous_open change exists */ }
 func TestScoredPortClosedAlerts(t *testing.T) { /* declared 443 scored, observed closed: ExposureChange{change closed, scored true} */ }
 func TestNewlyOpenOncePerOpening(t *testing.T) { /* open on scan 1 and 2: one event; closes then opens: a second */ }
 func TestCancelledScanEmitsNothing(t *testing.T) { /* cancel mid-scan: no vantage.scan, no exposure_change (cannot look like closed ports) */ }
 func TestNextScanAtPreWindow(t *testing.T) { /* pre [14:00]: at 13:40 with interval 15 m last 13:30 -> next 13:50 (pre-window start); at 13:55 -> 13:50 already past -> runs now once; no pre times -> last+interval */ }
-func TestDangerousListLoads(t *testing.T) { /* rules/vantage/dangerous_ports.yml parses, includes 135, 3389 unless rdp, 9200; unknown field is an error */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'Dangerous|ScoredPortClosed|NewlyOpen|Cancelled|NextScanAt' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'UndeclaredPort|ScoredPortClosed|NewlyOpen|Cancelled|NextScanAt' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "vantage: dangerous ports, scored ports closed, pre-window scan"`
+- [ ] **Step 5: Commit.** `git commit -am "vantage: scored ports closed, pre-window scan"`
 
 ---
 
-### Task 33: `vantage`: `pcr.verify` per credlist and the RDP wrapper
+### Task 33: `vantage`: the `pcr_verify` probe step per credlist and the RDP wrapper
 
 **Files:**
 - Create: `internal/vantage/rdpauth.go`
-- Modify: `internal/vantage/verify.go`, `internal/vantage/module.go` (action registration through `actions.Register`)
+- Modify: `internal/vantage/verify.go`, `internal/vantage/module.go` (registers the `pcr_verify` name with the agent's `probe.run` dispatch)
 - Test: `internal/vantage/verify_test.go`, `internal/vantage/rdpauth_test.go`
 
 **Interfaces:**
-- Consumes: `actions.Register` (W1 Task 2a), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
+- Consumes: the agent `probe.run` handler (W3 Task 35: `probe.run{name, params}` is a read-only core action; its dispatch looks a name up in signed table content. `pcr_verify` is code-backed, so Task 1 adds the one hook `actions.RegisterProbeStep(name string, fn func(ctx context.Context, params json.RawMessage, secrets map[string]vault.Secret) (json.RawMessage, error))`; `// shortcut: one code-backed probe name, upgrade to a registry when a second module needs one`), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
 - Produces:
 
 ```go
-// action pcr.verify{account string, credlist string, targets string /* JSON []Target */}  Risk none, Runs agent (the Kali), secret param password
+// probe.run{name: "pcr_verify", params: JSON{account, credlist, targets []Target}}  Risk none, Runs agent (the Kali), secret param password; no `pcr.verify` action and no verify sub-role (S4)
 type Target struct{ Type string `json:"type"`; Host string `json:"host"`; Port int `json:"port"`; Encrypted bool `json:"encrypted,omitempty"`; Domain string `json:"domain,omitempty"`; Service string `json:"service"` }
 func (m *Module) Verify(ctx context.Context, account, credlist string, targets []Target, pass vault.Secret) (ok bool, perService map[string]error)
 func RDPAuth(ctx context.Context, host string, port int, user, pass string) error // runs `xfreerdp /v:host:port /u:user /from-stdin /auth-only /cert:ignore`; the password goes on stdin, never argv
 var ErrToolMissing = errors.New("vantage: xfreerdp not installed")
 ```
 
-Verification logs in with `AuthOnly` on the public services of that credlist group only (the controller sends the targets), succeeds only if every target accepts, and fails when there are no targets or any target is outside the allowlist (`vantage.refused`). One `vantage.pcr_verify` per service (Critical on failure). The module sets `probe.Options.RDPAuth = RDPAuth`; a missing tool is the health gap "xfreerdp absent (RDP auth probe unavailable)". `shortcut: stdin password mode of xfreerdp assumed from the 3.x flags, verify in the lab.`
+Verification logs in with `AuthOnly` on the public services of that credlist group only (the controller sends the targets), succeeds only if every target accepts, and fails when there are no targets or any target is outside the allowlist (`vantage.refused`). The step result is the credential-free outcome, and the module emits one `vantage.probe` per service with `probe: pcr_verify`, `account`, `credlist`, `service`, `ok`, `err` (Critical and an alert on failure). The module sets `probe.Options.RDPAuth = RDPAuth`; a missing tool is the health gap "xfreerdp absent (RDP auth probe unavailable)". `shortcut: stdin password mode of xfreerdp assumed from the 3.x flags, verify in the lab.`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestVerifyAllMustPass(t *testing.T) { /* two fake targets (imap ok, smtp wrong password): ok false, perService["smtp"] != nil, two pcr_verify events, the failing one Critical */ }
+func TestVerifyAllMustPass(t *testing.T) { /* two fake targets (imap ok, smtp wrong password): ok false, perService["smtp"] != nil, two vantage.probe{probe pcr_verify} events, the failing one Critical */ }
 func TestVerifyOnlyTheCredlistsServices(t *testing.T) { /* targets list has imap only: the ssh fake server sees no connection */ }
 func TestVerifyNoTargetsOrDisallowedFails(t *testing.T) { /* no targets: failure with ErrNoPublicPath text; a 203.0.113.9 target: failure and vantage.refused, nothing dialled */ }
-func TestVerifyActionSecretNeverLeaks(t *testing.T) { /* run through actions.Env.Execute with Secrets {"password":"Plum-river-tent-82"}: Output, events and the returned error never contain it */ }
+func TestVerifyStepSecretNeverLeaks(t *testing.T) { /* run through probe.run{name pcr_verify} with Secrets {"password":"Plum-river-tent-82"}: step output, events and the returned error never contain it */ }
+func TestPCRVerifyIsAProbeStepNotAnAction(t *testing.T) { /* actions registry has no "pcr.verify"; probe.run with name pcr_verify dispatches to Module.Verify; an unknown name is an error */ }
 func TestRDPAuthPasswordOnStdin(t *testing.T) {
 	// PATH=<tmp> containing a script "xfreerdp" that records argv and stdin and exits 0 / 1:
 	// stdin == "Plum-river-tent-82\n" (or the mode's framing), argv does not contain it; exit 1 -> error without the password; no tool -> ErrToolMissing and the health gap
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'VerifyAll|VerifyOnly|VerifyNoTargets|VerifyActionSecret|RDPAuth' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ -run 'VerifyAll|VerifyOnly|VerifyNoTargets|VerifyStepSecret|PCRVerifyIsA|RDPAuth' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/ ./internal/actions/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "vantage: pcr.verify per credlist; xfreerdp wrapper with stdin password"`
+- [ ] **Step 5: Commit.** `git commit -am "vantage: pcr_verify probe step per credlist; xfreerdp wrapper with stdin password"`
 
 ---
 
@@ -1711,16 +1709,16 @@ func TestExposureProbesEmitAndRespectSettings(t *testing.T) { /* settings SMB tr
 
 ---
 
-### Task 36: `vantage`: controller side, V1 to V4, pages, conformance
+### Task 36: `vantage`: controller side, alert-class kinds, pages, conformance
 
 **Files:**
-- Create: `internal/vantage/controller.go`, `internal/vantage/ui.go`, `internal/vantage/ui/vantage.html`, `internal/controller/genconfig_vantage.go`, `rules/vantage/vantage.yml`, `plans/vantage/scan_now.yml`, `manifest/2027/modules/vantage.yml`, `manifest/schema/modules/vantage.schema.json`
+- Create: `internal/vantage/controller.go`, `internal/vantage/ui.go`, `internal/vantage/ui/vantage.html`, `internal/controller/genconfig_vantage.go`, `plans/vantage/scan_now.yml`, `manifest/2027/modules/vantage.yml`, `manifest/schema/modules/vantage.schema.json`
 - Modify: `internal/module/conformance/allowed.go` (remove `vantage` from `PreContract`), `internal/module/all/all.go`
 - Test: `internal/vantage/controller_test.go`, `internal/vantage/conformance_test.go`, `internal/controller/genconfig_vantage_test.go`
 
 **Interfaces:**
-- Consumes: `Host.Tables`, `Host.Subscribe` (`vantage.scan`, `vantage.exposure_change`), the loader of `detect` rules (W4's corpus test covers `rules/vantage/`), `Host.RunReadOnly`.
-- Produces: tables `vantage_scan(id INTEGER PRIMARY KEY AUTOINCREMENT, time_ns INTEGER NOT NULL, hosts TEXT NOT NULL, duration_ms INTEGER NOT NULL, tcp_open TEXT NOT NULL, udp_open TEXT NOT NULL)` and `vantage_exposure(host TEXT NOT NULL, port INTEGER NOT NULL, proto TEXT NOT NULL, state TEXT NOT NULL, scored INTEGER NOT NULL, first_ns INTEGER NOT NULL, last_ns INTEGER NOT NULL, PRIMARY KEY(host, port, proto))` written by one goroutine from the module's own events; rules V1 (`checks.compare` class `path_broken`, `scorer_content` or `internal_only`), V2 (`vantage.exposure_change` `newly_open`, `dangerous_open`, or `closed` with `scored: true`), V3 (`vantage.canary_hit`), V4 (`vantage.pcr_verify` with `ok: false`), severity info or 1, each with inline tests; `/vantage` (per public address open ports against the scored set, last scan and diff, canary results by host, verification history, the Kali's link and allowlist, a **Scan now** button that runs `plans/vantage/scan_now.yml` through `RunReadOnly`, the field for the organizers' scan times written to `overrides.yml`); `genconfig_vantage.go` renders `VantageSettings` for a host with role `scanner` or `canary` (allowlist, scored set from the manifest's public addresses, `PreWindow` from the overrides). `shortcut: the manifest's public address per host is the hosts.yml field public, add it to the reference manifest when absent.` Health: `degraded` when the scan is behind schedule, the clock feed is absent or `xfreerdp`/`nmap` is missing; `unavailable` when the Kali is down or its allowlist empty.
+- Consumes: `Host.Tables`, `Host.Subscribe` (`vantage.scan`, `vantage.exposure_change`), the core alert pipeline (alert-class events become alert rows), `Host.RunReadOnly`.
+- Produces: tables `vantage_scan(id INTEGER PRIMARY KEY AUTOINCREMENT, time_ns INTEGER NOT NULL, hosts TEXT NOT NULL, duration_ms INTEGER NOT NULL, tcp_open TEXT NOT NULL, udp_open TEXT NOT NULL)` and `vantage_exposure(host TEXT NOT NULL, port INTEGER NOT NULL, proto TEXT NOT NULL, state TEXT NOT NULL, scored INTEGER NOT NULL, first_ns INTEGER NOT NULL, last_ns INTEGER NOT NULL, PRIMARY KEY(host, port, proto))` written by one goroutine from the module's own events. There are no vantage correlation rules and no `rules/vantage/` (S4): `checks.compare` (class `path_broken`, `scorer_content` or `internal_only`), `vantage.exposure_change` (`newly_open`, or `closed` with `scored: true`), `vantage.canary_hit` and a Critical `vantage.probe` (a failed `pcr_verify`, a positive Zerologon) are alert-class kinds with the severity declared in Task 1, so the core alert pipeline makes the alert rows; `declared_closed` is not an alert. Pages: `/vantage` (per public address open ports against the scored set, last scan and diff, canary results by host, verification history from `vantage.probe` rows, the Kali's link and allowlist, a **Scan now** button that runs `plans/vantage/scan_now.yml` through `RunReadOnly`, the field for the organizers' scan times written to `overrides.yml`); `genconfig_vantage.go` renders `VantageSettings` for a host with role `scanner` or `canary` (allowlist, scored set from the manifest's public addresses, `PreWindow` from the overrides). `shortcut: the manifest's public address per host is the hosts.yml field public, add it to the reference manifest when absent.` Health: `degraded` when the scan is behind schedule, the clock feed is absent or `xfreerdp`/`nmap` is missing; `unavailable` when the Kali is down or its allowlist empty.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1728,16 +1726,16 @@ func TestExposureProbesEmitAndRespectSettings(t *testing.T) { /* settings SMB tr
 func TestVantageControllerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\nallowlist: [172.25.21.0/24]\n", Seed: nil, Now: time.Unix(1e9, 0)})
 }
-func TestVRulesFire(t *testing.T) { /* detect corpus loader over rules/vantage: V1..V4 inline tests pass; V2 does not fire for exposure_change declared_closed */ }
+func TestAlertClassKindsBecomeAlertRows(t *testing.T) { /* through the core alert pipeline: exposure_change newly_open and closed{scored} -> High alert rows; declared_closed -> none; canary_hit -> High; vantage.probe pcr_verify ok false -> Critical, ok true -> none; no rules/vantage directory exists */ }
 func TestExposureTableProjection(t *testing.T) { /* newly_open then closed events: one vantage_exposure row, state closed, first_ns kept */ }
 func TestScanNowRunsReadOnlyPlan(t *testing.T) { /* POST action scan_now -> Host.RunReadOnly("scan_now", {host: kali}); the template passes lint SS000 */ }
 func TestKaliSettingsRendered(t *testing.T) { /* reference manifest: kali host Modules.Vantage.Allowlist == the public /24, ScoredServices non-empty, PreWindow from overrides; a LAN host: nil */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/controller/ -run 'VantageControllerConformance|VRules|ExposureTable|ScanNow|KaliSettings' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vantage/ ./internal/controller/ -run 'VantageControllerConformance|AlertClassKinds|ExposureTable|ScanNow|KaliSettings' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement**, remove the `PreContract` entry, run `go test ./internal/module/all/ -run Schema -update`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vantage/... ./internal/controller/ ./internal/module/...`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "vantage: controller side, V1 to V4, page; vantage leaves PreContract"`
+- [ ] **Step 5: Commit.** `git commit -am "vantage: controller side, alert-class kinds, page; vantage leaves PreContract"`
 
 ---
 
@@ -1847,30 +1845,30 @@ func TestNoScoredOrUnscoredClassLeft(t *testing.T) { /* grep guard: no "creds.Sc
 - Test: `internal/creds/module_test.go`, `internal/creds/inventory_test.go`
 
 **Interfaces:**
-- Consumes: `module.Host` (`Config`, `Tables`, `Subscribe`, `Secrets`, `Emit`), `accounts.yml` through `Host.Config`-adjacent manifest access (`Config.Accounts` rendered by the controller into the module block as `accounts:`), `scorer.account`, `pcr.Engine.Load`.
+- Consumes: `module.Host` (`Config`, `Tables`, `Subscribe`, `Secrets`, `Emit`), `accounts.yml` through `Host.Config`-adjacent manifest access (`Config.Accounts` rendered by the controller into the module block as `accounts:`), `scorer.account`, `operator.edit` (`module: scorer`), `pcr.Engine.Load`.
 - Produces: migrations
 
 ```sql
 CREATE TABLE creds_account(account TEXT NOT NULL, host TEXT NOT NULL, role TEXT NOT NULL, domain INTEGER NOT NULL, scored INTEGER NOT NULL, current_version TEXT NOT NULL DEFAULT '', previous_version TEXT NOT NULL DEFAULT '', last_rotated_ns INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(account, host));
-CREATE TABLE creds_credlist(account TEXT NOT NULL, host TEXT NOT NULL, credlist TEXT NOT NULL, state TEXT NOT NULL, txn TEXT NOT NULL DEFAULT '', PRIMARY KEY(account, host, credlist));
 CREATE TABLE creds_txn(txn TEXT PRIMARY KEY, account TEXT NOT NULL, state TEXT NOT NULL, json TEXT NOT NULL, updated_ns INTEGER NOT NULL);
 CREATE TABLE creds_row(txn TEXT NOT NULL, credlist TEXT NOT NULL, row INTEGER NOT NULL, user TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(txn, credlist, row));
 ```
 
-One writer goroutine fills them from `creds.state` and `creds.txn`; `creds_txn.json` is a `pcr.Txn` snapshot without secrets (tables hold vault version ids only). `Start` rebuilds the engine from open `creds_txn` rows. The inventory is every account in `accounts.yml` plus the learned scored accounts (`scorer.account`: `scored`, credlist rows from the learned group); `scored: unknown` is treated as protected and is not rotatable. Health: `degraded` with the gap "vault locked, no rotation or verification", or "no quiet window" while the clock is provisional, or when the Kali is down; `unavailable` when the vault cannot be read. `Config` gains `Secrets []string` (default `[cred/*, pcr/*]`).
+One writer goroutine fills them from `creds.state` and `creds.txn`; `creds_txn.json` is a `pcr.Txn` snapshot without secrets (tables hold vault version ids only). There is no `creds_credlist` table (S4): `Record.Credlists` is rebuilt at `Start` from the latest `creds.state` event per (account, host, credlist), and a scored account's credlist label comes from `scorer.account` `group` and follows `scorer`'s `operator.edit` group edits (`rename_group`, `merge`, `split`). `// shortcut: per-credlist state lives in memory, rebuilt from events at Start; upgrade to a table if the replay gets slow.` `Start` rebuilds the engine from open `creds_txn` rows. The inventory is every account in `accounts.yml` plus the learned scored accounts (`scorer.account`: `scored`, credlist rows from the learned group); `scored: unknown` is treated as protected and is not rotatable. Health: `degraded` with the gap "vault locked, no rotation or verification", or "no quiet window" while the clock is provisional, or when the Kali is down; `unavailable` when the vault cannot be read. `Config` gains `Secrets []string` (default `[cred/*, pcr/*]`).
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
 func TestInventoryFromAccountsAndScorer(t *testing.T) { /* accounts.yml has mail-users scored with credlists [learned]; a scorer.account event for alice on imap group L2 -> record alice scored, one CredlistRow L2 stable; sysadmin@linux unscored with rotation t0_console */ }
 func TestUnknownScoredIsProtectedNotRotatable(t *testing.T) { /* scored: unknown -> Record.Scored true for the guard, Prepare refuses with "scored status unknown" */ }
-func TestTablesProjectedFromEventsOnly(t *testing.T) { /* creds.state events for (alice, L1) and (alice, L2): two creds_credlist rows; a direct Exec to creds_credlist from the test succeeds only through ModuleDB; rows hold no value, only version ids */ }
+func TestTablesProjectedFromEventsOnly(t *testing.T) { /* creds.state events for (alice, L1) and (alice, L2): one creds_account row, and after a module restart Record.Credlists holds both rows with their states; a direct Exec to creds_account from the test succeeds only through ModuleDB; rows hold no value, only version ids */ }
+func TestCredlistLabelFollowsScorerGroups(t *testing.T) { /* scorer.account alice group L1, then operator.edit{module: scorer, op: rename_group, L1 -> linux}: alice's CredlistRow label is linux; no creds table stores the label */ }
 func TestRestartRebuildsOpenTxns(t *testing.T) { /* creds_txn row at host_changed -> after a module restart Engine.Get(id).State == host_changed and no plan is started */ }
 func TestHealthStates(t *testing.T) { /* vault locked: degraded + gap; clock provisional: degraded "no quiet window"; vault read error: unavailable */ }
 func TestNoSecretInTables(t *testing.T) { /* put "Plum-river-tent-82" in the vault under pcr/t1/..., run a full inventory + a txn row: dump every creds_* table and every stored creds.* event: the value is nowhere */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'Inventory|UnknownScored|TablesProjected|RestartRebuilds|HealthStates|NoSecretInTables' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/creds/ -run 'Inventory|UnknownScored|TablesProjected|CredlistLabel|RestartRebuilds|HealthStates|NoSecretInTables' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/creds/...`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "creds: module base, per-credlist inventory, tables, restart"`
@@ -1943,7 +1941,7 @@ func TestTerminateActionParams(t *testing.T) { /* negative cutoff_ms rejected; s
 - Test: `internal/creds/lint_test.go`, `internal/creds/templates_test.go`
 
 **Interfaces:**
-- Consumes: `lint.Register`, `lint.Ctx.Query`, `LoadModuleTemplate`, `ExpandTemplate`, node options (Tasks 3 and 4), `session.terminate_predating` (Task 40), `pcr.verify` (Task 33), `health.check` (Task 19).
+- Consumes: `lint.Register`, `lint.Ctx.Query`, `LoadModuleTemplate`, `ExpandTemplate`, node options (Tasks 3 and 4), `session.terminate_predating` (Task 40), the `probe.run` step `pcr_verify` (Task 33), `health.check` (Task 19).
 - Produces: `CR001` registered from `init`: a node that sets a password (`user.set_password`, `ad.account.reset_password`, `splunk.password`) for an account the manifest marks scored or unknown passes only when it carries `txn: <id>`, the plan is `module: creds` and one of the three templates, and the latest `creds.txn` event for that id is not terminal (read through `Ctx.Query`). Templates (class `click` for `scored-change`, `auto` for `resync`, `click` for `unscored-rotation`):
 
 ```yaml
@@ -1955,7 +1953,7 @@ nodes:
   - {id: change, each: hosts, action: user.set_password, target: "${host}", txn: "${txn}", window: scorer_quiet, max_hold: 600s, window_min_sec: 30, deadman_sec: 120, params: {user: "${account}", secret_params: [password], secret_refs: {password: "${pref}/${host}/${account}"}}}
   - {id: evict,  each: hosts, action: session.terminate_predating, target: "${host}", needs: [change], params: {user: "${account}", before: "${before}", scored: true, cutoff_ms: "${cutoff_ms}", exempt_sources: "${exempt_sources}"}}
   - {id: reply,  gate: true, ask: "Portal reply: how many rows did Quotient accept?", reply: count, needs: [evict]}
-  - {id: verify, action: pcr.verify, target: "${kali}", needs: [evict], txn: "${txn}", params: {account: "${account}", credlist: "${credlist}", targets: "${targets}", secret_params: [password], secret_refs: {password: "${pref}/verify/${account}"}}}
+  - {id: verify, action: probe.run, target: "${kali}", needs: [evict], txn: "${txn}", params: {name: pcr_verify, params: '{"account":"${account}","credlist":"${credlist}","targets":"${targets}"}', secret_params: [password], secret_refs: {password: "${pref}/verify/${account}"}}}
 ```
 
 `resync.yml` is the same `change` node (value `pcr/<txn>/cur/...`, the vault's current value) followed by `verify`, no gate, no eviction; `unscored-rotation.yml` rotates an unscored account (`user.set_password`, the files that embed it, then `health.check` scorer_mimic) and has no `txn`.
@@ -2052,7 +2050,7 @@ func TestDummyListMakesNoHostChange(t *testing.T) { /* dummy list: made-up users
 - Test: `internal/creds/txn_finish_test.go`
 
 **Interfaces:**
-- Consumes: Task 42, `vantage.pcr_verify`, `scorer.login`, `scorer.item_set` (`rounds_expected`), `pcr.Engine.KaliResult/ConfirmSubmission/ObserveScorerLogin/Rollback`.
+- Consumes: Task 42, `vantage.probe` (`probe: pcr_verify`), `scorer.login`, `scorer.item_set` (`rounds_expected`), `pcr.Engine.KaliResult/ConfirmSubmission/ObserveScorerLogin/Rollback`.
 - Produces:
 
 ```go
@@ -2061,7 +2059,7 @@ func (m *Module) FixForward(ctx context.Context, txn, row, by string) error     
 func (m *Module) RollBack(ctx context.Context, txn, by string) error               // revert plan in the next quiet window + typed list with the old value
 ```
 
-Behaviour: after the `reply` gate (count equal to the rows, `skipped` empty) the transaction waits for a passing `scorer.login` by that user on the credlist's service; the UI shows the expected rounds (`rounds_expected` for one user, `k ln k` for all); after `verify_notice` (15 min) without a pass a `creds.notice` is emitted, **silence never rolls back**. On `verified`: the new value becomes the current vault entry (`Put cred/<host>/<account>`, previous version recorded), the pending `pcr/<txn>/*` entries are deleted, the `creds_txn` fact is closed, `creds.state` is emitted per credlist row. Failures: (1) host change fails: the plan rolled the node back, nothing submitted, `rolled_back`, pending entries deleted; (2) the Kali verify fails (`vantage.pcr_verify ok:false`): the transaction stays `host_changed`, the revert is proposed as `scored-change` with `pref=pcr/<txn>/old` held to the next quiet window, and the typed list with the old value is shown (the human re-submits the old value; Quotient already holds the new one); (3) window missed or human late (`HostChanged` race, or the reply arrives after the deadline): marked `late` or `race`, the first failed scorer login in the next burst is forgiven once; (4) reply mismatch: treated as possibly applied, a rollback also enters the old value, `skipped` rows fail with no PCR rollback; (5) a scored login fails after submit: default fix-forward (retype one row), alternative rollback; rollback never uses "Reset to Defaults".
+Behaviour: after the `reply` gate (count equal to the rows, `skipped` empty) the transaction waits for a passing `scorer.login` by that user on the credlist's service; the UI shows the expected rounds (`rounds_expected` for one user, `k ln k` for all); after `verify_notice` (15 min) without a pass a `creds.notice` is emitted, **silence never rolls back**. On `verified`: the new value becomes the current vault entry (`Put cred/<host>/<account>`, previous version recorded), the pending `pcr/<txn>/*` entries are deleted, the `creds_txn` fact is closed, `creds.state` is emitted per credlist row. Failures: (1) host change fails: the plan rolled the node back, nothing submitted, `rolled_back`, pending entries deleted; (2) the Kali verify fails (`vantage.probe` with `probe: pcr_verify`, `ok: false`): the transaction stays `host_changed`, the revert is proposed as `scored-change` with `pref=pcr/<txn>/old` held to the next quiet window, and the typed list with the old value is shown (the human re-submits the old value; Quotient already holds the new one); (3) window missed or human late (`HostChanged` race, or the reply arrives after the deadline): marked `late` or `race`, the first failed scorer login in the next burst is forgiven once; (4) reply mismatch: treated as possibly applied, a rollback also enters the old value, `skipped` rows fail with no PCR rollback; (5) a scored login fails after submit: default fix-forward (retype one row), alternative rollback; rollback never uses "Reset to Defaults".
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2071,7 +2069,7 @@ func TestHappyPathEndToEnd(t *testing.T) { // T35 normal
 	// -> creds.txn steps in order [prepared staged committing host_changed verify_ok pcr_submitted verified]; vault cred/<host>/alice == the new value, previous version kept; pcr/<txn>/* gone; fact closed; creds.state stable
 }
 func TestSilenceNeverRollsBack(t *testing.T) { /* after Reply, advance the fake clock 20 min with no scorer.login: one creds.notice "verification overdue", state still pcr_submitted, no plan started */ }
-func TestKaliVerifyFailureStartsHeldRevert(t *testing.T) { /* verify result ok false: state stays host_changed, a Propose of scored-change with pref pcr/<txn>/old, the list shown carries the OLD value, vantage.pcr_verify V4 present */ }
+func TestKaliVerifyFailureStartsHeldRevert(t *testing.T) { /* verify result ok false: state stays host_changed, a Propose of scored-change with pref pcr/<txn>/old, the list shown carries the OLD value, a Critical vantage.probe{probe pcr_verify, ok false} present */ }
 func TestReplyMismatchTreatedAsApplied(t *testing.T) {
 	// Reply count 1 for 2 rows: error "reply does not match", PCRUnknown true; RollBack's list contains the old value; Reply skipped ["bob"]: that row failed, RollBack list excludes bob's old value
 }
@@ -2095,7 +2093,7 @@ func TestOldValueWrittenBackOnRollback(t *testing.T) { /* after rolled_back the 
 - Test: `internal/creds/revert_test.go`
 
 **Interfaces:**
-- Consumes: `agent.reenrolled` (core), `Host.RunAuto` and `module.ErrProposed`, `plans/creds/resync.yml`, `vantage.pcr_verify`, `scorer.login`, the operator action `mark_reverted`.
+- Consumes: `agent.reenrolled` (core), `Host.RunAuto` and `module.ErrProposed`, `plans/creds/resync.yml`, `vantage.probe` (`probe: pcr_verify`), `scorer.login`, the operator action `mark_reverted`.
 - Produces:
 
 ```go
@@ -2104,7 +2102,7 @@ func (m *Module) Resync(ctx context.Context, host, account string) error       /
 func (m *Module) PCRBack(ctx context.Context, host, account, by string) error  // typed list with the old value; no host change plan
 ```
 
-`agent.reenrolled` (a reverted DC reverts every domain credential) or an operator mark turns every rotated credential of that host into `reverted` per (account, credlist) and emits `creds.reverted` (Alert). `login_mismatch` fires after three consecutive failed `scorer.login` for a `verified` row (`shortcut: no probe with the previous value; upgrade when the Kali can test the previous password`). While any row of a host is `reverted`, `Prepare` refuses scored changes on it. **Re-apply is automatic (A-AUTO):** `creds.reverted` starts `RunAuto("resync")` (`trigger` = the event ref, `auto: [resync]` in the block); the plan is held to the next quiet window (`max_hold`), runs behind the scorer-mimic probe and the Kali verification and rolls back to `reverted` on a red probe; it sets no new value, so nothing is typed. If `RunAuto` returns `ErrProposed` (probe cannot run, quiet window never fits) the proposal is the button and the row stays queued. Re-apply is a transaction of type `resync` (it records that Quotient already holds the value, which is what lets CR001 pass); **PCR back** leaves the host at the old value and produces a typed list for the human.
+`agent.reenrolled` (a reverted DC reverts every domain credential) or an operator mark turns every rotated credential of that host into `reverted` per (account, credlist) and emits `creds.reverted` (Alert). `login_mismatch` fires after three consecutive failed `scorer.login` for a `verified` row (`shortcut: no probe with the previous value; upgrade when the Kali can test the previous password`). While any row of a host is `reverted`, `Prepare` refuses scored changes on it. **Re-apply is automatic (A-AUTO):** `creds.reverted` starts `RunAuto("resync")` (`trigger` = the event ref; `act_enabled` for the host and `autonomy: {resync: auto}` in the block's `module.Actor`, S1; a repeated failure is stopped by the engine's attempt ledger for (host, object, kind), not by a `creds` guard); the plan is held to the next quiet window (`max_hold`), runs behind the scorer-mimic probe and the Kali verification and rolls back to `reverted` on a red probe; it sets no new value, so nothing is typed. If `RunAuto` returns `ErrProposed` (probe cannot run, quiet window never fits) the proposal is the button and the row stays queued. Re-apply is a transaction of type `resync` (it records that Quotient already holds the value, which is what lets CR001 pass); **PCR back** leaves the host at the old value and produces a typed list for the human.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2113,7 +2111,7 @@ func TestReenrollMarksRowsReverted(t *testing.T) { /* two verified rows on rocky
 func TestRevertedBlocksScoredChangeOnHost(t *testing.T) { /* Prepare for bob on rocky-ecom refused while a reverted row exists there; allowed on ubuntu-email */ }
 func TestAutoResyncSuccess(t *testing.T) { /* fake RunAuto records template "resync", params with trigger "controller:<seq>"; the fake runner reports change verified + Kali verify ok -> rows stable, a resync creds.txn with no list shown and no scored login required to unblock */ }
 func TestResyncProposedWhenProbeCannotRun(t *testing.T) { /* RunAuto returns ErrProposed -> rows stay reverted, one open proposal with Reason, no host change */ }
-func TestResyncRedProbeReturnsToReverted(t *testing.T) { /* node result outcome rolled_back "after-probe red: web" -> state reverted again, a creds.notice, the breaker (W1 Task 28) counted */ }
+func TestResyncRedProbeReturnsToReverted(t *testing.T) { /* node result outcome rolled_back "after-probe red: web" -> state reverted again, a creds.notice, the engine's attempt ledger (W1) counted the failed (host, resync) attempt */ }
 func TestPCRBackListHasOldValueNoHostPlan(t *testing.T) { /* PCRBack -> CSV block with the previous value, no Propose, state planned->host_changed shortcut documented; reply + scorer.login -> stable */ }
 func TestOperatorMarkAndDCRevertsAllDomainCreds(t *testing.T) { /* MarkReverted(host dc, operator): every domain account row reverted */ }
 ```
@@ -2132,7 +2130,7 @@ func TestOperatorMarkAndDCRevertsAllDomainCreds(t *testing.T) { /* MarkReverted(
 - Test: `internal/creds/proposal_test.go`
 
 **Interfaces:**
-- Consumes: `Host.Emit` for `creds.proposal`; plain structs only (Task 47 adds the adapters from `detect.alert`, `honeytokens.sighting`, `hunt.finding`, `chains.item`).
+- Consumes: `Host.Emit` for `creds.proposal`; plain structs only (Task 47 adds the adapters from `detect.alert`, `deception.sighting`, `hunt.finding`, `chains.item`).
 - Produces:
 
 ```go
@@ -2200,13 +2198,13 @@ func TestUnscoredRotationTemplate(t *testing.T) { /* Propose(unscored-rotation) 
 - Test: `internal/creds/adapters_test.go`, `internal/scorer/adapters_test.go`, `internal/checks/adapters_test.go`
 
 **Interfaces:**
-- Consumes: the declared kinds `detect.alert` (W4), `honeytokens.sighting` (W9), `hunt.finding` (W5), `chains.item` (W8), `traceback.change` (W8), `deps.graph` (W8), `inventory.probe_result` (W3, already declared); their payload structs from the producing packages' `kinds.go` read at this point (no import: decode with a local struct).
+- Consumes: the declared kinds `detect.alert` (W4), `deception.sighting` (W9), `hunt.finding` (W5), `chains.item` (W8), `traceback.change` (W8), `deps.graph` (W8), `inventory.probe_result` (W3, already declared); their payload structs from the producing packages' `kinds.go` read at this point (no import: decode with a local struct).
 - Produces: `creds`: `evidenceFromAlert`, `evidenceFromSighting`, `evidenceFromFinding`, `evidenceFromChainItem` mapping to `Evidence` (Task 45); `scorer`: `traceback.change` joins the risk analyser (`ours` when an untagged change of ours or a failed plan node precedes the outage, `red` for an untagged change by red, `platform` for a Phylax fault); `checks`: `deps.graph` high-confidence edges join the doctor's dependency probes. Each manifest `Consumes` gains the kinds; `Manifest.Validate` and conformance check 12 pass.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestEvidenceMapping(t *testing.T) { /* a detect.alert with rule id in ProposalRules and entities.account alice -> Evidence{pth_alert}; a honeytokens.sighting that shows a dump -> honeytoken_dump; a hunt.finding of kind credential_file -> credential_file; chains.item kind rotate_credential -> rotate_credential_item; a chain event that is not an item is ignored */ }
+func TestEvidenceMapping(t *testing.T) { /* a detect.alert with rule id in ProposalRules and entities.account alice -> Evidence{pth_alert}; a deception.sighting that shows a dump -> honeytoken_dump; a hunt.finding of kind credential_file -> credential_file; chains.item kind rotate_credential -> rotate_credential_item; a chain event that is not an item is ignored */ }
 func TestRiskCauseWithTraceback(t *testing.T) { /* untagged change by us before the red -> ours; untagged by red -> red; none -> unknown; identical output twice */ }
 func TestDoctorUsesDepsGraph(t *testing.T) { /* a high-confidence edge web -> db in deps.graph adds a TCP probe node for db to the doctor plan; low confidence does not */ }
 func TestManifestsConsumeDeclaredKinds(t *testing.T) { /* Validate nil for the three; every Consumes entry event.Lookup ok */ }
@@ -2232,11 +2230,11 @@ Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra; the "ccdc27" lab)
   - T30 20 bursts with jitter, a discarded round, a team-wide missing burst: Delay and Jitter within 1 s, the dropped round is not an incident.
   - T35 PCR transaction: normal, a list entered mid-round, wrong order, a list typo, edge-character passwords, one user on two credlists: at most one failed round per affected user, verification via the Kali and the scorer's next login, rollback by a typed list of the old values.
   - T37 `BadAttempts` and scorer fingerprints with the runner address changed each round: no brute-force or lockout alert, scorer-labelled by behaviour.
-  - T39 faithful checks against Quotient's results: agreement 98% or more after calibration; a Palo rule that blocks the public path but not the LAN gives `path_broken`; a newly opened port fires V2; an egress leak fires V3.
+  - T39 faithful checks against Quotient's results: agreement 98% or more after calibration; a Palo rule that blocks the public path but not the LAN gives `path_broken`; a newly opened port raises a `vantage.exposure_change` alert; an egress leak raises a `vantage.canary_hit` alert.
   - T49 eviction: a scorer session in flight, a session older than the measured delay, an unclassifiable session: only the old non-scorer session is evicted; before a delay is measured eviction is flag-only; 0 failed scorer rounds.
   - T50 account and credlist learning against two credlists: 100% of the accounts used in the window; service-to-credlist matches the admin API.
   - T51 revert a host and the AD after a PCR: rows `reverted`, scored changes blocked, automatic re-apply in a quiet window (button if the probe cannot run), PCR back offered.
-  - New: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down); a closed scored port raises V2; the Zerologon tester against the unpatched and the patched DC; the pre-window scan; `xfreerdp /auth-only` stdin mode.
+  - New: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down); a closed scored port raises a `vantage.exposure_change` alert; the Zerologon tester against the unpatched and the patched DC; the pre-window scan; `xfreerdp /auth-only` stdin mode.
 - [ ] **Step 2: Record the measurements the plan marks open:** agent and controller CPU and memory per module against the starting budgets, mailbox growth from the SMTP probe, `max_accounts_per_txn` and `max_open_txns` from the typing exercise, the verification wait against `rounds_expected`.
 - [ ] **Step 3: Commit.** `git add docs/impl/lab/w7-scoring-creds.md && git commit -m "lab: W7 scoring and credentials record"`; open an issue for every failure.
 
@@ -2244,7 +2242,7 @@ Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra; the "ccdc27" lab)
 
 ## Self-review
 
-**Spec coverage.** `checks`: probe library move and no scheduler (1), TFTP/NTP (8, 9, 11 only when scored), runner with allowlist and fact gate (12, 13), sealed credentials (7, 14, 18), tables and writer (15), red/latency/compare with pairing and 3 samples (16), probe-result facts, proposals, lifecycle and accept-current (17), `Env.Probe` with two users per credlist and `health.check` (19), doctor (20), Orange flows (21), pages and conformance (22). `scorer`: base, replay, no `sysadmin` (23), clock/rounds/fact/eviction cutoff (24), discovery/proposals/blocked/silent (25), account learning with BadAttempts and credlist groups (26), SLA precedence and per-round accrual (27), points at risk (28), pages/notes/health (29), old wiring removed (30). `vantage`: one module (31), dangerous ports/scored closed/pre-window (32), `pcr.verify` per credlist and RDP (33), Zerologon (34), SMB/WinRM (35), controller side V1-V4 (36). `creds`: engine (37), passphrase class (38), per-credlist inventory (39), eviction policy (40), templates and CR001 (41), process steps 1 to 4 (42), steps 5 and 6 (43), step 7 revert and A-AUTO (44), proposals (45), T+0, rotation, pages (46). Core gaps closed: window hold (3), manual gate, txn, PCR flag (4), step results (5), vault writer (6), sealing (7), fact data (2). Late inputs (47). Lab (48). Known bug 20 probe half: Task 19. Not built here, by design: agent-side `Env.Probe`; the `detect` pass-the-hash pack (W4); `session.terminate_predating` itself (W2).
+**Spec coverage.** `checks`: probe library move and no scheduler (1), TFTP/NTP (8, 9, 11 only when scored), runner with allowlist and fact gate (12, 13), sealed credentials (7, 14, 18), tables and writer (15), red/latency/compare with pairing and 3 samples (16), probe-result facts, proposals, lifecycle and accept-current (17), `Env.Probe` with two users per credlist and `health.check` (19), doctor (20), Orange flows (21), pages and conformance (22). `scorer`: base, replay, no `sysadmin` (23), clock/rounds/fact/eviction cutoff (24), discovery/proposals/blocked/silent (25), account learning with BadAttempts and credlist groups (26), SLA precedence and per-round accrual (27), points at risk (28), pages/notes/health (29), old wiring removed (30). `vantage`: one module (31), scored port closed and pre-window scan (32), the `pcr_verify` probe step per credlist and RDP (33), Zerologon (34), SMB/WinRM (35), controller side with alert-class kinds (36). `creds`: engine (37), passphrase class (38), per-credlist inventory (39), eviction policy (40), templates and CR001 (41), process steps 1 to 4 (42), steps 5 and 6 (43), step 7 revert and A-AUTO (44), proposals (45), T+0, rotation, pages (46). Core gaps closed: window hold (3), manual gate, txn, PCR flag (4), step results (5), vault writer (6), sealing (7), fact data (2). Late inputs (47). Lab (48). Known bug 20 probe half: Task 19. Not built here, by design: agent-side `Env.Probe`; the `detect` pass-the-hash pack (W4); `session.terminate_predating` itself (W2).
 
 **Step scan.** Each test step carries names and assertions with the design's values (window 30 s and confidence 0.5, `red_after` 2, 3 samples, 200 history rows, 20 to 25 characters, `verify_notice` 15 min, caps 3 and 6, BIP-39 2,048 words); code steps carry signatures and the file. Comment-bodied tests (marked `/* ... */`) are descriptions the implementer turns into the code they name, as in W1 and W3.
 
