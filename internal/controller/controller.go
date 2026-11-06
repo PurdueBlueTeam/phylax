@@ -252,6 +252,13 @@ func (c *Controller) Alerts() []Alert {
 }
 
 func (c *Controller) alert(host, kind, detail string) {
+	c.alertRow(host, kind, detail)
+	c.alertEvent(host, kind, detail)
+}
+
+// alertRow records the operator alert in the ring, logs it and notifies
+// OnAlert.
+func (c *Controller) alertRow(host, kind, detail string) {
 	a := Alert{Time: c.now(), Host: host, Kind: kind, Detail: detail}
 	c.log.Warn("alert", "host", host, "kind", kind, "detail", detail)
 	c.mu.Lock()
@@ -263,7 +270,22 @@ func (c *Controller) alert(host, kind, detail string) {
 	if c.opt.OnAlert != nil {
 		c.opt.OnAlert(a)
 	}
-	c.alertEvent(host, kind, detail)
+}
+
+// alertTyped records the operator alert row and emits the declared alert event
+// that explains it. The event is built with event.New from its declared
+// payload, so it validates and the store's ingest hook gives it an alert-queue
+// row. Use it instead of alert when the kind's payload is not {host, detail}.
+func (c *Controller) alertTyped(host, detail, kind string, payload any) {
+	c.alertRow(host, kind, detail)
+	e, err := event.New(kind, payload)
+	if err != nil {
+		c.log.Error("cannot build alert event", "host", host, "kind", kind, "err", err)
+		return
+	}
+	if _, err := c.EmitController(context.Background(), e); err != nil {
+		c.log.Error("cannot emit alert event", "host", host, "kind", kind, "err", err)
+	}
 }
 
 // alertEvent puts an operator alert on the controller's event chain when the
@@ -280,6 +302,7 @@ func (c *Controller) alertEvent(host, kind, detail string) {
 	e := event.Event{Kind: kind, Schema: ty.Schema, Priority: ty.Priority,
 		Fields: map[string]any{"host": host, "detail": detail}}
 	if err := event.Validate(e); err != nil {
+		c.log.Error("alert event does not validate; not stored", "host", host, "kind", kind, "err", err)
 		return
 	}
 	if _, err := c.EmitController(context.Background(), e); err != nil {

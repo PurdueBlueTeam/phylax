@@ -13,28 +13,23 @@ import (
 	"strings"
 	"sync"
 	"time"
-)
 
-// Enrollment-watch alert kinds. enroll.refused comes from authorize; the
-// watch adds these two (design: Task 3a of the W2 invitational plan).
-const (
-	alertEnrollHashMismatch = "enroll.hash_mismatch"
-	alertEnrollNoShow       = "enroll.no_show"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
 // WatchEnrollment starts the watch for the bundles in dir. It hashes the files
 // named in served (the binaries the web root serves) and, until window has
 // elapsed:
 //   - a hello from a watched host whose BinarySHA256 is empty or matches none
-//     of the served hashes raises an "enroll.hash_mismatch" alert (once per
+//     of the served hashes raises an enroll.hash_mismatch alert (once per
 //     host);
 //   - the first accepted connection of a watched host removes dir/<host>.json
 //     (the bundle token is consumed anyway);
 //   - at the end of the window every watched host that never connected raises
-//     "enroll.no_show", and every remaining dir/<host>.json is removed
+//     enroll.no_show, and every remaining dir/<host>.json is removed
 //     (bundles are served only during enrollment).
 //
-// "enroll.refused" already raises an alert in authorize for a refused token or
+// enroll.refused already raises an alert in authorize for a refused token or
 // an unknown host. A served path that cannot be read is an error: an empty
 // served set would accept every hash silently.
 //
@@ -61,6 +56,8 @@ func (c *Controller) WatchEnrollment(dir string, hosts []string, served []string
 		dir:     dir,
 		hashes:  hashes,
 		hosts:   sortedUnique(hosts),
+		window:  window,
+		started: c.now(),
 		waiting: map[string]bool{},
 		alerted: map[string]bool{},
 	}
@@ -88,10 +85,12 @@ func (c *Controller) WatchEnrollment(dir string, hosts []string, served []string
 
 // enrollWatch is the state of one WatchEnrollment call.
 type enrollWatch struct {
-	dir    string
-	hashes []string // sha256 hex of the served binaries, sorted
-	hosts  []string // watched hosts, sorted and deduplicated
-	stop   func()   // stops the window timer
+	dir     string
+	hashes  []string // sha256 hex of the served binaries, sorted
+	hosts   []string // watched hosts, sorted and deduplicated
+	window  time.Duration
+	started time.Time // when the watch began (the bundle-time fallback)
+	stop    func()    // stops the window timer
 
 	mu      sync.Mutex
 	waiting map[string]bool // hosts that have not connected yet
@@ -113,7 +112,7 @@ func (c *Controller) enrollConnected(host, hash string) {
 	if w == nil {
 		return
 	}
-	var detail string
+	var detail, served string
 	first := false
 	w.mu.Lock()
 	if !w.over && slices.Contains(w.hosts, host) {
@@ -122,11 +121,12 @@ func (c *Controller) enrollConnected(host, hash string) {
 			first = true
 		}
 		if !w.alerted[host] {
+			served = strings.Join(w.hashes, " ")
 			switch {
 			case hash == "":
 				detail = "no binary hash reported"
 			case !w.serves(hash):
-				detail = fmt.Sprintf("host %s reported binary sha256 %s, served %s", host, hash, strings.Join(w.hashes, " "))
+				detail = fmt.Sprintf("host %s reported binary sha256 %s, served %s", host, hash, served)
 			}
 			if detail != "" {
 				w.alerted[host] = true
@@ -135,7 +135,8 @@ func (c *Controller) enrollConnected(host, hash string) {
 	}
 	w.mu.Unlock()
 	if detail != "" {
-		c.alert(host, alertEnrollHashMismatch, detail)
+		c.alertTyped(host, detail, event.KindEnrollHashMismatch, event.EnrollHashMismatch{
+			Host: host, Served: served, Reported: hash})
 	}
 	if first {
 		c.removeBundle(w.dir, host)
@@ -159,11 +160,21 @@ func (c *Controller) endEnrollment(w *enrollWatch) {
 	w.mu.Unlock()
 	sort.Strings(missed)
 	for _, h := range missed {
-		c.alert(h, alertEnrollNoShow, "no connection within the enrollment window")
+		c.alertTyped(h, "no connection within the enrollment window", event.KindEnrollNoShow,
+			event.EnrollNoShow{Host: h, WindowSec: int(w.window / time.Second), Since: bundleSince(w.dir, h, w.started)})
 	}
 	for _, h := range w.hosts {
 		c.removeBundle(w.dir, h)
 	}
+}
+
+// bundleSince is when the host's bundle was written, for the enroll.no_show
+// payload. A bundle already gone falls back to the start of the watch.
+func bundleSince(dir, host string, fallback time.Time) string {
+	if fi, err := os.Stat(filepath.Join(dir, host+".json")); err == nil {
+		fallback = fi.ModTime()
+	}
+	return fallback.UTC().Format(time.RFC3339)
 }
 
 // removeBundle deletes one served bundle; a consumed or already removed bundle

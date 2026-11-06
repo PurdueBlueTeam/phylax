@@ -11,7 +11,9 @@ import (
 	"time"
 
 	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
 
 func sha256Hex(s string) string {
@@ -244,5 +246,87 @@ func TestWatchServedFileMissing(t *testing.T) {
 	err := x.c.WatchEnrollment(t.TempDir(), []string{"h1"}, []string{missing}, time.Hour)
 	if err == nil || !strings.Contains(err.Error(), missing) {
 		t.Fatalf("err = %v, want an error naming %s", err, missing)
+	}
+}
+
+// storedControllerEvent returns the one stored controller event of kind and
+// checks that it still validates against its declared kind.
+func storedControllerEvent(t *testing.T, c *Controller, kind string) event.Event {
+	t.Helper()
+	evs, err := c.Store().Events(context.Background(), store.Query{Agent: ControllerAgent, Kind: kind, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("%s events = %d, want 1", kind, len(evs))
+	}
+	if err := event.Validate(evs[0]); err != nil {
+		t.Fatalf("%s stored event does not validate: %v", kind, err)
+	}
+	return evs[0]
+}
+
+// The enrollment-watch alerts are declared events: each one is emitted on the
+// controller chain with its declared payload, validates, and the ingest hook
+// queues an alert row that points at the event.
+func TestEnrollAlertsAreStoredAlerts(t *testing.T) {
+	x := newCtl(t)
+	var fired func()
+	x.c.opt.EnrollTimer = func(_ time.Duration, f func()) func() { fired = f; return func() {} }
+	dir, _ := watchForTest(t, x, []string{"h1", "h2"}, 30*time.Minute)
+	trojan := sha256Hex("a trojan, not the served binary")
+	if !helloWith(t, x, newIdent(t, "h1"), "h1", bundleToken(t, dir, "h1"), trojan) {
+		t.Fatal("h1 was not admitted")
+	}
+	if fired == nil {
+		t.Fatal("no window timer")
+	}
+	fired()
+
+	mismatch := storedControllerEvent(t, x.c, event.KindEnrollHashMismatch)
+	if mismatch.Priority != event.PriorityCritical {
+		t.Errorf("hash mismatch priority = %v, want critical", mismatch.Priority)
+	}
+	hm, err := event.Decode[event.EnrollHashMismatch](mismatch, event.KindEnrollHashMismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hm.Host != "h1" || hm.Reported != trojan || hm.Served == "" {
+		t.Errorf("hash mismatch payload = %+v", hm)
+	}
+
+	noShow := storedControllerEvent(t, x.c, event.KindEnrollNoShow)
+	if noShow.Priority != event.PriorityHigh {
+		t.Errorf("no-show priority = %v, want high", noShow.Priority)
+	}
+	ns, err := event.Decode[event.EnrollNoShow](noShow, event.KindEnrollNoShow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Host != "h2" || ns.WindowSec != 1800 {
+		t.Errorf("no-show payload = %+v", ns)
+	}
+	if _, err := time.Parse(time.RFC3339, ns.Since); err != nil {
+		t.Errorf("no-show since %q: %v", ns.Since, err)
+	}
+
+	// Each alert has its queue row, keyed by the stored event's seq.
+	rows, err := x.c.Store().Alerts(context.Background(), "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{event.KindEnrollHashMismatch: "h1", event.KindEnrollNoShow: "h2"}
+	for _, r := range rows {
+		host, ok := want[r.Rule]
+		if !ok {
+			continue
+		}
+		if r.Host != host || r.Agent != ControllerAgent || r.Seq == 0 {
+			t.Errorf("alert row %+v, want host %s on the controller chain", r, host)
+		}
+		delete(want, r.Rule)
+	}
+	if len(want) != 0 {
+		t.Errorf("no alert row for %v", want)
 	}
 }
