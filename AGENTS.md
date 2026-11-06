@@ -48,8 +48,10 @@ code from the `main` or `qwen-wip` branches; their review is in ccdc-private
   stronger agent or by David.
 
 ## Rules
-- Go 1.27.2 (mise). `CGO_ENABLED=0`; linux/amd64 and windows/amd64 must both build
-  (`make build build-windows`) and vet (`make vet`) at every commit.
+- Go 1.27.2 (mise). `CGO_ENABLED=0`, except the race job, which needs
+  `CGO_ENABLED=1` and gcc (`make race` sets both); linux/amd64 and windows/amd64
+  must both build (`make build build-windows`) and vet (`make vet`) at every
+  commit.
 - Every package ships tests; `go test ./...` and `go test -race ./...` pass.
   Tests must exercise the real thing (no mocking away the code under test, no
   tautological asserts). Tests needing privileges or containers are skipped with a
