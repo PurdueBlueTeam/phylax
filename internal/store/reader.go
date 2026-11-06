@@ -35,6 +35,14 @@ var (
 	// a table name after CREATE/ALTER/DROP TABLE, or a write target after
 	// INSERT INTO, REPLACE INTO, UPDATE or DELETE FROM.
 	tableRefRe = regexp.MustCompile(`(?i)\b(?:CREATE\s+(?:TEMP\s+|TEMPORARY\s+)?(?:UNIQUE\s+)?TABLE|ALTER\s+TABLE|DROP\s+TABLE|INSERT\s+(?:OR\s+[A-Z]+\s+)?INTO|REPLACE\s+INTO|UPDATE\s+(?:OR\s+[A-Z]+\s+)?|DELETE\s+FROM)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(['"` + "`" + `\[]?)([A-Za-z_][A-Za-z0-9_]*)(['"` + "`" + `\]]?)`)
+	// statements that reach outside a module's tables regardless of the
+	// table names they happen to mention.
+	unsafeKeywordRe     = regexp.MustCompile(`(?i)\b(?:ATTACH|DETACH|PRAGMA)\b`)
+	createTriggerViewRe = regexp.MustCompile(`(?i)\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?(?:TRIGGER|VIEW)\b`)
+	createIndexRe       = regexp.MustCompile(`(?i)\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
+	// an index name (optionally schema-qualified) followed by ON and an
+	// optionally schema-qualified table.
+	indexOnRe = regexp.MustCompile(`(?is)^\s*(?:(?:"(?:[^"]|"")*"|` + "`[^`]*`" + `|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?(?:"(?:[^"]|"")*"|` + "`[^`]*`" + `|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*)\s+ON\s+(?:(?:"(?:[^"]|"")*"|` + "`[^`]*`" + `|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?(['"` + "`" + `\[]?)([A-Za-z_][A-Za-z0-9_]*)(['"` + "`" + `\]]?)`)
 )
 
 // ErrForeignTable reports a module statement that names a table the module
@@ -56,16 +64,52 @@ func (d moduleDB) owns(name string) bool {
 	return strings.HasPrefix(strings.ToLower(name), d.module+"_")
 }
 
-// checkOwnership refuses a statement that creates, alters, drops or writes a
-// table the module does not own.
-//
-// shortcut: table ownership is checked by name prefix with a regexp over the
-// statement text, upgrade to a SQLite authorizer if a module needs dynamic SQL
-// (an upsert's "DO UPDATE SET" and the inside of string literals are not table
-// references, so those are skipped).
-func (d moduleDB) checkOwnership(q string) error {
+// checkModule refuses a module name that could collide with the store's own
+// tables: "module" would own module_migrations.
+func (d moduleDB) checkModule() error {
 	if !moduleNameRe.MatchString(d.module) {
 		return fmt.Errorf("store: bad module name %q", d.module)
+	}
+	if d.module == "module" {
+		return fmt.Errorf("store: module name %q would own module_migrations", d.module)
+	}
+	return nil
+}
+
+// checkOwnership refuses a statement that creates, alters, drops or writes a
+// table the module does not own, or that otherwise reaches outside its tables.
+//
+// shortcut: this is a guard against mistakes in in-tree modules, not a
+// security boundary. Upgrade to a SQLite authorizer if modules ever come from
+// outside this repository. It scans the statement text, skipping the inside of
+// string literals and an upsert's "DO UPDATE SET", which are not table
+// references.
+func (d moduleDB) checkOwnership(q string) error {
+	if err := d.checkModule(); err != nil {
+		return err
+	}
+	if strings.Contains(q, "--") || strings.Contains(q, "/*") {
+		return fmt.Errorf("%w: SQL comments are not allowed in module statements", ErrForeignTable)
+	}
+	if unsafeKeywordRe.MatchString(q) {
+		return fmt.Errorf("%w: ATTACH, DETACH and PRAGMA are not allowed in module statements", ErrForeignTable)
+	}
+	if createTriggerViewRe.MatchString(q) {
+		return fmt.Errorf("%w: CREATE TRIGGER and CREATE VIEW are not allowed in module statements", ErrForeignTable)
+	}
+	for _, m := range createIndexRe.FindAllStringIndex(q, -1) {
+		rest := q[m[1]:]
+		im := indexOnRe.FindStringSubmatchIndex(rest)
+		if im == nil {
+			return fmt.Errorf("%w: unparsable CREATE INDEX", ErrForeignTable)
+		}
+		open, name, close := rest[im[2]:im[3]], rest[im[4]:im[5]], rest[im[6]:im[7]]
+		if open != "" || close != "" {
+			return fmt.Errorf("%w: quoted table name in module statement", ErrForeignTable)
+		}
+		if !d.owns(name) {
+			return fmt.Errorf("%w: %s (module %s)", ErrForeignTable, name, d.module)
+		}
 	}
 	for _, m := range tableRefRe.FindAllStringSubmatchIndex(q, -1) {
 		open, name, close := q[m[2]:m[3]], q[m[4]:m[5]], q[m[6]:m[7]]
@@ -87,6 +131,9 @@ func (d moduleDB) checkOwnership(q string) error {
 
 // Migrate applies the module's migrations once, in order, in one transaction.
 func (d moduleDB) Migrate(ctx context.Context, ms []string) error {
+	if err := d.checkModule(); err != nil {
+		return err
+	}
 	if len(ms) > MaxModuleMigrations {
 		return fmt.Errorf("store: %d module migrations > %d", len(ms), MaxModuleMigrations)
 	}
@@ -127,6 +174,9 @@ func (d moduleDB) Migrate(ctx context.Context, ms []string) error {
 
 // Exec runs a write against the module's own tables.
 func (d moduleDB) Exec(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	if err := d.checkModule(); err != nil {
+		return nil, err
+	}
 	if err := d.checkOwnership(q); err != nil {
 		return nil, err
 	}

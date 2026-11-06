@@ -104,3 +104,50 @@ func TestModuleDBUpsertAllowed(t *testing.T) {
 		t.Fatalf("n %d %v", n, err)
 	}
 }
+
+func TestModuleDBRejectsBypasses(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	db := st.ModuleDB("deps")
+	if err := db.Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT PRIMARY KEY)"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		"UPDATE /**/ events SET envelope='x'",
+		"UPDATE events -- comment\nSET envelope='x'",
+		"UPDATE events /* comment */ SET envelope='x'",
+		"ATTACH DATABASE 'other.db' AS other",
+		"DETACH DATABASE other",
+		"PRAGMA writable_schema=ON",
+		"CREATE TRIGGER deps_t AFTER INSERT ON deps_edge BEGIN DELETE FROM events; END",
+		"CREATE VIEW deps_v AS SELECT * FROM events",
+		"CREATE INDEX deps_i ON events(seq)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS deps_i ON events(seq)",
+		`CREATE INDEX deps_i ON "events"(seq)`,
+	} {
+		t.Run(q, func(t *testing.T) {
+			if _, err := db.Exec(ctx, q); err == nil {
+				t.Fatalf("Exec accepted bypass %q", q)
+			}
+			if err := db.Migrate(ctx, []string{q}); err == nil {
+				t.Fatalf("Migrate accepted bypass %q", q)
+			}
+		})
+	}
+	// An index on the module's own table is still allowed.
+	if _, err := db.Exec(ctx, "CREATE INDEX IF NOT EXISTS deps_edge_a ON deps_edge(a)"); err != nil {
+		t.Fatalf("index on the module's own table refused: %v", err)
+	}
+}
+
+func TestModuleDBNamedModuleRefused(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	db := st.ModuleDB("module")
+	if _, err := db.Exec(ctx, "CREATE TABLE module_x(a TEXT)"); err == nil {
+		t.Fatal(`module named "module" accepted`)
+	}
+	if err := db.Migrate(ctx, nil); err == nil {
+		t.Fatal(`empty migration for module named "module" accepted`)
+	}
+}
