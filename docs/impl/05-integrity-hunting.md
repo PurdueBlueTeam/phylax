@@ -17,12 +17,13 @@
 3. **`plans` (the root embed package) is not on the module import allow list**, but `hardening`'s health is the template validator. Added to `conformance.CoreImports` and the design's core package list by W1 Task 22b (applied to the design in the consistency pass).
 4. **Exported action registration is W1's.** `actions.Register(f func() []Action)` and `actions.RegisterUndo` (the exported `registerExtra` and `registerUndo`) are built by W1 Task 2a, the one name every workstream uses; this plan consumes them.
 5. **Pack templates and controller templates are one format.** `plans.Template` (vars, `each`, `scoring_note`) is a strict superset of the controller's file template. Packs stay in that form; `vars` values may be `{labels: "<expr>"}`, resolved to host lists from the manifest. `plans.Parse`, `plans.ResolveLabels`, `Template.Module` and `controller.LoadModuleTemplateFor` (the sibling of `LoadModuleTemplate` that takes the label resolver) are W1 Task 22b's; Task 37 here moves the pack files and requires `module:`.
-6. **`ledger_accept` and `hunt_finding` are written from UI decisions, not only from events.** The design says "from its own events" but defines no accept or decision kind. The UI handler passes the decision to the module's one writer goroutine over a bounded channel; the writer is still the only writer. Recommend adding `integrity.accepted` and `hunt.decision` kinds later.
+6. **Accepts and decisions are the core operator-command event, not module kinds or tables (S4).** The design gives `integrity`, `hunt` and `ad` no accept or decision kind. A button on the Integrity, Hunts or Active Directory page emits the core `operator.edit` kind (W1; fields `module`, `op`, `subject`, `record`, `by`, `at`) through `Host.Emit`. An accept of any kind (an integrity hash, a hunt finding or triage item, an AD allowlist member) also appends one entry to `manifest.Overrides.Accepted` (`kind`, `subject`, `host`, `reason`, `owner`, `time`) through `Host.UpdateOverrides`; Task 1 adds that one list to W1's `Overrides` if W1 Task 11a did not. The controller's one writer goroutine applies the command events to its own table (`hunt_finding`: `open`/`acked` with an `outcome`). `integrity` and `ad` keep no accept table. Findings use the alert open/ack state.
 7. **Per-host ledger composition needs the agent `fetch` handler (bug 4, W11).** Until then the ledger ships with the release and the controller side holds only the tables and the accept path (`shortcut` in Task 18).
 8. **The sshsig namespace is `phylax-release`.** The design does not name one. Verify with `ssh-keygen -Y verify -f allowed_signers -I release -n phylax-release -s <file>.sig < <file>`.
 9. **The two socket cross-checks wait on W3's `internal/sockets`.** Task 16 runs after W3's seams merge; every other task needs only W1.
 10. **`internal/collect/winevt/gpo.go` stays with `winevt`** (W3 moves it); `ad` consumes the fields it derives.
 11. **Hunt artifacts travel as one JSON step output capped at 256 KiB** (`shortcut: no chunked transfer until the agent fetch handler exists, W11`). The file inventory is not part of `hunt.baseline_diff`; the ledger sweep covers hashes.
+12. **S1-S4 (2026-11-06) remove mechanisms this plan used to build.** No module here has an alert-to-act ladder, rule mode, loop or rate guard: `detect` only alerts, and an action runs as a plan node or a `respond` recipe whose reach is the template's engine setting `autonomy: propose|shadow|auto` with the engine's one attempt ledger keyed by (host, object, kind) (hardening packs carry `PackTarget.Autonomy`; the `ad.gpo_unlink` template carries its own; the four module blocks carry no `act_enabled`). The special-case actions are not built: `binary.restore_from_depot` is `file.restore{source: depot}` (Task 13), `unit.disable` and `unit.mask` are `service.state{state: disabled|masked}` (Task 21), `kernel.module_block` is `file.write` plus a `command.check` node in the bundle (Task 24), `windows.smb1`, `mssql.audit` and `mssql.lock` are `registry.set` and `sql.query` content (Task 37), and `collect.hunt` does not exist because `inventory` is core and the hunt diffs its rows (Task 30). The one file hasher is the integrity identity cache, moved to `internal/integrity/format` so `audit` and `content_guard` can import it (Task 2).
 
 ## Global Constraints
 
@@ -36,15 +37,16 @@
 - Times stored in UTC. Secrets never appear in events, logs, plan output or config files.
 - `integrity` is alert-only: nothing in it writes, quarantines or restores a file by itself. `hunt` never deletes: disable and quarantine, `chattr -i` applied explicitly and logged first. Scored state is refused by every new action's `Touches` and the scoring-safety lint.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
+- None of the four modules acts on its own, so none has `act_enabled` in its block (conformance rejects the key). Per-module `rate_per_sec` and `burst` default from the manifest; the settings structs embed `ModuleLimits` only to allow an override.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
 - Branch `v4-integrity-hunting`, cut from `v4` after W1 merges.
 
 ## Review Focus
 
-1. **Ledger absent, unsigned or mismatching at agent start.** Expected: `degraded`, one `integrity.ledger_unavailable`, a retry every 30 s, recovery when the file appears; never a crash and never a verdict judged against an empty ledger (Task 8 `TestLedgerAbsentThenAppears`).
+1. **Ledger absent, unsigned or mismatching at agent start.** Expected: `degraded`, one `telemetry_gap{source: integrity, reason: ledger_unavailable}`, a retry every 30 s, recovery when the file appears; never a crash and never a verdict judged against an empty ledger (Task 8 `TestLedgerAbsentThenAppears`).
 2. **Malformed or hostile sshsig input** (wrong namespace, hash algorithm `sha256`, an RSA key blob, trailing bytes, a truncated blob, a ledger signature given to the release verifier). Expected: a typed error, never a panic, never acceptance (Task 5 `TestSSHSigRejectsMalformed`).
 3. **Hunt on a host whose OS has no baseline.** Expected: collected, not diffed, health `degraded` with the gap "no reference for this OS version", no findings invented (Task 34 `TestNoBaselineDegradesNotDiffs`).
-4. **`kernel.module_block` for a module compiled into the kernel** (Known bug 1). Expected: verify fails and says "built in"; the bundle never reports Copy Fail mitigated (Task 24 `TestModuleBlockBuiltInFailsVerify`).
+4. **The kernel-module block for a module compiled into the kernel** (Known bug 1). Expected: the bundle's `command.check{probe: af_alg_aead}` node fails while the aead socket still opens and says "built in"; the bundle never reports Copy Fail mitigated (Task 24 `TestAFAlgProbeFailsWhenSocketOpens`, Task 40 `TestLocalRootBundleChecksAFAlgAfterWrite`).
 5. **Remediation or GPO unlink that would touch scored state.** Expected: the hunt disables the remediation button for a scored service's own unit (Task 35 `TestRemediationRefusedForScoredUnit`), and `ad.gpo_unlink` refuses a GPO a scored service's policy depends on (Task 43 `TestGPOUnlinkRefusesScoredDependency`).
 
 ---
@@ -54,15 +56,15 @@
 | Path | Responsibility | Task |
 | --- | --- | --- |
 | `internal/signing/` | `Signer`, `Verifier`, Ed25519 pair, `ErrBadSignature`, sshsig sign and verify | 2, 4, 5 |
-| `internal/integrity/format/` | ledger, verdict logic, on-disk format, deb/rpm/host-db/Winbindex readers | 2 |
-| `internal/integrity/events.go` | the seven `integrity.*` payload structs and `Declare` calls | 1, 6, 7 |
+| `internal/integrity/format/` | ledger, verdict logic, on-disk format, deb/rpm/host-db/Winbindex readers, the shared file hasher (`hasher.go`, S4) | 2 |
+| `internal/integrity/events.go` | the six `integrity.*` payload structs and `Declare` calls (the ledger-unavailable state is `telemetry_gap`) | 1, 6, 7 |
 | `internal/integrity/module.go`, `health.go` | the agent module (moved out of `internal/agent/mods`), manifest, health | 8, 9 |
 | `internal/integrity/{suid,crosscheck_*,pam}.go` | SUID sweep, rootkit cross-checks, PAM content checks | 10, 14-16 |
-| `internal/integrity/{actions,restore}.go` | `ledger.sweep`, `ledger.verify_pin`, `yara.scan`, `binary.restore_from_depot` | 12, 13 |
-| `internal/integrity/controller.go`, `ui.go` | controller side: tables, accept writer, Integrity page | 18 |
+| `internal/integrity/actions.go` | `ledger.sweep`, `ledger.verify_pin`, `yara.scan` (the depot restore is the core `file.restore{source: depot}`, Task 13) | 12 |
+| `internal/integrity/controller.go`, `ui.go` | controller side: `ledger_entry` table and writer, Integrity page; an accept is one overrides entry | 18 |
 | `cmd/phylax/ledger.go` | `phylax ledger build`, `lookup` | 17 |
 | `rules/yara/` | UCF corpus, `LICENSE`, `ATTRIBUTION.md`, `skipped.txt` | 20 |
-| `internal/actions/{unit_cleanup,runkey,task_cleanup,mount,selinux,hosts_file}*.go` | persistence cleanup, registry snapshot, kernel and system actions | 21-26 |
+| `internal/actions/{unit_cleanup,runkey,task_cleanup,mount,selinux,hosts_file}*.go` | `service.state` disabled and masked, `ld_preload.clear`, `caps.clear`, `pkg.unhold`, `task.disable`, `wmi.subscription_remove`, `runkey.remove`, `registry.snapshot`, `file.restore{source: depot}`, `mount.remount`, `selinux.restore`, `hosts.file` | 13, 21-25 |
 | `internal/hunt/` | artifact model, collectors, diff, score, controller module, UI | 27-36 |
 | `hunt/` | `checks/*.yml`, `killlist.yml`, `heuristics.yml`, `baselines/` | 28-32, 36 |
 | `plans/hardening/`, `plans/hunt/`, `plans/ad/` | pack library and hunt and AD plans | 37-40, 36, 43 |
@@ -80,11 +82,11 @@ Done by a stronger model. Writes every exported type, interface and signature na
 **Files:**
 - Create: `internal/integrity/events.go`, `internal/hunt/{events.go,doc.go,module.go}`, `internal/ad/{events.go,doc.go,module.go}`, `internal/hardening/module.go`, `internal/agent/mods/{hunt.go,ad.go}`
 - Create: every test file named in Tasks 4 to 47 with its Step 1 test functions, each starting `t.Skip("unimplemented: W5 Task N")`
-- Modify: `internal/plan/agentconfig.go` (`ModuleSettings.Hunt *HuntSettings`, `ModuleSettings.AD *ADSettings`, `IntegritySettings` new fields), `internal/module/conformance/allowed.go` (`ModulePackages` entries for the four modules), `internal/module/all/all.go`, `phylax_design.md` (decisions 6 and 7: the accept and decision write path; decisions 1 to 4 and 8 were applied in the consistency pass)
+- Modify: `internal/plan/agentconfig.go` (`ModuleSettings.Hunt *HuntSettings`, `ModuleSettings.AD *ADSettings`, `IntegritySettings` new fields), `internal/module/conformance/allowed.go` (`ModulePackages` entries for the four modules), `internal/module/all/all.go`, `internal/manifest` (`Overrides.Accepted []Accepted`, only if W1 Task 11a did not add it: decision 6), `phylax_design.md` (decision 7's `shortcut` only; the accept and decision path has been in the design since S4, and decisions 1 to 4 and 8 were applied in the consistency pass)
 - Modify (zero-value-safe): nothing else
 
 **Interfaces:**
-- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Register`, `module.ControllerModule`, `module.Common`, `agent.Factory`, `plan.ModuleLimits`, `actions.Register`, `actions.RegisterUndo` (W1 Task 2a), `plans.Template.Module` and `CoreImports` with `plans` (W1 Tasks 1 and 22b).
+- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Register`, `module.ControllerModule`, `module.Common`, `agent.Factory`, `plan.ModuleLimits`, `event.TelemetryGap`, the core `operator.edit` kind, `Host.UpdateOverrides`, `actions.Register`, `actions.RegisterUndo` (W1 Task 2a), `plans.Template.Module` and `CoreImports` with `plans` (W1 Tasks 1 and 22b).
 - Produces (exact; later tasks use these):
 
 ```go
@@ -98,8 +100,8 @@ const (
 	KindYara              = "integrity.yara"
 	KindCrosscheck        = "integrity.crosscheck"
 	KindClaims            = "integrity.claims"
-	KindLedgerUnavailable = "integrity.ledger_unavailable"
 )
+// The ledger-unavailable state is not a kind of its own (S4): the module emits event.TelemetryGap{Source: "integrity", Reason: "ledger_unavailable", Detail: "<module> <path>: <error>"} and reports the same state in Health.
 
 // One struct per kind; json tags are the snake_case field names of the design's "Events" table.
 // VerdictEvent has one field per key checker.go:224-316 and entryFields write today, plus FirstSweep bool `json:"first_sweep,omitempty"`.
@@ -128,12 +130,11 @@ type CrosscheckEvent struct {
 }
 type ClaimsEvent struct{ Packages []PackageClaim }
 type PackageClaim struct{ Name, Version string }
-type LedgerUnavailable struct{ Module, Path, Error string }
 
 func Manifest() module.Manifest // Name "integrity", Sides agent+controller, Privilege root, Default true,
 	// Consumes: process_start, winevt.sec_event, file_change, telemetry_gap,
-	// Emits: the seven kinds, Budget {CPUMillisPerSec 8, HeldMB 24, EventsPerSec 2, Burst 20, BytesOutPerMin 100<<10, DiskMB 100},
-	// Tables ledger_entry, ledger_accept, Actions ledger.sweep, ledger.verify_pin, binary.restore_from_depot, yara.scan,
+	// Emits: the six kinds and telemetry_gap, Budget {CPUMillisPerSec 8, HeldMB 24, EventsPerSec 2, Burst 20, BytesOutPerMin 100<<10, DiskMB 100},
+	// Tables ledger_entry (an accept is one overrides entry, no table), Actions ledger.sweep, ledger.verify_pin, yara.scan,
 	// Content ledger/, rules/yara/, Pages /integrity
 
 // ---- internal/hunt/events.go ----
@@ -162,9 +163,9 @@ type Collection struct {
 }
 const MaxCollectionBytes = 256 << 10 // shortcut: one step output, no chunking until the agent fetch handler exists (W11)
 func Manifest() module.Manifest // Name "hunt", Sides agent+controller, Privilege root, Default true,
-	// Consumes integrity.crosscheck, integrity.verdict, backup.restored, agent.enrolled, agent.reenrolled, respond.loop, ad.finding, inventory.snapshot, inventory.row;
+	// Consumes integrity.crosscheck, integrity.verdict, backup.restored, agent.enrolled, agent.reenrolled, plan.failed, ad.finding, inventory.snapshot, inventory.row;
 	// Emits hunt.finding, hunt.run; Budget {5, 16, 2, 40, 200<<10, 20}; Tables hunt_finding; Pages /hunts;
-	// Actions hunt.baseline_diff hunt.persistence hunt.apps hunt.creds hunt.remote_access collect.hunt collect.files
+	// Actions hunt.baseline_diff hunt.persistence hunt.apps hunt.creds hunt.remote_access (collect.files is a core Collection action: Task 27 registers it from this package until core has it, and it is not in the manifest's Actions)
 type Config struct { // controller block modules/hunt.yml
 	module.Common     `yaml:",inline"`
 	RepeatIntervalSec int      `yaml:"repeat_interval_sec"`
@@ -191,7 +192,7 @@ type ADSettings struct {
 	PrivilegedAllow  map[string][]string `json:"privileged_allow,omitempty"`
 	Groups           []string            `json:"groups,omitempty"`
 	PathQuery        struct{ Enabled bool `json:"enabled"`; MaxDepth int `json:"max_depth,omitempty"` } `json:"path_query"`
-	GPO              struct{ Baseline string `json:"baseline,omitempty"`; Response string `json:"response,omitempty"` } `json:"gpo"`
+	GPO              struct{ Baseline string `json:"baseline,omitempty"` } `json:"gpo"` // the response is the ad.gpo_unlink template's autonomy (S1), not a setting here
 	RecycleBin       string   `json:"recycle_bin,omitempty"` // auto (default) | off
 	KrbtgtGapMinutes int      `json:"krbtgt_gap_minutes,omitempty"`
 	ServiceRepair    []string `json:"service_repair,omitempty"`
@@ -236,16 +237,16 @@ type Config struct {
 	PasswordPolicy struct{ ValuesRef string `yaml:"values_ref"` } `yaml:"password_policy"`
 	RebootClass   []string `yaml:"reboot_class"`
 }
-type PackTarget struct{ Pack, Target string }
+type PackTarget struct{ Pack, Target, Autonomy string } // Autonomy: propose | shadow | auto; empty means auto for a pack without a reboot-class gate, propose otherwise (S1)
 func Manifest() module.Manifest // Name "hardening", Sides controller, Privilege none, Default true,
-	// Consumes winevt.sensor_state, no Emits, no Actions, Content plans/hardening, Pages /plans
+	// Consumes nothing from the bus (HD002 reads the sysmon entry of the host's Health.Info), no Emits, Actions splunk.rest splunk.password, Content plans/hardening, Pages /plans
 
 // ---- internal/actions: Register and RegisterUndo are W1 Task 2a's; nothing to write here ----
 ```
 
-- [ ] **Step 1: Write the stubs.** Types and constants exactly as above (the full `VerdictEvent` from the emitter's keys). `Declare` calls in each package `init` with schema 1 and the priorities in the design's Events tables (`integrity.verdict` high, `integrity.yara` critical, `integrity.crosscheck` high, `integrity.ledger_unavailable` high, `integrity.pin`, `integrity.sweep_done`, `integrity.claims` normal; `hunt.finding` high, `hunt.run` normal; `ad.finding` high, `ad.gpo_finding` high, `ad.gpo_baseline` normal, `ad.recycle_restored` high). Register the three controller modules with `module.Register` (stub `Start` waits for ctx and reports `unavailable` with gap `{"module", "not built (W5)"}`), the two new agent factories (`hunt`, `ad`) with `Manifest` set, and add `integrity.Manifest()` to the existing `integrity` factory. Add all four names to `ModulePackages`; do not remove anything from `PreContract` yet (each module's conformance task does). Function bodies: `panic("unimplemented: W5 Task N")` naming the implementing task.
+- [ ] **Step 1: Write the stubs.** Types and constants exactly as above (the full `VerdictEvent` from the emitter's keys). `Declare` calls in each package `init` with schema 1 and the priorities in the design's Events tables (`integrity.verdict` high, `integrity.yara` critical, `integrity.crosscheck` high, `integrity.pin`, `integrity.sweep_done`, `integrity.claims` normal; `hunt.finding` high, `hunt.run` normal; `ad.finding` high, `ad.gpo_finding` high, `ad.gpo_baseline` normal, `ad.recycle_restored` high). Register the three controller modules with `module.Register` (stub `Start` waits for ctx and reports `unavailable` with gap `{"module", "not built (W5)"}`; none declares `act_enabled`), the two new agent factories (`hunt`, `ad`) with `Manifest` set, and add `integrity.Manifest()` to the existing `integrity` factory. Add all four names to `ModulePackages`; do not remove anything from `PreContract` yet (each module's conformance task does). Function bodies: `panic("unimplemented: W5 Task N")` naming the implementing task.
 - [ ] **Step 2: Write the skipped tests.** For each of Tasks 4 to 47, create the test file the task names with the Step 1 test functions, each starting `t.Skip("unimplemented: W5 Task N")`. Write for real the helpers they call: `internal/integrity/testhelpers_test.go` (`fakeProc(t, tree map[string]string) string` builds a fake `/proc` or `/sys` tree), `internal/hunt/testhelpers_test.go` (`fixtureCollection`), `internal/ad/fake_test.go` (the fake `ADBackend` copied from `ad_accounts_test.go`, extended in Task 41).
-- [ ] **Step 3: Apply the remaining design edits** (decisions 6 and 7: the accept and decision write path under `integrity` and `hunt` Tables; the `shortcut` for the ledger composition). Decisions 1 to 4 and 8 (`registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in Emits, `plans` and `actions.Register` in the core package list, the sshsig namespace) are already in the design.
+- [ ] **Step 3: Apply the remaining design edit** (decision 7: the `shortcut` for the ledger composition). Decision 6 (accepts and decisions as operator command events plus one overrides entry) is in the design since S4. Decisions 1 to 4 and 8 (`registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in Emits, `plans` and `actions.Register` in the core package list, the sshsig namespace) are already in the design.
 - [ ] **Step 4: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... ./plans/ 2>&1 | grep -c 'unimplemented: W5 Task'`. Expected: a count equal to the number of skipped tests written in Step 2 (no stub panics).
 - [ ] **Step 5: Commit.**
 
@@ -262,8 +263,8 @@ Mechanical moves. W11 starts from this task.
 
 **Files:**
 - Create: `internal/signing/{signing.go,ed25519.go,sshsig.go}`, `internal/signing/signing_test.go`
-- Move (`git mv`): `internal/integrity/{ledger.go,verdict.go,format.go,deb.go,rpm.go,decompress.go,hostdb.go,winbindex.go,pathutil.go}` and their tests (`ledger_test.go`, the format and package tests in `fixtures_test.go`) → `internal/integrity/format/`; `package format`
-- Modify: `internal/integrity/{checker,pin,sweep,maps,cache,yara,signature}*.go` (qualify moved names), `internal/agent/mods/integrity*.go`, `internal/depot/{manifest,pack,deploy}.go` and `depot_test.go`, `cmd/phylax/depot.go` (use `signing.Signer`, `signing.Verifier`, `signing.Ed25519Signer`, `signing.Ed25519Verifier`, `signing.ErrBadSignature`)
+- Move (`git mv`): `internal/integrity/{ledger.go,verdict.go,format.go,deb.go,rpm.go,decompress.go,hostdb.go,winbindex.go,pathutil.go}` and their tests (`ledger_test.go`, the format and package tests in `fixtures_test.go`) → `internal/integrity/format/`; `package format`. Also `internal/integrity/cache.go` (the identity cache: device, inode, ctime, size, with a periodic full re-hash) → `internal/integrity/format/hasher.go`, exported as the one shared file hasher (S4): `audit`'s hash sweep (W3), `content_guard`'s golden hashes (W4) and the SUID sweep (Task 10) hash through it, and it sits in `format` because modules may import that shared library but not a sibling module
+- Modify: `internal/integrity/{checker,pin,sweep,maps,yara,signature}*.go` (qualify moved names), `internal/agent/mods/integrity*.go`, `internal/depot/{manifest,pack,deploy}.go` and `depot_test.go`, `cmd/phylax/depot.go` (use `signing.Signer`, `signing.Verifier`, `signing.Ed25519Signer`, `signing.Ed25519Verifier`, `signing.ErrBadSignature`)
 - Delete: the old paths (no shims)
 
 **Interfaces:**
@@ -294,6 +295,7 @@ func AllowedSignersLine(pub ed25519.PublicKey, principal string) string // "<pri
 // Verdict (+ constants Match ... SigInvalid), Result, Judger, Worse,
 // Package, ReadDeb, ReadDebFile, ReadRPM, ReadRPMFile, ReadLimits, HostHints, ReadDpkgHints, ReadRPMDBHints,
 // ImportWinbindex, WinbindexOptions, MaxLedgerBytes,
+// Hasher (the shared file hasher, S4): func NewHasher(maxEntries int) *Hasher; func (h *Hasher) Hash(path string, full bool) (Sum, error) // full ignores the identity cache; func (h *Hasher) Stats() (hits, misses int),
 // (*Ledger).Marshal(sg signing.Signer) ([]byte, error), func Unmarshal(data []byte, v signing.Verifier) (*Ledger, error)
 ```
 
@@ -310,12 +312,28 @@ func TestEd25519RoundTripAndReject(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+func TestHasherSkipsUnchangedFile(t *testing.T) { // internal/integrity/format/hasher_test.go, moved from the cache test
+	h := NewHasher(16)
+	p := writeTemp(t, "x")
+	a, _ := h.Hash(p, false)
+	b, _ := h.Hash(p, false)
+	if a != b {
+		t.Fatal("hash changed")
+	}
+	if hits, _ := h.Stats(); hits != 1 {
+		t.Fatalf("hits %d", hits)
+	}
+	h.Hash(p, true)
+	if hits, _ := h.Stats(); hits != 1 {
+		t.Fatal("full re-hash must bypass the cache")
+	}
+}
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/signing/ -v`. Expected: FAIL (package or symbols missing).
 - [ ] **Step 3: Implement** the moves and the Ed25519 types; `SSHSigner`/`SSHVerifier`/`AllowedSignersLine` are stubs (`panic("unimplemented: W5 Task 4")`). Check `grep -rn 'integrity\.\(Signer\|Verifier\|Ed25519\|ErrBadSignature\|Ledger\|Entry\|Sum\|Verdict\|Package\|ReadDeb\|ReadRPM\)' --include='*.go' .` returns nothing outside `internal/integrity` itself.
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS (the moved tests pass unchanged apart from package names).
-- [ ] **Step 5: Commit.** `git commit -am "signing: extract Signer and Verifier; integrity/format: extract ledger and package readers"`
+- [ ] **Step 5: Commit.** `git commit -am "signing: extract Signer and Verifier; integrity/format: extract ledger, package readers and the shared hasher"`
 
 ---
 
@@ -493,7 +511,7 @@ func TestConfigVerifierRejectsSSHSig(t *testing.T) {
 
 **Interfaces:**
 - Consumes: `event.New[T]`, `event.Decode[T]`, `event.Validate` (W1), the structs of Task 1.
-- Produces: `Checker.emit` sets `Kind`, `Schema`, `Priority` (critical for `known_bad`, `mismatch` and any escalated verdict, high otherwise, as today) and `Fields` from `VerdictEvent`; `Agent` and `Time` as today. `D5d` and the traceback code read `escalate`, `path`, `sha256`, `package`, `expected_sha256`, `signer`, `service`.
+- Produces: `Checker.emit` sets `Kind`, `Schema`, `Priority` (critical for `known_bad`, `mismatch` and any escalated verdict, high otherwise, as today) and `Fields` from `VerdictEvent`; `Agent` and `Time` as today. `D5d` and the `chains` hop builder (the former traceback) read `escalate`, `path`, `sha256`, `package`, `expected_sha256`, `signer`, `service`.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -530,9 +548,9 @@ func TestIntegrityKindsMatchManifest(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/integrity/ -run 'VerdictEvent|YaraEvent|KindsMatch' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** the conversion; replace `KindLedgerMissing` in `mods/integrity.go` with `integrity.KindLedgerUnavailable` and `event.New(LedgerUnavailable{...})`. Update `internal/traceback/obs.go` and any rule that reads a renamed field name (there are none: the keys are unchanged); run `grep -rn '"integrity\.' --include='*.go' .` and expect only constants.
+- [ ] **Step 3: Implement** the conversion; replace `KindLedgerMissing` in `mods/integrity.go` with `event.New(event.TelemetryGap{Source: "integrity", Reason: "ledger_unavailable", ...})` (S4: no kind of its own). Update `internal/traceback/obs.go` (the within-host hop builder `chains` calls) and any rule that reads a renamed field name (there are none: the keys are unchanged); run `grep -rn '"integrity\.' --include='*.go' .` and expect only constants.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/integrity/ ./internal/agent/mods/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "integrity: typed verdict, yara and ledger_unavailable events"`
+- [ ] **Step 5: Commit.** `git commit -am "integrity: typed verdict and yara events; ledger_unavailable as telemetry_gap"`
 
 ---
 
@@ -619,12 +637,12 @@ func TestLedgerAbsentThenAppears(t *testing.T) {
 	h := newHarnessNoLedger(t)
 	h.Run(ctx)
 	waitFor(t, func() bool { st, _ := h.Health("integrity"); return st.State == module.StateDegraded })
-	if n := countKind(h.Emitted(), KindLedgerUnavailable); n != 1 {
+	if n := countGap(h.Emitted(), "ledger_unavailable"); n != 1 { // telemetry_gap with that reason
 		t.Fatalf("emitted %d", n)
 	}
 	writeSignedLedger(t, h.StateDir()) // retry interval is 20 ms in the test
 	waitFor(t, func() bool { st, _ := h.Health("integrity"); return st.State == module.StateOK })
-	if n := countKind(h.Emitted(), KindLedgerUnavailable); n != 1 {
+	if n := countGap(h.Emitted(), "ledger_unavailable"); n != 1 {
 		t.Fatalf("must not re-emit while retrying: %d", n)
 	}
 }
@@ -680,7 +698,7 @@ func TestClaimsEmittedAfterLedgerLoads(t *testing.T)   { /* one integrity.claims
 - Test: `internal/integrity/suid_test.go`
 
 **Interfaces:**
-- Consumes: `Checker.HashFile`, `format.Ledger.Judge`.
+- Consumes: `Checker.HashFile` (it hashes through `format.Hasher`, the one shared file hasher, S4: no second walk-and-hash and no private cache), `format.Ledger.Judge`.
 - Produces:
 
 ```go
@@ -707,6 +725,7 @@ func TestSuidSweepFindsNewSuid(t *testing.T) {
 }
 func TestSuidHashChangeAlerts(t *testing.T) { /* rewrite bin/su content, keep the bit -> flags suid_hash_changed, verdict mismatch */ }
 func TestSuidSweepIgnoresPlainFiles(t *testing.T) { /* 0755 file not reported */ }
+func TestSuidSweepUsesSharedHasher(t *testing.T) { /* two sweeps over an unchanged SUID file: Hasher.Stats hits grows, the file is hashed once (S4) */ }
 ```
 
 (`Copy Fail` control: [[cert-cc-vulnerability-note-vu-260001#e2]]; FIM cannot see the page-cache write, so the hash sweep is the catch.)
@@ -793,34 +812,38 @@ func TestActionsFailWhenModuleNotRunning(t *testing.T) { /* no handle published 
 
 ---
 
-### Task 13: Action `binary.restore_from_depot`
+### Task 13: `file.restore{source: depot}` (rewritten by S4, 2026-11-06)
+
+The special action `binary.restore_from_depot` is not built. The design has one file-restore action, the core `file.restore{source: golden|depot|backup}`; this task adds its `depot` branch. The `golden` branch belongs to `content_guard` (W4) and the `backup` branch to the backup plan; each lands with its module. The existing restore of a quarantined file by id (from `file.quarantine`) is unchanged and stays what `file.restore` does when no `source` is given.
 
 **Files:**
-- Create: `internal/integrity/restore.go`
-- Test: `internal/integrity/restore_test.go`
+- Modify: `internal/actions/files.go` (`file.restore` gains the `source` param and dispatches `depot` to `restoreDepot`)
+- Create: `internal/actions/restore_depot.go`
+- Test: `internal/actions/restore_depot_test.go`
 
 **Interfaces:**
-- Consumes: `actions.Action`, `actions.Env` (`Linux.DepotDir`, `Resolve`), `atomicfile.WriteFile`, `format.Ledger.ByPath`, `actions.RollbackSnapshot` helper (export from `internal/actions` if the compiler requires: `snapshotRollback` in `linux_kmod.go`), the dead-man undo registry (`actions.RegisterUndo`).
-- Produces: `binary.restore_from_depot{path, source, service}`; risk `service`; `Locks` `packages` and `service:<service>`; `Touches` the binary path of the scored service; `Plan` refuses unless the depot copy's sha256 equals a trusted ledger entry for the path (`Source.Trusted()`); `Capture` stores the replaced file as rollback data; `Apply` writes atomically preserving mode, owner and SELinux label then restarts the service through `env.Services`; `Verify` rehashes the file and calls `env.Probe` (W1) when `service` is set; a red probe returns an error so the executor rolls back. No ledger running: refuses.
+- Consumes: `actions.Action`, `actions.Env` (`Linux.DepotDir`, `Resolve`), `atomicfile.WriteFile`, `format.Ledger.ByPath` (the shared `internal/integrity/format` library; `internal/actions` is core, so the import is allowed and `integrity` is not imported), `actions.RollbackSnapshot` helper (export from `internal/actions` if the compiler requires: `snapshotRollback` in `linux_kmod.go`, which Task 24 deletes, so move the helper to `files.go` first), the dead-man undo registry (`actions.RegisterUndo`).
+- Produces: `file.restore{source: depot, path, from, service}` (`from` is the depot file; risk `service`); `Locks` `packages` and `service:<service>`; `Touches` the binary path of the scored service; `Plan` refuses unless the depot copy's sha256 equals a trusted ledger entry for the path (`Source.Trusted()`); `Capture` stores the replaced file as rollback data; `Apply` writes atomically preserving mode, owner and SELinux label then restarts the service through `env.Services`; `Verify` rehashes the file and calls `env.Probe` (W1) when `service` is set; a red probe returns an error so the executor rolls back. No ledger running: refuses. It stays in the engine's click-only set (a tier-1 plan node; the ledger is alert only, D-1).
 
 - [ ] **Step 1: Write the failing tests:**
 
 ```go
-func TestRestoreRefusesDepotCopyNotInLedger(t *testing.T) {
+func TestRestoreDepotRefusesCopyNotInLedger(t *testing.T) {
 	env := restoreEnv(t, "/usr/sbin/smtpd", ledgerHash("good"), depotFile("source/smtpd", "other bytes"))
-	if _, err := restoreAction{}.Plan(ctx, env, restoreParams(t, "/usr/sbin/smtpd", "source/smtpd", "postfix")); err == nil || !strings.Contains(err.Error(), "ledger") {
+	if _, err := fileRestore{}.Plan(ctx, env, restoreParams(t, "depot", "/usr/sbin/smtpd", "source/smtpd", "postfix")); err == nil || !strings.Contains(err.Error(), "ledger") {
 		t.Fatalf("got %v", err)
 	}
 }
-func TestRestoreWritesAtomicallyAndKeepsMode(t *testing.T) { /* replaced file 0750 -> restored bytes == good, mode 0750, rollback data holds the old bytes */ }
-func TestRestoreRollsBackOnRedProbe(t *testing.T)         { /* env.Probe returns an error -> Verify errors; Rollback restores the replaced bytes */ }
-func TestRestoreDeclaresServiceTouch(t *testing.T)        { /* Touches contains a path touch on /usr/sbin/smtpd */ }
+func TestRestoreDepotWritesAtomicallyAndKeepsMode(t *testing.T) { /* replaced file 0750 -> restored bytes == good, mode 0750, rollback data holds the old bytes */ }
+func TestRestoreDepotRollsBackOnRedProbe(t *testing.T)         { /* env.Probe returns an error -> Verify errors; Rollback restores the replaced bytes */ }
+func TestRestoreDepotDeclaresServiceTouch(t *testing.T)        { /* Touches contains a path touch on /usr/sbin/smtpd */ }
+func TestRestoreWithoutSourceStillRestoresQuarantine(t *testing.T) { /* no source: the id from file.quarantine restores to its original path as before */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/integrity/ -run Restore -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'RestoreDepot|RestoreWithoutSource' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** There is no automatic caller; the one-click proposal comes from the UI (Task 18). Never deletes the replaced file; it is kept as rollback data and as evidence (`file.quarantine` is the separate step).
-- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/integrity/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "integrity: binary.restore_from_depot"`
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "actions: file.restore source depot"`
 
 ---
 
@@ -979,7 +1002,7 @@ func TestLedgerCommandRegistered(t *testing.T)     { /* commands["ledger"] exist
 
 ---
 
-### Task 18: `integrity` controller side: tables, accept writer, Integrity page
+### Task 18: `integrity` controller side: ledger table, Integrity page, accept as an overrides entry
 
 **Files:**
 - Create: `internal/integrity/controller.go`, `internal/integrity/ui.go`, `internal/integrity/migrations.go`
@@ -991,28 +1014,33 @@ func TestLedgerCommandRegistered(t *testing.T)     { /* commands["ledger"] exist
 - Produces:
 
 ```go
-type Controller struct{ /* health, accept channel (cap 64) */ }
+type Controller struct{ /* health, ledger_entry writer channel (cap 64) */ }
 func (*Controller) Manifest() module.Manifest      // integrity.Manifest() with Sides [agent, controller]
 func (c *Controller) Start(ctx context.Context, h module.Host) error
 func (*Controller) Health() module.Health
 func (*Controller) ConfigBlock() any               // ControllerConfig{module.Common}
-// tables: integrity_ledger_entry(host, path, sha256, source, package, version, signer, os, added), integrity_ledger_accept(sha256, path, reason, owner, accepted_at)
+// table: integrity_ledger_entry(host, path, sha256, source, package, version, signer, os, added) only. Accepting a hash is not a table or a kind (S4): it is one core operator.edit command event plus one overrides entry
 ```
 
-The page `/integrity` is the verdict queue built from `Query().Events` of kind `integrity.verdict` (first-sweep verdicts of verdict `unknown` are excluded; they belong to the Hunts triage). Row buttons: accept this hash (POST action `accept` → bounded channel → writer inserts into `integrity_ledger_accept`; the verdict is then suppressed in the queue), quarantine as evidence (`Host.Propose` of `plans/hunt/quarantine.yaml` with `host`, `path`), restore from the depot (`Propose` of `plans/integrity/restore.yaml`, template with `host`, `path`, `source`, `service`), hunt this hash everywhere (`Propose` of `plans/hunt/hash_everywhere.yaml`). Host-grid column `ledger sweep clean`: verified when the last `integrity.sweep_done` has no open mismatch, `pending` when a first sweep is pending, `failed` on mismatch or known_bad. `shortcut: per-host ledger composition from integrity.claims needs the agent fetch handler (bug 4, W11); the controller side keeps the tables and the accept path, and the ledger ships with the release.`
+The page `/integrity` is the verdict queue built from `Query().Events` of kind `integrity.verdict` (first-sweep verdicts of verdict `unknown` are excluded; they belong to the Hunts triage). Row buttons: accept this hash (POST action `accept` → `Host.Emit` of `operator.edit{module: integrity, op: accept, subject: <sha256>, record: {path, host, package, version, verdict, reason}}` and one `Host.UpdateOverrides` append of `Accepted{kind: integrity, ...}`; the verdict is then suppressed in the queue and on the agents, and the overrides entry is the record of who accepted what), quarantine as evidence (`Host.Propose` of `plans/hunt/quarantine.yaml` with `host`, `path`), restore from the depot (`Propose` of `plans/integrity/restore.yaml`, template with `host`, `path`, `from`, `service`), hunt this hash everywhere (`Propose` of `plans/hunt/hash_everywhere.yaml`). Host-grid column `ledger sweep clean`: verified when the last `integrity.sweep_done` has no open mismatch, `pending` when a first sweep is pending, `failed` on mismatch or known_bad. `shortcut: per-host ledger composition from integrity.claims needs the agent fetch handler (bug 4, W11); the controller side keeps the tables and the accept path, and the ledger ships with the release.`
 
 - [ ] **Step 1: Write the failing tests:**
 
 ```go
-func TestAcceptWritesThroughWriterOnly(t *testing.T) {
+func TestAcceptIsOneOverridesEntryAndOneCommandEvent(t *testing.T) {
 	h := newFakeHost(t) // module.Host fake over a real store.ModuleDB (conformance helpers)
 	c := &Controller{}
 	go c.Start(ctx, h)
-	c.Accept("deadbeef", "/opt/x", "vendor build", "alice")
-	waitFor(t, func() bool { return rowCount(h, "integrity_ledger_accept") == 1 })
+	c.Accept("deadbeef", "/opt/x", "h1", "vendor build", "alice")
+	if got := h.Overrides().Accepted; len(got) != 1 || got[0].Kind != "integrity" || got[0].Subject != "deadbeef" || got[0].Owner != "alice" {
+		t.Fatalf("%+v", got)
+	}
+	if ev := h.Emitted("operator.edit"); len(ev) != 1 || ev[0].Fields["module"] != "integrity" || ev[0].Fields["op"] != "accept" {
+		t.Fatalf("%+v", ev)
+	}
 }
 func TestFirstSweepUnknownNotInQueue(t *testing.T) { /* two verdict events: unknown+FirstSweep and mismatch -> queue lists only the mismatch */ }
-func TestAcceptedHashSuppressedInQueue(t *testing.T) { /* accept the sha256 of a queued unknown -> it disappears */ }
+func TestAcceptedHashSuppressedInQueue(t *testing.T) { /* an overrides Accepted entry for the sha256 of a queued unknown -> it disappears; withdrawing the entry brings it back */ }
 func TestControllerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Now: fixedNow})
 }
@@ -1020,9 +1048,9 @@ func TestMigrationsOnlyTouchOwnTables(t *testing.T) { /* every statement names i
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/integrity/ -run 'Accept|FirstSweepUnknown|ControllerConformance|Migrations' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Create the three plan templates (`plans/integrity/restore.yaml` with `module: integrity`, node `binary.restore_from_depot`, `scoring_note`, `probe`; `plans/hunt/quarantine.yaml` and `plans/hunt/hash_everywhere.yaml` belong to Task 36, add `plans/integrity/restore.yaml` here).
+- [ ] **Step 3: Implement.** Create the three plan templates (`plans/integrity/restore.yaml` with `module: integrity`, node `file.restore{source: depot}`, `scoring_note`, `probe`; `plans/hunt/quarantine.yaml` and `plans/hunt/hash_everywhere.yaml` belong to Task 36, add `plans/integrity/restore.yaml` here).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/integrity/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "integrity: controller side (tables, accept writer, Integrity page)"`
+- [ ] **Step 5: Commit.** `git commit -am "integrity: controller side (ledger table, Integrity page, accept as an overrides entry)"`
 
 ---
 
@@ -1112,11 +1140,12 @@ func TestCorpusHasLicenseAndAttribution(t *testing.T) { /* both files exist and 
 
 ---
 
-### Task 21: Persistence cleanup, Linux: `unit.disable`, `unit.mask`, `ld_preload.clear`, `caps.clear`, `pkg.unhold`
+### Task 21: Persistence cleanup, Linux: `service.state{disabled|masked}`, `ld_preload.clear`, `caps.clear`, `pkg.unhold`
 
 **Files:**
-- Create: `internal/actions/unit_cleanup.go`, `internal/actions/preload_caps.go`, `internal/actions/pkg_unhold.go`
-- Test: `internal/actions/unit_cleanup_test.go`, `internal/actions/preload_caps_test.go`, `internal/actions/pkg_unhold_test.go`
+- Modify: `internal/actions/services.go` (`service.state` gains the states `disabled` and `masked`: S4 folds the unit disable and mask, the Cockpit disable and the Splunk sidecar switch-off into this one action, so there is no `unit.disable` or `unit.mask`)
+- Create: `internal/actions/preload_caps.go`, `internal/actions/pkg_unhold.go`
+- Test: `internal/actions/service_state_cleanup_test.go`, `internal/actions/preload_caps_test.go`, `internal/actions/pkg_unhold_test.go`
 
 **Interfaces:**
 - Consumes: `actions.Action`, `Env.Services` (`ServiceManager`), `Env.Resolve`, `atomicfile`, the `systemd_linux.go` D-Bus helpers, the existing `cron.disable` pattern in `linux_cron.go`, `Env.Linux.Attr` for `chattr`.
@@ -1124,8 +1153,8 @@ func TestCorpusHasLicenseAndAttribution(t *testing.T) { /* both files exist and 
 
 | Action | Params | What it does | Locks | Touches |
 | --- | --- | --- | --- | --- |
-| `unit.disable` | `unit` | disable (unit file untouched); also stops it | `service:<unit>` | the service, op disable |
-| `unit.mask` | `unit` | symlink to `/dev/null` under `/etc/systemd/system`; rollback restores the previous link or file | `service:<unit>` | the service, op disable |
+| `service.state{unit, state: disabled}` | `unit`, `state` | disable (unit file untouched); also stops it | `service:<unit>` | the service, op disable |
+| `service.state{unit, state: masked}` | `unit`, `state` | symlink to `/dev/null` under `/etc/systemd/system`; rollback restores the previous link or file | `service:<unit>` | the service, op disable |
 | `ld_preload.clear` | `unit` (optional) | empties `/etc/ld.so.preload`, or removes `Environment=LD_PRELOAD=` lines from the unit's drop-in; the old content is kept as rollback data and quarantined by copy | `path:/etc/ld.so.preload` or the unit | the path |
 | `caps.clear` | `path` | removes file capabilities (`security.capability` xattr), or `AmbientCapabilities=` from a unit via drop-in | `path:<path>` | the path |
 | `pkg.unhold` | `name` | removes `apt-mark hold` (dpkg selections) or the dnf `versionlock.list` entry | `packages` | none |
@@ -1135,11 +1164,11 @@ Every action refuses a unit or path that a scored service owns (`Env.Guard` via 
 - [ ] **Step 1: Write the failing tests:**
 
 ```go
-func TestUnitMaskRollbackRestoresPriorLink(t *testing.T) {
+func TestServiceStateMaskedRollbackRestoresPriorLink(t *testing.T) {
 	env := newLinuxEnv(t) // linux_helpers_test.go
 	writeFile(t, env, "/etc/systemd/system/evil.service", "[Service]\nExecStart=/tmp/x\n")
-	a := unitMask{}
-	p := mustParams(t, a, map[string]any{"unit": "evil.service"})
+	a := serviceState{}
+	p := mustParams(t, a, map[string]any{"unit": "evil.service", "state": "masked"})
 	rb, _ := a.Capture(ctx, env, p)
 	if _, err := a.Apply(ctx, env, p); err != nil || readlink(t, env, "/etc/systemd/system/evil.service") != "/dev/null" {
 		t.Fatalf("apply: %v", err)
@@ -1148,17 +1177,18 @@ func TestUnitMaskRollbackRestoresPriorLink(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 }
-func TestUnitMaskNeverDeletesUnitFile(t *testing.T) { /* the original is moved to the rollback data and the quarantine dir, not removed */ }
+func TestServiceStateMaskedNeverDeletesUnitFile(t *testing.T) { /* the original is moved to the rollback data and the quarantine dir, not removed */ }
 func TestLDPreloadClearKeepsOldContent(t *testing.T) { /* /etc/ld.so.preload "/tmp/evil.so\n" -> empty file; rollback restores it; immutable bit cleared first and restored */ }
 func TestCapsClearOnFile(t *testing.T)               { /* fake AttrBackend/xattr: security.capability removed; rollback restores */ }
 func TestPkgUnholdDpkgAndDnf(t *testing.T)           { /* a fixture /var/lib/dpkg/status-style selections file with "pam hold" -> removed; versionlock.list line removed */ }
-func TestCleanupActionsRefuseScoredUnit(t *testing.T) { /* guard with sshd as a scored service: unit.disable sshd -> Touches reports it and the guard rejects */ }
+func TestCleanupActionsRefuseScoredUnit(t *testing.T) { /* guard with sshd as a scored service: service.state{sshd, disabled} -> Touches reports it and the guard rejects */ }
+func TestNoUnitDisableOrMaskAction(t *testing.T)      { /* actions.Core().Get("unit.disable") and "unit.mask" both error */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'UnitMask|NeverDeletes|LDPreload|CapsClear|PkgUnhold|RefuseScored' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'ServiceStateMasked|NeverDeletes|LDPreload|CapsClear|PkgUnhold|RefuseScored|NoUnitDisable' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** and register with `actions.Register` in `registry_linux.go`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "actions: unit.disable, unit.mask, ld_preload.clear, caps.clear, pkg.unhold"`
+- [ ] **Step 5: Commit.** `git commit -am "actions: service.state disabled and masked, ld_preload.clear, caps.clear, pkg.unhold"`
 
 ---
 
@@ -1234,43 +1264,43 @@ func TestRegistrySnapshotRefusesNonHKLMHKCU(t *testing.T) { /* checkRegKey rejec
 
 ---
 
-### Task 24: Known bug 1: `kernel.module_block` verify when built in; `selinux.restore`, `hosts.file`
+### Task 24: Known bug 1: the module block is plan content plus a `command.check`; `selinux.restore`, `hosts.file` (rewritten by S4, 2026-11-06)
+
+The special action `kernel.module_block` (with its `cmdline_fallback` param) is not built, and the old one is deleted. Blocking a kernel module is a `file.write` of a modprobe config in the `linux.local_root_bundle` content (Task 40); a file write verifies only that file, so the bundle follows it with a `command.check` that probes `socket(AF_ALG)` bound to `aead`. This task builds the probe, deletes the old action and adds the two small core actions.
 
 **Files:**
-- Modify: `internal/actions/linux_kmod.go` (`Verify`, `Plan`; the AF_ALG probe is injectable through `LinuxEnv.ProbeAFAlg func(alg string) (builtin bool, err error)`)
+- Delete: `internal/actions/linux_kmod.go`, `linux_kmod_linux.go`, `linux_kmod_other.go` (the `kernel.module_block` action and the line-111-to-120 Verify that is Known bug 1; Task 13 moved `snapshotRollback` out first)
+- Modify: `internal/actions/app_probe.go` (`command.check` gains the allowlisted probe `af_alg_aead` in `probeNames`; the AF_ALG probe is injectable through `LinuxEnv.ProbeAFAlg func(alg string) (opens bool, err error)`)
 - Create: `internal/actions/selinux_restore.go`, `internal/actions/hosts_file.go`
-- Test: `internal/actions/linux_kmod_builtin_test.go`, `internal/actions/selinux_restore_test.go`, `internal/actions/hosts_file_test.go`
+- Test: `internal/actions/app_probe_afalg_test.go`, `internal/actions/selinux_restore_test.go`, `internal/actions/hosts_file_test.go`
 
 **Interfaces:**
-- Consumes: `LinuxEnv`, `atomicfile`.
-- Produces: `kernel.module_block` gains param `cmdline_fallback` (bool, default false) and behaviour: before `Verify` passes it probes whether the module is built in (the module is absent from `/proc/modules` and `socket(AF_ALG)` bind to `aead` succeeds); if built in and no fallback is requested, `Verify` returns `errors.New("module is built in; blacklisting does not mitigate (use the initcall_blacklist branch)")`; with the fallback the action appends `initcall_blacklist=algif_aead_init` to the GRUB default command line (`/etc/default/grub`, validated, atomically written) and the node must sit behind a reboot gate (the pack in Task 40). `selinux.restore{path}` restores the default SELinux label through the `security.selinux` xattr from the file-contexts database (`shortcut: reads /etc/selinux/targeted/contexts/files/file_contexts literally, no regex compile cache; upgrade if a lab restore is slow`); `hosts.file{entries}` sets named entries in `/etc/hosts` atomically (risk `service`, rollback restores the file, refuses to remove the loopback lines).
+- Consumes: `LinuxEnv`, `atomicfile`, the existing `command.check` probe table.
+- Produces: `command.check{probe: af_alg_aead, fail_if_vulnerable}`: opens an `AF_ALG` socket and binds it to `aead` through `ProbeAFAlg`; if the bind succeeds the precondition of Copy Fail is present (the module is loaded or compiled in) and `fail_if_vulnerable` fails the node with `errors.New("AF_ALG aead socket opens: the module is loaded or built in; blacklisting does not mitigate (take the initcall_blacklist branch)")`. `selinux.restore{path}` restores the default SELinux label through the `security.selinux` xattr from the file-contexts database (`shortcut: reads /etc/selinux/targeted/contexts/files/file_contexts literally, no regex compile cache; upgrade if a lab restore is slow`); `hosts.file{entries}` sets named entries in `/etc/hosts` atomically (risk `service`, rollback restores the file, refuses to remove the loopback lines).
 
 - [ ] **Step 1: Write the failing tests:**
 
 ```go
-func TestModuleBlockBuiltInFailsVerify(t *testing.T) { // Known bug 1, T65
+func TestAFAlgProbeFailsWhenSocketOpens(t *testing.T) { // Known bug 1, T65
 	env := newLinuxEnv(t)
-	env.Linux.ProbeAFAlg = func(string) (bool, error) { return true, nil } // compiled in
+	env.Linux.ProbeAFAlg = func(string) (bool, error) { return true, nil } // compiled in: /proc/modules has no entry, the bind still succeeds
 	writeFile(t, env, "/proc/modules", "ext4 1 0 - Live 0x0\n")
-	a := kernelModuleBlock{}
-	p := mustParams(t, a, map[string]any{"module": "algif_aead"})
-	if _, err := a.Apply(ctx, env, p); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Verify(ctx, env, p); err == nil || !strings.Contains(err.Error(), "built in") {
-		t.Fatalf("verify must fail for a built-in module, got %v", err)
+	a := commandCheck{}
+	p := mustParams(t, a, map[string]any{"probe": "af_alg_aead", "fail_if_vulnerable": true})
+	if _, err := a.Apply(ctx, env, p); err == nil || !strings.Contains(err.Error(), "built in") {
+		t.Fatalf("the check must fail while the aead socket opens, got %v", err)
 	}
 }
-func TestModuleBlockLoadableStillVerifies(t *testing.T) { /* probe says not built in -> Verify nil when the file matches */ }
-func TestModuleBlockCmdlineFallback(t *testing.T)       { /* cmdline_fallback true: GRUB_CMDLINE_LINUX gains initcall_blacklist=algif_aead_init exactly once; second Apply is Done */ }
-func TestSelinuxRestoreSetsDefaultLabel(t *testing.T)   { /* fake xattr backend + a one-line file_contexts -> label set; rollback restores the prior label */ }
-func TestHostsFileKeepsLoopback(t *testing.T)           { /* entries applied; removing 127.0.0.1 localhost is refused at Validate */ }
+func TestAFAlgProbePassesWhenBlocked(t *testing.T)   { /* ProbeAFAlg returns false -> Apply nil, Output["opens"]=="false" */ }
+func TestKernelModuleBlockActionIsGone(t *testing.T) { /* actions.Core().Get("kernel.module_block") and "modules.disable_loading" both error */ }
+func TestSelinuxRestoreSetsDefaultLabel(t *testing.T) { /* fake xattr backend + a one-line file_contexts -> label set; rollback restores the prior label */ }
+func TestHostsFileKeepsLoopback(t *testing.T)         { /* entries applied; removing 127.0.0.1 localhost is refused at Validate */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'ModuleBlock|SelinuxRestore|HostsFile' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The `shortcut` in the design (bootloader-specific, GRUB only) is recorded as a code comment.
-- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS (T65, bug 1).
-- [ ] **Step 5: Commit.** `git commit -am "actions: kernel.module_block fails verify when built in (Known bug 1); selinux.restore, hosts.file"`
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'AFAlg|KernelModuleBlockActionIsGone|SelinuxRestore|HostsFile' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** The bootloader branch (`initcall_blacklist=algif_aead_init`) is content in Task 40, GRUB only (the design's `shortcut`, recorded in the pack file as a comment).
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS (T65, bug 1; the bundle half is `TestLocalRootBundleChecksAFAlgAfterWrite` in Task 40).
+- [ ] **Step 5: Commit.** `git commit -am "actions: AF_ALG command.check replaces kernel.module_block (Known bug 1); selinux.restore, hosts.file"`
 
 ---
 
@@ -1386,7 +1416,7 @@ func LoadChecks(fsys fs.FS, glob string) ([]CheckFile, error) // strict; bounded
 func Collect(ctx context.Context, env *actions.Env, os string, checks []Check) (Collection, error)
 ```
 
-Action `collect.files{globs}`: risk `none`, `ReadOnly`, output `artifacts` (JSON `Collection`, truncated at `MaxCollectionBytes` with `truncated=true`), registered from `init`.
+Action `collect.files{globs}` (a core Collection action; registered from this package until core has it, and not listed in `hunt`'s manifest): risk `none`, `ReadOnly`, output `artifacts` (JSON `Collection`, truncated at `MaxCollectionBytes` with `truncated=true`), registered from `init`.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1506,7 +1536,9 @@ func TestWindowsNoBackendIsAGapNotAPanic(t *testing.T) { /* nil Reg -> Collectio
 
 ---
 
-### Task 30: `hunt.baseline_diff` and `collect.hunt`
+### Task 30: `hunt.baseline_diff` (rewritten by S4, 2026-11-06; `collect.hunt` is not built)
+
+`inventory` is core-default (S4), so the hunt does not collect what `inventory` already holds: accounts, groups, sudoers, authorized keys, units, tasks, services, drivers, mounts, kernel modules, BPF programs and software arrive as `inventory.row` events and `inventory.snapshot` epochs, and Tasks 33 and 34 diff those rows. There is no `collect.hunt` action. This task collects only the reference artifacts `inventory` does not hold.
 
 **Files:**
 - Create: `internal/hunt/baseline_collect.go`
@@ -1514,28 +1546,29 @@ func TestWindowsNoBackendIsAGapNotAPanic(t *testing.T) { /* nil Reg -> Collectio
 - Test: `internal/hunt/baseline_collect_test.go`
 
 **Interfaces:**
-- Consumes: `Collect`, persistence collectors (Tasks 28, 29).
-- Produces: `collect.hunt` (the hunt's own minimal collection: persistence + accounts + kernel + service config artifacts, used when `inventory` is not enabled) and `hunt.baseline_diff` (the same set, returned for the controller diff; the file inventory is excluded, decision 11). Both `none` risk, `ReadOnly`. Artifact kinds beyond persistence: `account` (passwd, group, sudoers; Windows local users and groups through the existing `AccountBackend`), `suid` (SUID/SGID set, path+hash), `cap` (file capabilities), `kmod` (`/proc/modules`), `sysctl` (a fixed list of security sysctls), `bpf` (program ids when readable), `service_config` (Apache/httpd, PHP, Postfix, Dovecot, MySQL config files hashed). When `inventory` produces a snapshot (a later `Consumes`) the controller side prefers it; the actions stay.
+- Consumes: `Collect`, persistence collectors (Tasks 28, 29), `format.Hasher` (Task 2).
+- Produces: `hunt.baseline_diff` (`none` risk, `ReadOnly`): the reference artifact set outside `inventory`, returned for the controller diff; the file inventory is excluded too (decision 11). Artifact kinds: `suid` (SUID/SGID set, path and hash through the shared hasher), `cap` (file capabilities), `sysctl` (a fixed list of security sysctls), `service_config` (Apache/httpd, PHP, Postfix, Dovecot, MySQL config files hashed), on Windows the `ifeo`-style values of Task 29 stay with `hunt.persistence`. A host whose `inventory` is `unavailable` reports that gap (Task 34) and the hunt covers only these artifacts and the persistence locations.
 
 - [ ] **Step 1: Write the failing tests:**
 
 ```go
-func TestBaselineDiffCollectsAccountsAndKernel(t *testing.T) {
-	root := fixtureRoot(t, map[string]string{"etc/passwd": "root:x:0:0::/root:/bin/bash\nhidden:x:0:0::/:/bin/sh\n", "proc/modules": "evil 1 0 - Live 0x0\n"})
+func TestBaselineDiffCollectsSuidCapsSysctl(t *testing.T) {
+	root := fixtureRoot(t, map[string]string{"usr/bin/su": "x", "proc/sys/kernel/yama/ptrace_scope": "0\n"})
+	chmod(t, root, "usr/bin/su", 0o4755)
 	c, _ := baselineCollect(ctx, &actions.Env{Root: root})
-	if !hasArtifact(c, "account", "hidden") || !hasArtifact(c, "kmod", "evil") {
+	if !hasArtifact(c, "suid", "/usr/bin/su") || !hasArtifact(c, "sysctl", "kernel.yama.ptrace_scope") {
 		t.Fatalf("%+v", c)
 	}
 }
-func TestBaselineExcludesFileInventory(t *testing.T) { /* no artifact has kind "file" */ }
-func TestCollectHuntAndBaselineDiffSameSet(t *testing.T) { /* both actions return identical artifact keys on the fixture */ }
-func TestSuidArtifactsCarryHash(t *testing.T)            { /* a 04755 file appears as kind suid with sha256 */ }
+func TestBaselineExcludesInventoryTablesAndFileInventory(t *testing.T) { /* no artifact has kind file, account, group, sudoers, kmod or bpf: those are inventory rows */ }
+func TestSuidArtifactsCarryHash(t *testing.T)            { /* a 04755 file appears as kind suid with sha256, hashed through format.Hasher */ }
+func TestNoCollectHuntAction(t *testing.T)               { /* actions.Core().Get("collect.hunt") errors */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/hunt/ -run 'BaselineDiff|BaselineExcludes|CollectHunt|SuidArtifacts' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/hunt/ -run 'BaselineDiff|BaselineExcludes|SuidArtifacts|NoCollectHunt' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/hunt/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "hunt: collect.hunt and hunt.baseline_diff"`
+- [ ] **Step 5: Commit.** `git commit -am "hunt: hunt.baseline_diff over what inventory does not hold"`
 
 ---
 
@@ -1546,8 +1579,8 @@ func TestSuidArtifactsCarryHash(t *testing.T)            { /* a 04755 file appea
 - Test: `internal/hunt/apps_test.go`
 
 **Interfaces:**
-- Consumes: `Collect` (adds the `grep` type usage), the built `mysql.audit`, `mssql.audit`, `web.opencart_audit` actions (called by plans, not imported).
-- Produces: `hunt.apps{apps}` (`none`, `ReadOnly`): for each requested app that is detected (a config path exists), runs its check file. Checks (design "Application references"): Apache/PHP (modules directory and `extension_dir` listing, `disable_functions`, `auto_prepend_file`, unit `Environment=LD_PRELOAD`), Postfix (`master.cf` pipe transports and `content_filter`, `/etc/aliases` lines starting with `|`), Dovecot (`postlogin`, global sieve, passdb/userdb `args = ... script`), Splunk (`$SPLUNK_HOME/etc/apps` list, `inputs.conf` `[script://`, `deploymentclient.conf`), OpenCart (webroot file hashes into the `webroot` artifact set; the reference comparison is the controller diff against `hunt/baselines/opencart-<version>.json`; gated on the detected branch from `system/startup.php`/`index.php` version constants, `shortcut: ships gated on the detected branch, 4.1.0.4 seen, most CVEs target 4.0.2.x`), Roundcube (`web.roundcube_audit` is a separate core action: the check file lists `installer/` presence and reachable `config/`, `logs/`, `temp/` and the plugin directory; `shortcut: the Roundcube audit ships once the webmail product is confirmed`). MySQL UDF and MSSQL checks stay with `mysql.audit`/`mssql.audit` (plans call them).
+- Consumes: `Collect` (adds the `grep` type usage), `web.opencart_audit` (called by plans, not imported). The MySQL and SQL Server audits are `sql.query` nodes whose statements are plan content (S4), not actions.
+- Produces: `hunt.apps{apps}` (`none`, `ReadOnly`): for each requested app that is detected (a config path exists), runs its check file. Checks (design "Application references"): Apache/PHP (modules directory and `extension_dir` listing, `disable_functions`, `auto_prepend_file`, unit `Environment=LD_PRELOAD`), Postfix (`master.cf` pipe transports and `content_filter`, `/etc/aliases` lines starting with `|`), Dovecot (`postlogin`, global sieve, passdb/userdb `args = ... script`), Splunk (`$SPLUNK_HOME/etc/apps` list, `inputs.conf` `[script://`, `deploymentclient.conf`), OpenCart (webroot file hashes into the `webroot` artifact set; the reference comparison is the controller diff against `hunt/baselines/opencart-<version>.json`; gated on the detected branch from `system/startup.php`/`index.php` version constants, `shortcut: ships gated on the detected branch, 4.1.0.4 seen, most CVEs target 4.0.2.x`), Roundcube (`web.roundcube_audit` is a separate core action: the check file lists `installer/` presence and reachable `config/`, `logs/`, `temp/` and the plugin directory; `shortcut: the Roundcube audit ships once the webmail product is confirmed`). The MySQL UDF and MSSQL checks are `sql.query` nodes in the plans, with the statements as plan content.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1615,17 +1648,22 @@ func TestCredsADDescriptionGapWithoutBackend(t *testing.T)      { /* DC, nil ADB
 - Test: `internal/hunt/diff_test.go`, `internal/hunt/score_test.go`, `internal/hunt/baseline_test.go`
 
 **Interfaces:**
-- Consumes: `Artifact`, `Collection`, `signing.Verifier`, `format.Verdict` constants.
+- Consumes: `Artifact`, `Collection`, `signing.Verifier`, `format.Verdict` constants, the core `inventory` rows (`inventory_rows` through `Host.Query`).
 - Produces (pure functions):
 
 ```go
+// ArtifactsFromInventory turns the host's inventory rows (accounts, groups, sudoers, authorized keys, units, tasks, services, drivers, mounts,
+// kernel modules, BPF programs) into Artifacts, so the diff below covers them without a second collection (S4).
+type InventoryRow struct{ Table, Key string; Row map[string]string }
+func ArtifactsFromInventory(rows []InventoryRow) []Artifact
 type Baseline struct{ OS string; Artifacts []Artifact }
 // LoadBaseline reads hunt/baselines/<os>.json and its detached <os>.json.sig (sshsig); an unsigned or tampered file is an error.
 func LoadBaseline(fsys fs.FS, os string, v signing.Verifier) (Baseline, error)
 
 type Diff struct{ Added, Modified, Missing []Artifact }
 // Compute diffs by (Kind, Key); Modified compares Attrs["sha256"], Attrs["ref"] and every other Attrs key present in both.
-// accepted is the host's live baseline (the overrides): an accepted artifact with identical attrs is not reported.
+// accepted is the host's live baseline: the Overrides.Accepted entries of kind hunt for this host; an accepted artifact with identical attrs is not reported.
+// cur is the hunt's own Collection merged with ArtifactsFromInventory for the host.
 func Compute(ref Baseline, accepted []Artifact, cur Collection) Diff
 
 type Enrichment struct{ Hash, Signer, OwnerPkg, LedgerVerdict string; Referrer string }
@@ -1650,6 +1688,7 @@ func TestComputeAddedModifiedMissing(t *testing.T) {
 		t.Fatalf("%+v", d)
 	}
 }
+func TestInventoryRowsBecomeArtifacts(t *testing.T) { /* an accounts row "hidden" and a kernel_modules row "evil" -> Artifacts of kind account and kmod that Compute reports as Added against a reference without them */ }
 func TestAcceptedBaselineSilencesAdded(t *testing.T) { /* the new artifact in accepted with equal attrs -> Added empty; a changed attr -> reported again */ }
 func TestScoreHighMediumLow(t *testing.T) {
 	cases := []struct{ a Artifact; enrich Enrichment; want string }{
@@ -1698,14 +1737,13 @@ func TestEntropyHeuristic(t *testing.T)         { /* "x7Qz9pLmW2" above 3.5, "sv
 - Test: `internal/hunt/controller_test.go`, `internal/hunt/conformance_test.go`
 
 **Interfaces:**
-- Consumes: `module.Host`, `Host.RunReadOnly`, `Host.Subscribe`, `Host.Query`, `Host.Tables`, `Host.Emit`, `Compute`, `Score`, `LoadBaseline`, `event.New`, `conformance.Agent`, `conformance.Controller`.
+- Consumes: `module.Host`, `Host.RunReadOnly`, `Host.Subscribe`, `Host.Query` (including the core `inventory_rows`), `Host.Tables`, `Host.Emit`, `Host.UpdateOverrides`, `Compute`, `Score`, `ArtifactsFromInventory`, `LoadBaseline`, `event.New`, the core `operator.edit` kind, `conformance.Agent`, `conformance.Controller`.
 - Produces: `Controller` (ControllerModule) and `AgentModule` (a factory whose module only reports health: `ok`, or `degraded` with gap "cross-checks run without root"):
-  - Triggers: `agent.enrolled` (`enroll`), `agent.reenrolled`, `backup.restored` (`restore`), `respond.loop` (`lineage`), a per-host ticker every `repeat_interval_sec` (default 600; `interval`), and a manual request from the UI (`manual`). Each trigger starts `Host.RunReadOnly("hunt", "prebake", {host, trigger})` (class `auto_readonly`).
-  - On the step result for `collect.hunt`/`hunt.persistence`/`hunt.apps`/`hunt.creds`/`hunt.remote_access` (read from the store through `Query`), the writer goroutine diffs against the OS baseline, enriches (verdict join: latest `integrity.verdict` events for the host, path and hash; package owner from the artifact's `owner_pkg`), scores, writes `hunt_finding` and emits `hunt.finding` (priority high for High) and `hunt.run`.
-  - First run on a host: artifacts that exist only because the real image differs (first-sweep `unknown` verdicts) go to state `triage`, not scored findings.
+  - Triggers: `agent.enrolled` (`enroll`), `agent.reenrolled`, `backup.restored` (`restore`), `plan.failed` with `reason: auto_halted` (`lineage`: the attempt ledger's breaker opened, S1), a per-host ticker every `repeat_interval_sec` (default 600; `interval`), and a manual request from the UI (`manual`). Each trigger starts `Host.RunReadOnly("hunt", "prebake", {host, trigger})` (class `auto_readonly`).
+  - On the step results for `hunt.baseline_diff`/`hunt.persistence`/`hunt.apps`/`hunt.creds`/`hunt.remote_access` (read from the store through `Query`) merged with the host's `inventory_rows` (the repeat is a diff of the rows that arrived since the last run, not a full collect), the writer goroutine diffs against the OS baseline, enriches (verdict join: latest `integrity.verdict` events for the host, path and hash; package owner from the artifact's `owner_pkg`), scores, writes `hunt_finding` and emits `hunt.finding` (priority high for High) and `hunt.run`.
+  - First run on a host: artifacts that exist only because the real image differs (first-sweep `unknown` verdicts and the first diff's extras) are listed in the Triage view, read from the events and the run result; a triage item creates no `hunt_finding` row, and accepting one is one overrides entry.
   - No baseline for the host's OS: the host is collected, not diffed; health `degraded` with gap `no reference for this OS version`.
-  - `hunt_finding(id, host, kind, key, score, state, evidence_json, updated)` with states `open`, `approved`, `rejected`, `accepted`, `remediated`, `triage`; state changes come from the UI through a bounded channel to the writer (decision 6).
-  - Writes the accepted artifact to overrides through `Host.Propose`? No: accepted items go to the host's live baseline stored in `hunt_finding` with state `accepted`, and `Compute` reads accepted artifacts from that table. `shortcut: accepted baseline lives in the hunt table, not overrides.yml; upgrade when overrides.yml gains a writer API.`
+  - `hunt_finding(id, host, kind, key, score, state, outcome, evidence_json, updated)`: `state` is `open` or `acked` as for any alert, and an acked row has `outcome` `approved`, `rejected`, `accepted` or `remediated`. A row is created by a `hunt.finding` event and moved only by the core `operator.edit` events (module `hunt`, `op` in `approve`, `reject`, `accept`, `remediated`); the buttons emit the event and never write the table (decision 6). `accept` also appends one `Overrides.Accepted{kind: hunt}` entry, which is the host's live baseline that `Compute` reads.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1723,10 +1761,10 @@ func TestNoBaselineDegradesNotDiffs(t *testing.T) { // Review Focus 3
 	}
 }
 func TestTriggersStartReadOnlyPlans(t *testing.T) {
-	for _, kind := range []string{"agent.enrolled", "agent.reenrolled", "backup.restored", "respond.loop"} {
+	for _, kind := range []string{"agent.enrolled", "agent.reenrolled", "backup.restored", "plan.failed"} {
 		h := newHuntHost(t)
 		startController(t, h)
-		h.publish(kind, map[string]any{"host": "h1"})
+		h.publishTrigger(kind, "h1") // builds the valid payload; plan.failed carries reason auto_halted
 		waitFor(t, func() bool { return h.readOnlyRuns() == 1 })
 		if h.lastRun().Template != "prebake" || h.lastRun().Params["trigger"] == "" {
 			t.Fatalf("%s: %+v", kind, h.lastRun())
@@ -1734,9 +1772,10 @@ func TestTriggersStartReadOnlyPlans(t *testing.T) {
 	}
 }
 func TestRepeatEveryInterval(t *testing.T)    { /* repeat_interval_sec 1 with a fake clock: two runs after 2 s per host */ }
-func TestFirstRunUnknownsGoToTriage(t *testing.T) { /* first-sweep unknown verdict for /opt/x -> state triage, not open */ }
+func TestRepeatDiffsInventoryRows(t *testing.T) { /* a new accounts row arrives as inventory.row between two runs -> the second run reports it Added with no collection step for it */ }
+func TestFirstRunUnknownsGoToTriage(t *testing.T) { /* first-sweep unknown verdict for /opt/x -> listed in Triage, no hunt_finding row */ }
 func TestFindingAndRunEventsEmitted(t *testing.T) { /* High finding -> hunt.finding priority high plus hunt.run with Added/Modified counts */ }
-func TestDecisionsGoThroughWriter(t *testing.T)   { /* Approve/Accept/Reject calls change state only after the writer processes them; no direct table write from the caller */ }
+func TestDecisionsAreCommandEvents(t *testing.T)  { /* Approve/Accept/Reject emit operator.edit (module hunt); the row moves open -> acked with outcome only after the writer applies the event; no direct table write; Accept adds exactly one Overrides.Accepted entry */ }
 func TestHuntConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Now: fixedNow})
 	conformance.Agent(t, conformance.AgentCase{Factory: factoryNamed(t, "hunt"), Default: cfgHunt(900), Reconfig: cfgHunt(600)})
@@ -1758,7 +1797,7 @@ func TestHuntConformance(t *testing.T) {
 
 **Interfaces:**
 - Consumes: `module.Host.UI`, `Host.Propose`, `module.Proposal`, `manifest.Manifest` (scored services), templates under `plans/hunt/`.
-- Produces: the Hunts page (`/hunts`): queue grouped by host with High first, evidence per finding, Triage tab, baseline views, cross-check results; buttons Approve (`Propose` the remediation template for the artifact kind), Accept, Reject, Open IR draft (a `Propose` of `report`'s draft template is not available to `hunt`; the button links to `/report/ir?finding=<id>` and `report` (W10) reads `hunt.finding` at High; nothing to build here). Remediation templates, each `module: hunt`, one disable-or-quarantine node, `scoring_note`, `probe`, params `host` and `key`: `remediate_cron` (`cron.disable`), `remediate_unit` (`unit.disable`), `remediate_mask` (`unit.mask`), `remediate_task` (`task.disable`), `remediate_wmi` (`wmi.subscription_remove`), `remediate_runkey` (`runkey.remove`), `remediate_preload` (`ld_preload.clear`), `remediate_caps` (`caps.clear`), `remediate_file` (`file.attr` clear immutable then `file.quarantine`). `Remediation(f Finding) (template string, params map[string]string, err error)` maps a kind to one; it returns `ErrScoredState` when the artifact is a scored service's own unit or path (manifest `services.yml` process units and pinned binaries), and the page shows the button disabled with the reason.
+- Produces: the Hunts page (`/hunts`): queue grouped by host with High first, evidence per finding, Triage tab, baseline views, cross-check results; buttons Approve (emit `operator.edit{module: hunt, op: approve}` and `Propose` the remediation template for the artifact kind), Accept (`op: accept` plus one overrides entry), Reject (`op: reject`), Open IR draft (a `Propose` of `report`'s draft template is not available to `hunt`; the button links to `/report/ir?finding=<id>` and `report` (W10) reads `hunt.finding` at High; nothing to build here). Remediation templates, each `module: hunt`, one disable-or-quarantine node, `scoring_note`, `probe`, params `host` and `key`: `remediate_cron` (`cron.disable`), `remediate_unit` (`service.state{state: disabled}`), `remediate_mask` (`service.state{state: masked}`), `remediate_task` (`task.disable`), `remediate_wmi` (`wmi.subscription_remove`), `remediate_runkey` (`runkey.remove`), `remediate_preload` (`ld_preload.clear`), `remediate_caps` (`caps.clear`), `remediate_file` (`file.attr` clear immutable then `file.quarantine`). `Remediation(f Finding) (template string, params map[string]string, err error)` maps a kind to one; it returns `ErrScoredState` when the artifact is a scored service's own unit or path (manifest `services.yml` process units and pinned binaries), and the page shows the button disabled with the reason.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1781,7 +1820,7 @@ func TestRemediationMapsKinds(t *testing.T) {
 func TestRemediationTemplatesNeverDelete(t *testing.T) {
 	// load every plans/hunt/remediate_*.yaml via plans.Parse: module hunt, scoring_note and probe set, and no node action in {file.delete, user.delete, pkg.remove, web.remove_dir}
 }
-func TestApproveCreatesProposalNotApply(t *testing.T) { /* POST approve -> Host.Propose called once with the template; no RunAuto/RunStanding */ }
+func TestApproveCreatesProposalNotApply(t *testing.T) { /* POST approve -> Host.Propose called once with the template and one operator.edit op approve emitted; no RunAuto/RunStanding, no direct table write */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/hunt/ -run 'Remediation|ApproveCreates' -v`. Expected: FAIL.
@@ -1800,8 +1839,8 @@ func TestApproveCreatesProposalNotApply(t *testing.T) { /* POST approve -> Host.
 **Interfaces:**
 - Consumes: `plans.Parse` (Task 37), the action catalog, `Template.Module`.
 - Produces: all four `module: hunt`, validated against the catalog:
-  - `prebake` (params `host`, `trigger`, `first_sweep`): nodes `ledger.sweep{first_sweep: ${first_sweep}}` (the controller passes `first_sweep=true` for the triggers `enroll`, `restore` and `reenroll`, else `false`; the sweep is cheap on a warm cache), `collect.hunt`, `hunt.persistence`, `hunt.apps`, `hunt.creds`, `hunt.remote_access`, each read-only, `needs` in parallel, target `${host}`.
-  - `verify_hardening`: the post-hardening adversarial verification (D406): `health.check` of the touched services, `net.tcp_probe` of a canary closed port, a `command.check` that the old default password does not authenticate (secret reference, never inline), and the vantage credential verification step expressed as `health.check` with `probe: scorer_mimic`.
+  - `prebake` (params `host`, `trigger`, `first_sweep`): nodes `ledger.sweep{first_sweep: ${first_sweep}}` (the controller passes `first_sweep=true` for the triggers `enroll`, `restore` and `reenroll`, else `false`; the sweep is cheap on a warm cache), `collect.inventory` (a differential collection of the tables the reference covers; it sends only changed rows, so running it on every trigger is cheap and `collect.hunt` is not needed), `hunt.baseline_diff`, `hunt.persistence`, `hunt.apps`, `hunt.creds`, `hunt.remote_access`, each read-only, `needs` in parallel, target `${host}`.
+  - `verify_hardening`: the post-hardening adversarial verification (D406): `health.check` of the touched services, `net.tcp_probe` of a canary closed port, a `command.check` that the old default password does not authenticate (secret reference, never inline), and the credential verification as a `probe.run` step on the Kali (S4: PCR verification is a `probe.run` step, not a vantage sub-role).
   - `quarantine` (`host`, `path`): `file.attr` (clear immutable) then `file.quarantine`.
   - `hash_everywhere` (`sha256`): `collect.files{hash: ...}` per label `linux` / `windows` host (labels from Task 37).
 
@@ -1836,6 +1875,7 @@ func TestVerifyHardeningNoInlineSecrets(t *testing.T) { /* no param value matche
 
 **Files:**
 - Move (`git mv`): `plans/first-hour/*.yaml` → `plans/hardening/`
+- Modify: `plans/hardening/*.yaml` nodes that name a special-case action become the general one (S4): `windows.smb1` → `registry.set` of the SMB1 value, `mssql.audit`/`mssql.lock` → `sql.query{engine: mssql, statement}`, `kernel.module_block` → `file.write` plus the `command.check{probe: af_alg_aead}` node of Task 40; the special-case actions are deleted from `internal/actions` in the same commit (`ad_netlogon.go`'s `windows.smb1`, `mssql_audit.go`, `mssql_lock.go`)
 - Modify: `plans/plans.go` (`//go:embed *.yaml */*.yaml`; `Parse` errors `plan template has no module:` when `Module` is empty; `Paths()` skips `actions.yaml` only; `Parse`, `ResolveLabels` and `Template.Module` themselves are W1 Task 22b's), `plans/actions.yaml` (header), `plans/hardening/*.yaml` (add `module: hardening`; ids keep the `fh.` prefix; replace host-name `vars` with `{labels: ...}` where the host set is a role: `dcs: {labels: "dc"}`, `linux_hosts: {labels: "linux && !workstation"}`), (`controller.LoadModuleTemplateFor` and the W1 call sites passing `c.hostsMatching` are W1 Task 22b's)
 - Test: `plans/plans_test.go` (extend), `internal/controller/pack_template_test.go`
 
@@ -1864,9 +1904,10 @@ func TestActionsYamlHeaderNoTodo(t *testing.T) { // Known bug 9
 }
 func TestRunAutoLoadsPackWithLabels(t *testing.T) { /* internal/controller: the real plans/hardening dc pack loads through LoadModuleTemplateFor(c.hostsMatching) against a test manifest with a host labelled dc and yields per-host nodes */ }
 func TestParseRequiresModule(t *testing.T) { /* Parse of a pack without module: -> error containing "no module" */ }
+func TestNoSpecialCaseActionsInPacks(t *testing.T) { /* no node in plans/ names windows.smb1, mssql.audit, mssql.lock, mysql.audit, kernel.module_block, unit.disable, unit.mask or binary.restore_from_depot, and none of them is registered in actions.Core() (S4) */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./plans/ ./internal/controller/ -run 'EveryTemplateHasModule|ParseRequiresModule|ActionsYaml|PackWithLabels' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./plans/ ./internal/controller/ -run 'EveryTemplateHasModule|ParseRequiresModule|ActionsYaml|PackWithLabels|NoSpecialCaseActions' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Other modules' templates in `plans/` (wazuh, splunk, deception) move to `plans/<module>/` with their own workstreams; until then `TestEveryTemplateHasModule` skips the three root-level files that name W9/W11 in a table at the top of the test (`shortcut: root-level templates belong to W9 and W11, delete the skip entries when they move`).
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "plans: module header required, plans/hardening (Known bug 9)"`
@@ -1883,7 +1924,7 @@ func TestParseRequiresModule(t *testing.T) { /* Parse of a pack without module: 
 
 **Interfaces:**
 - Consumes: `plans.Paths`, `plans.Load`, `plans.NewCatalog`, `module.Host.Config`, `lint.Register`, `store.Reader.Latest`.
-- Produces: `Module` (ControllerModule): `Start` decodes `Config`, validates every template under `plans/hardening/` against the catalog; health `ok` when all validate, `degraded` listing templates that name an action the catalog does not have (gap `{template, "unavailable: <action>"}`); `auto` allowlist = every configured pack without a reboot-class gate (`Config.Auto` default computed at start, overridable by `auto:`); lint rule `HD002`: a node with action `win.audit_policy.set`, `sysmon.config` or `sysmon.install` on a host whose latest `winevt.sensor_state` says Sysmon is down, the `config_hash` differs from `expected_config_hash` with no 4688 fallback active is a finding ("sensor down: <reason>").
+- Produces: `Module` (ControllerModule): `Start` decodes `Config`, validates every template under `plans/hardening/` against the catalog; health `ok` when all validate, `degraded` listing templates that name an action the catalog does not have (gap `{template, "unavailable: <action>"}`); each `PackTarget.Autonomy` is validated against `propose|shadow|auto` and defaults to `auto` for a pack without a reboot-class gate and `propose` for one with (S1: this replaces the module's `auto` allowlist; the engine applies the autonomy and the attempt ledger, this module only carries the value); lint rule `HD002`: a node with action `win.audit_policy.set`, `registry.set` of the Sysmon config, `file.write` of the Sysmon config or `sysmon.install` on a host whose latest `Health.Info` `sysmon` entry (the `agent.health` data the controller stores; `telemetry_gap{reason: sysmon_degraded}` is the same fact) says Sysmon is down, or the `config_hash` differs from `expected_config_hash` with no 4688 fallback active, is a finding ("sensor down: <reason>").
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1896,8 +1937,8 @@ func TestHardeningHealthDegradedOnMissingAction(t *testing.T) {
 	}
 }
 func TestHardeningHealthOKForShippedPacks(t *testing.T) { /* real plans/hardening: ok, or degraded naming only actions from Task 24/25 not yet merged */ }
-func TestAutoPacksExcludeRebootGates(t *testing.T) { /* a pack with a gate: approval node is not in the auto allowlist */ }
-func TestHD002RefusesWhenSysmonDown(t *testing.T)  { /* latest winevt.sensor_state running=false -> finding naming the reason; running with equal hash -> none; 4688 fallback active -> none */ }
+func TestPackAutonomyDefaults(t *testing.T) { /* a pack without a reboot-class gate defaults to auto, one with a gate to propose; "sometimes" is a config error; the gate: approval node stays a click whatever the value */ }
+func TestHD002RefusesWhenSysmonDown(t *testing.T)  { /* latest Health.Info sysmon running=false -> finding naming the reason; running with equal hash -> none; 4688 fallback active -> none */ }
 func TestHardeningConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Module{}, Config: "enabled: true\npacks: []\n", Now: fixedNow})
 }
@@ -1969,8 +2010,8 @@ func TestPackNodeSettingsAreOnePerNode(t *testing.T)  { /* no node's params cont
 - Test: `plans/hardening_packs_b_test.go`
 
 **Interfaces:**
-- Consumes: Tasks 21 to 25 actions, `ad.recycle_enable` (Task 45, named here, `Missing()` until it merges), `service.sddl_reset` (Task 44), `collect.inventory` (W3), `kernel.module_block{cmdline_fallback}`.
-- Produces: `ad.baseline` (first node `ad.recycle_enable`, then `ad.account.admincount_sweep`, `ad.account.group_remove` purge behind its own approval, MAQ 0 through `registry.set`/ADSI, `StrongCertificateBindingEnforcement`, PetitPotam EFS filter, WebClient off); `banner.policy` and `password.policy` read values from `overrides` (`${banner_ref}`, `${password_policy_ref}`; no text and no defaults ship) and end with a node dumping the effective values; `preflight.reboot_survival` (five checks of the design, the post-reboot listener comparison closes the plan); `linux.noexec_temp` (HD001-linted `mount.remount` with options `noexec,nosuid`, verify, rollback; no `fstab` write); `dc.service_repair` (`service.sddl_reset` for RpcSs, W32Time, Netlogon, KDC, ADWS, DNS with DNS and WinRM probes before and after); `linux.local_root_bundle`: `pkexec` chmod, `kernel.module_block algif_aead`, `sudo -V` check, and a node `module_block_cmdline` with `cmdline_fallback: true` behind `gate: approval` that `needs` the preflight.
+- Consumes: Tasks 21 to 25 actions, `ad.recycle_enable` (Task 45, named here, `Missing()` until it merges), `service.sddl_reset` (Task 44), `collect.inventory` (W3), `file.write` and `command.check{probe: af_alg_aead}` (Task 24).
+- Produces: `ad.baseline` (first node `ad.recycle_enable`, then `ad.account.admincount_sweep`, `ad.account.group_remove` purge behind its own approval, MAQ 0 through `registry.set`/ADSI, `StrongCertificateBindingEnforcement`, PetitPotam EFS filter, WebClient off); `banner.policy` and `password.policy` read values from `overrides` (`${banner_ref}`, `${password_policy_ref}`; no text and no defaults ship) and end with a node dumping the effective values; `preflight.reboot_survival` (five checks of the design, the post-reboot listener comparison closes the plan); `linux.noexec_temp` (HD001-linted `mount.remount` with options `noexec,nosuid`, verify, rollback; no `fstab` write); `dc.service_repair` (`service.sddl_reset` for RpcSs, W32Time, Netlogon, KDC, ADWS, DNS with DNS and WinRM probes before and after); `linux.local_root_bundle`: `pkexec` chmod (`file.perms`), the `algif_aead` block as a `file.write` of the modprobe blacklist line, a `command.check{probe: af_alg_aead, fail_if_vulnerable: true}` node that `needs` the write (Known bug 1: it fails the bundle while the aead socket still opens), the `sudo -V` check, and a node `module_block_cmdline` (a `file.write` of `initcall_blacklist=algif_aead_init` into the GRUB default command line, with the `validate` hook) behind `gate: approval` that `needs` the preflight; the failed check's message tells the operator to take that branch.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -1987,10 +2028,13 @@ func TestADBaselineEnablesRecycleBinFirst(t *testing.T) {
 	}
 }
 func TestBannerAndPasswordPolicyShipNoText(t *testing.T) { /* no literal banner text or numeric policy default in the files: every value is ${..._ref} */ }
-func TestRebootGateIsAClickEvenInAutoPlan(t *testing.T)  { /* the reboot node is gate: approval; HardeningSettings auto list excludes the pack's reboot node */ }
+func TestRebootGateIsAClickEvenInAutoPlan(t *testing.T)  { /* the reboot node is gate: approval whatever the pack's autonomy */ }
 func TestPreflightClosesWithListenerComparison(t *testing.T) { /* last node is the post-reboot compare and needs the reboot */ }
 func TestNoexecPackUsesHD001Path(t *testing.T)          { /* the remount node is linted by HD001 on a host with a scored exec from /tmp (finding) and clean host (none) */ }
 func TestLocalRootBundleHasCmdlineBranchBehindGate(t *testing.T) { /* module_block_cmdline needs a gate: approval node which needs preflight.reboot_survival */ }
+func TestLocalRootBundleChecksAFAlgAfterWrite(t *testing.T) { // Known bug 1, bundle half
+	/* the bundle has no kernel.module_block node; the af_alg_aead command.check needs the modprobe file.write node and has fail_if_vulnerable true */
+}
 func TestServiceRepairListsSixServices(t *testing.T)    { /* six sddl_reset nodes plus before/after DNS and WinRM probes */ }
 ```
 
@@ -2067,7 +2111,7 @@ func TestADSIImplementsInterfaceOnWindows(t *testing.T)       { /* compile-time:
 - Test: `internal/ad/checks_test.go`, `internal/ad/pathquery_test.go`
 
 **Interfaces:**
-- Consumes: `ADBackend` (Task 41), `actions.ResolveMembers`, `actions.PrivilegedGroups`, `FindingEvent`.
+- Consumes: `ADBackend` (Task 41), `actions.ResolveMembers`, `actions.PrivilegedGroups`, `FindingEvent`. `ADSettings.PrivilegedAllow` is the manifest allowlist plus the `Overrides.Accepted` entries of kind `ad` (the controller merges them when it renders the settings); the check never stores an accept itself.
 - Produces:
 
 ```go
@@ -2123,7 +2167,7 @@ func TestOutlierAndPasswordLikeDescriptions(t *testing.T) { /* 40 users with 20-
 
 **Interfaces:**
 - Consumes: `ADBackend.GPOs` (Task 41), a new `actions.WinEnv.RSoP RSoPReader` (interface `Effective(ctx) (EffectiveState, error)` over the RSoP WMI classes; fake in tests), `actions.RegisterUndo`, the lint's scored-dependency rule input (`Touches`).
-- Produces: `ad.gpo_baseline` and `ad.gpo_effective` (`none`, `ReadOnly`); `ad.gpo_unlink{guid, link}`, `ad.gpo_disable{guid}`, `ad.gpo_restore{guid}` (risk `service`, lock `gpo:<guid>`, `Touches` the policy of the domain or DC OU); `gpo_unlink` removes the `gPLink` entry and keeps the GPO, its rollback re-links; `gpo_disable` sets the GPO flags; `gpo_restore` restores from the baseline copy (SYSVOL tree and object attributes) with the hash taken from the signed step (open item: yes, from the controller's copy). `Touches` refuses (`Plan` error) a GPO a scored service's policy depends on (the DC's DNS/WinRM policy; the list comes from `ADSettings` extension `ScoredGPOs []string`, `json:"scored_gpos,omitempty"`, added here). Plan `plans/ad/gpo_response.yaml` (`module: ad`): `ad.gpo_effective`, then `ad.gpo_unlink` (the `auto` allowlisted node), `ad.gpo_disable` and `ad.gpo_restore` stay a click; probes of DNS and WinRM before and after.
+- Produces: `ad.gpo_baseline` and `ad.gpo_effective` (`none`, `ReadOnly`); `ad.gpo_unlink{guid, link}`, `ad.gpo_disable{guid}`, `ad.gpo_restore{guid}` (risk `service`, lock `gpo:<guid>`, `Touches` the policy of the domain or DC OU); `gpo_unlink` removes the `gPLink` entry and keeps the GPO, its rollback re-links; `gpo_disable` sets the GPO flags; `gpo_restore` restores from the baseline copy (SYSVOL tree and object attributes) with the hash taken from the signed step (open item: yes, from the controller's copy). `Touches` refuses (`Plan` error) a GPO a scored service's policy depends on (the DC's DNS/WinRM policy; the list comes from `ADSettings` extension `ScoredGPOs []string`, `json:"scored_gpos,omitempty"`, added here). Plan `plans/ad/gpo_response.yaml` (`module: ad`): `ad.gpo_effective`, then `ad.gpo_unlink`, whose template carries the `autonomy` (default `auto`; S1: this replaces the `gpo.response` setting and the `auto` allowlist, and the engine's attempt ledger replaces any loop guard of its own), `ad.gpo_disable` and `ad.gpo_restore` stay a click; probes of DNS and WinRM before and after.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -2307,7 +2351,7 @@ func TestADAgentConformance(t *testing.T) {
 
 **Interfaces:**
 - Consumes: `module.Host` (`Subscribe`, `RunReadOnly`, `Control`, `Emit`, `UI`, `Query`), `module.ControlMsg`, W1's fact subtype `gpo_finding`.
-- Produces: `Controller`: consumes `hunt.run` and `integrity.sweep_done`; when both are clean for the DC (`hunt.run` with no open High, `integrity.sweep_done` with `Verdicts == 0`) and no `ad.gpo_baseline` exists for it, starts `Host.RunReadOnly("ad", "gpo_baseline", {host})` (the DC's agent never watches for its own hunt); consumes its own `ad.gpo_finding` and sends it to the DC's agent and to the member hosts as `Host.Control(ControlMsg{Type: "fact", Fact: "gpo_finding", ID: guid, Data: ..., TTL: 30*time.Minute})`; watches `agent.step_result` for `ad.recycle_restore` and emits `ad.recycle_restored` (`dn`, `sid`, `scored`, `restored_by_rule`, `verified` false until the next scorer login confirms; the `verified` update is an `ad.recycle_restored` follow-up with the same `dn` when `checks` reports the scored login green: `shortcut: verified stays false until W7's login confirmation event exists, upgrade then`). The Active Directory page lists findings, path results, the GPO baseline with changes, effective-state results; buttons: purge a member (`Propose` `plans/ad/purge_member.yaml`), accept a member into the allowlist (writes overrides through the settings API once it exists: `shortcut: recorded in the module's own log until overrides has a writer API`), unlink/disable/restore a GPO (`Propose`), run `dc.service_repair`, the two krbtgt steps with the gap shown (`Propose` only, always a click). Host-grid column `AD clean` on the DC.
+- Produces: `Controller`: consumes `hunt.run` and `integrity.sweep_done`; when both are clean for the DC (`hunt.run` with no open High, `integrity.sweep_done` with `Verdicts == 0`) and no `ad.gpo_baseline` exists for it, starts `Host.RunReadOnly("ad", "gpo_baseline", {host})` (the DC's agent never watches for its own hunt); consumes its own `ad.gpo_finding` and sends it to the DC's agent and to the member hosts as `Host.Control(ControlMsg{Type: "fact", Fact: "gpo_finding", ID: guid, Data: ..., TTL: 30*time.Minute})`; watches `agent.step_result` for `ad.recycle_restore` and emits `ad.recycle_restored` (`dn`, `sid`, `scored`, `restored_by_rule`, `verified` false until the next scorer login confirms; the `verified` update is an `ad.recycle_restored` follow-up with the same `dn` when `checks` reports the scored login green: `shortcut: verified stays false until W7's login confirmation event exists, upgrade then`). The Active Directory page lists findings, path results, the GPO baseline with changes, effective-state results; buttons: purge a member (`Propose` `plans/ad/purge_member.yaml`), accept a member into the allowlist (emits `operator.edit{module: ad, op: accept}` and appends one `Overrides.Accepted{kind: ad}` through `Host.UpdateOverrides`, with reason and owner; findings use the alert open/ack state, so `ad` has no decision kind or table), unlink/disable/restore a GPO (`Propose`), run `dc.service_repair`, the two krbtgt steps with the gap shown (`Propose` only, always a click). Host-grid column `AD clean` on the DC.
 
 - [ ] **Step 1: Write the failing tests:**
 
@@ -2338,13 +2382,14 @@ func TestGPOFindingSentAsFact(t *testing.T) {
 	}
 }
 func TestRecycleRestoredEmittedFromStepResult(t *testing.T) { /* agent.step_result for ad.recycle_restore with sid -> ad.recycle_restored Validate()s, scored from the manifest accounts */ }
+func TestAllowlistAcceptIsOneOverridesEntry(t *testing.T) { /* POST accept for a member -> one operator.edit and one Overrides.Accepted entry with reason and owner; no ad table row */ }
 func TestKrbtgtButtonsOnlyPropose(t *testing.T) { /* POST krbtgt step 1 -> Host.Propose, never RunAuto or RunStanding */ }
 func TestADControllerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Now: fixedNow})
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/ad/ -run 'BaselineStarts|DirtySweep|GPOFindingSent|RecycleRestoredEmitted|KrbtgtButtons|ADControllerConformance' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/ad/ -run 'BaselineStarts|DirtySweep|GPOFindingSent|RecycleRestoredEmitted|AllowlistAccept|KrbtgtButtons|ADControllerConformance' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Create `plans/ad/{gpo_baseline,purge_member}.yaml` (`module: ad`, read-only baseline; purge with `ad.account.group_remove` and its own approval).
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS, including the static checks with all four W5 modules off `PreContract`.
 - [ ] **Step 5: Commit.** `git commit -am "ad: controller side (baseline trigger, gpo_finding fact, restore events, page)"`
@@ -2366,11 +2411,11 @@ Runs the design's lab tests for this workstream on the BTaP Proxmox replica (`st
 | T01 | Prebaked set at drop flag | the hunt finds at least 90% and the ledger sweep finds every replaced binary; time to find reported |
 | T12 | `LD_PRELOAD` rootkit hiding a process | the cross-checks (`ld_preload`, `hidden_process`) and D11 fire; latency reported |
 | T19 (hunt and ledger half) | bulk re-enrollment | the sweep and hunt run automatically; the golden tag is withheld until both are clean (the tag logic is W12/W10; record what is observed) |
-| T31 | replaced Postfix `smtpd` proxy, trojaned `nologin`, `LD_PRELOAD` library, `dns.exe` stand-in, an unknown hash executed | alert at first exec; the pinned image mismatch found; D4b fires for the proxy; no automatic restore; one-click `binary.restore_from_depot` passes the probe |
+| T31 | replaced Postfix `smtpd` proxy, trojaned `nologin`, `LD_PRELOAD` library, `dns.exe` stand-in, an unknown hash executed | alert at first exec; the pinned image mismatch found; D4b fires for the proxy; no automatic restore; one-click `file.restore{source: depot}` passes the probe |
 | T32 | package update inside a tagged plan, an untagged update, a patch-level difference | no alert for the tagged one; `match_other_version` or an alert with clear provenance otherwise |
 | T34 | first-hour plan library against real Quotient | zero failed rounds attributable to Phylax |
 | T38 | Zerologon, hidden accounts, `chattr +i`, unit capabilities, PHP overrides, OpenCart admin rows, AD GPO and ACL changes | each raises its alert |
-| T61 | GPO footholds | the `ad` GPO response and the `winevt` GPO events detect the GPO; the chain shows the hop; the GPO and its link are reverted by a plan with the agent link intact |
+| T61 | GPO footholds | the `ad.gpo_unlink` template at `autonomy: auto` and the `winevt` GPO events detect the GPO; the chain shows the hop; the GPO and its link are reverted by a plan with the agent link intact |
 | T68 | opt-in `noexec` remount | the pre-check refuses when a scored service execs from there; a live remount rolls back on failure |
 | T72 | reboot-survival preflight | a change that would stop the host booting is flagged; one that survives is not |
 | T76 (sshsig half) | release signatures | an artifact signed by `internal/signing` verifies with plain `ssh-keygen -Y verify` on a machine with no phylax binary |
@@ -2386,12 +2431,12 @@ Plus: the first load of the 17 UCF rules (record the skipped count and decide `e
 
 ## Self-review
 
-**1. Spec coverage.** `integrity`: ledger and format (2), events (6, 7), module and health (8), signers and hints and maps and settings (9), SUID (10), YARA (11, 20), actions (12, 13), cross-checks and PAM (14 to 16), CLI (17), controller side (18), D5d and bug 6 (19). `hunt`: collection (27 to 32), diff and scoring (33), module and findings and triggers (34), UI and remediation (35), plans (36). `hardening`: pack format, bug 9 (37), module (38), packs (39, 40), Zerologon and local-root bundle (40), noexec and `mount.remount` (25, 26, 40). `ad`: move (3), reads (41), checks and path query (42), GPO (43), SDDL (44), Recycle Bin (45), agent and controller sides (46, 47). Action families: Registry (23), Kernel and system (24, 25), Persistence cleanup (21, 22), Domain (3, 42 to 45), Integrity (12, 13), Hunt (27 to 32). Shared libs: signing and sshsig, T76 (2, 4, 5), format (2). Bugs: 1 (24), 6 (19), 9 (37). Not built, with reason: Windows cross-checks, BITS/print-monitor/provider persistence, per-host ledger composition (W11), `ReadProcessMemory`, YARA-X (all carried as `shortcut`s or open items in the design). Two things the design lists that this plan leaves to others: D22 and the other detection rules that complete the hunt (W4 owns `rules/detect/`), and the `report` IR draft from `hunt.finding` (W10).
+**1. Spec coverage.** `integrity`: ledger and format (2), events (6, 7), module and health (8), signers and hints and maps and settings (9), SUID (10), YARA (11, 20), actions (12), the depot restore as `file.restore{source: depot}` (13), cross-checks and PAM (14 to 16), CLI (17), controller side (18), D5d and bug 6 (19). `hunt`: collection (27 to 32), diff and scoring (33), module and findings and triggers (34), UI and remediation (35), plans (36). `hardening`: pack format, bug 9 (37), module (38), packs (39, 40), Zerologon and local-root bundle (40), noexec and `mount.remount` (25, 26, 40). `ad`: move (3), reads (41), checks and path query (42), GPO (43), SDDL (44), Recycle Bin (45), agent and controller sides (46, 47). Action families: Registry (23), Kernel and system (24, 25), Files (13), Services (21), Persistence cleanup (21, 22), Domain (3, 42 to 45), Integrity (12), Hunt (27 to 32). S1-S4: no ladders or special-case actions are built (decision 12); the replaced mechanisms are Tasks 13, 21, 24, 30, 34, 37 and 38. Shared libs: signing and sshsig, T76 (2, 4, 5), format (2). Bugs: 1 (24), 6 (19), 9 (37). Not built, with reason: Windows cross-checks, BITS/print-monitor/provider persistence, per-host ledger composition (W11), `ReadProcessMemory`, YARA-X (all carried as `shortcut`s or open items in the design). Two things the design lists that this plan leaves to others: D22 and the other detection rules that complete the hunt (W4 owns `rules/detect/`), and the `report` IR draft from `hunt.finding` (W10).
 
 **2. Step scan.** Each step names its test, signature, command and expected output. Test comments describing fixtures stand for the code the implementer writes from the named helper; helpers are created in Task 1 or in the task that first uses them.
 
 **3. Type consistency.** `Artifact`, `Collection` (Task 1) are used unchanged in Tasks 27 to 34; `VerdictEvent` fields in Tasks 6, 7, 18, 19 match the Task 1 struct; `ADBackend` additions of Task 41 and 45 are the only changes to the interface and Task 43 adds `WinEnv.RSoP`, Task 44 `WinEnv.SvcSecurity`, Task 22 `WinEnv.Tasks` and `WinEnv.WMI`; `plans.Parse` and `ResolveLabels` (Task 37) are what Tasks 36, 39 and 40 call; `Remediation` (Task 35) takes `*manifest.Manifest` in the tests' `testManifest()` helper.
 
-**4. Review Focus.** Items 1 to 5 map to `TestLedgerAbsentThenAppears` (8), `TestSSHSigRejectsMalformed` (5), `TestNoBaselineDegradesNotDiffs` (34), `TestModuleBlockBuiltInFailsVerify` (24), `TestRemediationRefusedForScoredUnit` (35) and `TestGPOUnlinkRefusesScoredDependency` (43).
+**4. Review Focus.** Items 1 to 5 map to `TestLedgerAbsentThenAppears` (8), `TestSSHSigRejectsMalformed` (5), `TestNoBaselineDegradesNotDiffs` (34), `TestAFAlgProbeFailsWhenSocketOpens` (24), `TestRemediationRefusedForScoredUnit` (35) and `TestGPOUnlinkRefusesScoredDependency` (43).
 
 **5. Proportion.** The design's four sections run about 700 lines; this plan is longer because it holds 48 tasks with tests. No task transcribes a function body.
