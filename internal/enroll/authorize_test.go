@@ -244,3 +244,58 @@ func TestRevokeThenReenroll(t *testing.T) {
 		t.Fatalf("archived count = %d, %v; want 5, nil", c, err)
 	}
 }
+
+func TestAnnounceRetriesAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	evs := &eventRecorder{}
+	fail := true
+	f := newEnrollerWith(t, func(o *Options) {
+		o.Emit = func(ctx context.Context, e event.Event) (event.Event, error) {
+			if fail {
+				return event.Event{}, errors.New("emit down")
+			}
+			return evs.emit(ctx, e)
+		}
+	})
+	tok, err := f.e.MintToken("h1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := link.Pin{9}
+	res, err := authorize(t, f, "h1", tok, pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Enrolled {
+		t.Fatalf("Result = %+v, want Enrolled", res)
+	}
+	if err := f.e.Announce(ctx, "h1", pin, res); err == nil {
+		t.Fatal("Announce succeeded while Emit was failing")
+	}
+	if got := evs.kinds(); len(got) != 0 {
+		t.Fatalf("emitted while failing: %v", got)
+	}
+
+	// The token is gone and the key is enrolled, so the next hello is not a
+	// new enrollment; the pending agent.enrolled must still be emitted.
+	res2, err := authorize(t, f, "h1", "", pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Enrolled || res2.Reenrolled {
+		t.Fatalf("reconnect Result = %+v, want zero", res2)
+	}
+	fail = false
+	if err := f.e.Announce(ctx, "h1", pin, res2); err != nil {
+		t.Fatal(err)
+	}
+	if got := evs.kinds(); len(got) != 1 || got[0] != "agent.enrolled" {
+		t.Fatalf("emitted %v after the retry, want one agent.enrolled", got)
+	}
+	if err := f.e.Announce(ctx, "h1", pin, res2); err != nil {
+		t.Fatal(err)
+	}
+	if got := evs.kinds(); len(got) != 1 {
+		t.Fatalf("agent.enrolled was emitted again: %v", got)
+	}
+}

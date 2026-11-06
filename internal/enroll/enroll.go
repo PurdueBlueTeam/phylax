@@ -46,6 +46,15 @@ type Enroller struct {
 
 	failMu sync.Mutex
 	fails  map[string][]time.Time
+
+	pending map[string]pendingAnnounce
+}
+
+// pendingAnnounce is an enrollment event that could not be emitted yet. A
+// later successful hello of the same host retries it.
+type pendingAnnounce struct {
+	pin link.Pin
+	res Result
 }
 
 // New opens the token and revocation files under o.DataDir.
@@ -66,7 +75,8 @@ func New(o Options) (*Enroller, error) {
 		return nil, err
 	}
 	e := &Enroller{opt: o, tokens: tokens, revoked: revoked,
-		releases: map[string]*releaseFile{}, fails: map[string][]time.Time{}}
+		releases: map[string]*releaseFile{}, fails: map[string][]time.Time{},
+		pending: map[string]pendingAnnounce{}}
 	// Hash the release files now; release() refreshes them when they move.
 	_, _, _ = e.release(OSLinux)
 	_, _, _ = e.release(OSWindows)
@@ -136,6 +146,7 @@ func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (
 		if err := e.revoked.set(h.Host, false); err != nil {
 			return Result{}, err
 		}
+		e.pending[h.Host] = pendingAnnounce{pin: pin, res: res}
 		return res, nil
 	}
 
@@ -161,7 +172,9 @@ func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (
 	if err := e.opt.Store.EnrollAgent(ctx, h.Host, pin[:]); err != nil {
 		return Result{}, err
 	}
-	return Result{Enrolled: true}, nil
+	res := Result{Enrolled: true}
+	e.pending[h.Host] = pendingAnnounce{pin: pin, res: res}
+	return res, nil
 }
 
 // keyReuse refuses a key already enrolled as another host.
@@ -179,7 +192,13 @@ func (e *Enroller) keyReuse(ctx context.Context, host string, pin link.Pin) erro
 }
 
 // Announce emits agent.enrolled or agent.reenrolled through Options.Emit.
+// A result of zero retries an event an earlier Announce could not emit.
 func (e *Enroller) Announce(ctx context.Context, host string, pin link.Pin, r Result) error {
+	e.mu.Lock()
+	if p, ok := e.pending[host]; ok && !r.Enrolled && !r.Reenrolled {
+		pin, r = p.pin, p.res
+	}
+	e.mu.Unlock()
 	var ev event.Event
 	var err error
 	switch {
@@ -196,8 +215,15 @@ func (e *Enroller) Announce(ctx context.Context, host string, pin link.Pin, r Re
 	if e.opt.Emit == nil {
 		return errors.New("enroll: announce needs Options.Emit")
 	}
-	_, err = e.opt.Emit(ctx, ev)
-	return err
+	if _, err := e.opt.Emit(ctx, ev); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if p, ok := e.pending[host]; ok && p.pin == pin && p.res == r {
+		delete(e.pending, host)
+	}
+	e.mu.Unlock()
+	return nil
 }
 
 // Revoke makes host's current key unusable until a new token replaces it.
