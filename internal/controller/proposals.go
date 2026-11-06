@@ -139,20 +139,3 @@ func (c *Controller) proposeFallback(ctx context.Context, mod, template string, 
 	}
 	return "", fmt.Errorf("%w: %s", module.ErrProposed, reason)
 }
-
-// approveNow approves a plan the controller starts itself (auto_readonly,
-// standing, auto, or an accepted proposal) without a separate dry-run click.
-func (c *Controller) approveNow(ctx context.Context, id, by string) error {
-	rt, err := c.plan(id)
-	if err != nil {
-		return err
-	}
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	if rt.state != PlanDraft {
-		return ErrPlanState
-	}
-	rt.run.ApprovePlan(by, c.now())
-	rt.state = PlanApproved
-	return rt.persistLocked(ctx)
-}

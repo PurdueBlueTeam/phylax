@@ -181,7 +181,7 @@ func (h *moduleHost) Propose(p module.Proposal) error {
 	return err
 }
 func (h *moduleHost) RunReadOnly(template string, params map[string]string) (string, error) {
-	panic("unimplemented: W1 Task 23")
+	return h.c.RunReadOnly(context.Background(), h.name, template, params)
 }
 func (h *moduleHost) RunStanding(approvalID, template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 24")
