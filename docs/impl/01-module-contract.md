@@ -3961,7 +3961,7 @@ func TestAgentChecks4to6Pass(t *testing.T) {
 
 **Interfaces:**
 - Consumes: Tasks 34 and 35; `plan.BlockFor`; `controller.New`, `RunModules`, `ModuleHealth` (Task 19), `hostFor` through `RunModules`; `module.Configurable`, `module.AnalyzerProvider`.
-- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 10: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON) and `tables_replay` (check 10, R10: for a module with `Manifest().Tables`, run it over `c.Seed` plus `c.Commands` (the module's own command events, committed through `Host.Emit` like the operator would), dump its `<module>_*` tables, drop and re-create them, replay the module's committed events and its content files through the writer, and compare: the rebuilt rows must equal the dump; a module whose table holds data no event carries fails with the table and column named). `ControllerCase` gains `Commands []event.Event`.
+- Produces agent subtests `reconfig` (check 7: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 8: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 10: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON) and `tables_replay` (check 10, R10: for a module with `Manifest().Tables`, run it over `c.Seed` plus `c.Commands` (the module's own command events, committed through `Host.Emit` like the operator would), dump its `<module>_*` tables, drop and re-create them, replay the module's committed events and its content files through the writer, and compare: the rebuilt rows must equal the dump; a module whose table holds data no event carries fails with the table and column named). `ControllerCase` gains `Commands []event.Event`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3978,7 +3978,7 @@ func TestAgentCheck9CatchesLooseBlock(t *testing.T) {
 		t.Fatal("unknown field accepted")
 	}
 }
-func TestControllerCheck11CatchesNondeterminism(t *testing.T) {
+func TestControllerCheck10CatchesNondeterminism(t *testing.T) {
 	c := ControllerCase{Module: randomAnalyserModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
 	if errs := runControllerChecks(c); errs["analysers"] == nil {
 		t.Fatal("nondeterministic analyser not detected")
@@ -3991,14 +3991,14 @@ func TestControllerCheck9CatchesLooseConfig(t *testing.T) {
 		t.Fatal("unknown key accepted")
 	}
 }
-func TestControllerCheck11CatchesUnreplayableTable(t *testing.T) {
+func TestControllerCheck10CatchesUnreplayableTable(t *testing.T) {
 	// a module whose writer also inserts a row from a UI handler without emitting an event (table ctltest_notes)
 	c := ControllerCase{Module: sideWriterModule(), Config: "enabled: true\n", Now: time.Unix(1e9, 0)}
 	if errs := runControllerChecks(c); errs["tables_replay"] == nil || !strings.Contains(errs["tables_replay"].Error(), "ctltest_notes") {
 		t.Fatal("table that cannot be rebuilt from events not detected")
 	}
 }
-func TestControllerCheck11PassesCommandEvents(t *testing.T) {
+func TestControllerCheck10PassesCommandEvents(t *testing.T) {
 	// the same table written only from a command event kind ctltest.note (in Emits, passed in ControllerCase.Commands) rebuilds identically
 }
 func TestControllerChecksPass(t *testing.T) {
@@ -4006,7 +4006,7 @@ func TestControllerChecksPass(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check8|Check9|Check11|ControllerChecks|Replay' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check7|Check8|Check10|ControllerChecks|Replay' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified. The controller harness is a real `controller.New` in `t.TempDir()` with `AgentListen: "127.0.0.1:0"`, `UIListen: "off"` and a manifest directory holding a minimal topology, one host and `modules/<name>.yml`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "conformance: reconfiguration, strict blocks, controller checks, analyser determinism"`
@@ -4201,7 +4201,7 @@ func TestHealthPageModuleTable(t *testing.T) {
 
 **Interfaces:**
 - Consumes: the conformance package (Tasks 34 to 37).
-- Produces: `TestKindCounts` (M1): the three numbers in the Event kinds prose of `phylax_design.md` ("There are N kinds: 8 common kinds, C core kinds and M module kinds") equal the counts computed from the table, and the test names in the T46 row ("All twelve checks") equal the conformance suite's check list length; a drift fails CI. `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v4` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
+- Produces: `TestKindCounts` (M1): the three numbers in the Event kinds prose of `phylax_design.md` ("There are N kinds: 8 common kinds, C core kinds and M module kinds") equal the counts computed from the table, and the test names in the T46 row ("All eleven checks") equal the conformance suite's check list length; a drift fails CI. `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v4` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
 
 - [ ] **Step 1: Remove the skip:**
 
