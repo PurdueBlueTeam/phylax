@@ -12,6 +12,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/decoys"
 	"github.com/PurdueBlueTeam/phylax/internal/decoys/sandbox"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
@@ -89,7 +90,7 @@ func init() {
 			return "v1", c.Modules.Detect != nil
 		},
 		Build: func(env agent.Env, _ *plan.AgentConfig) (agent.ModuleSpec, error) {
-			return spec(&honeytokens.AKIAScanner{Subscribe: env.Subscribe}, 20, 50), nil
+			return spec(&honeytokens.AKIAScanner{Subscribe: func(buf int) (<-chan event.Event, func()) { return env.Subscribe(buf) }}, 20, 50), nil
 		},
 	})
 }

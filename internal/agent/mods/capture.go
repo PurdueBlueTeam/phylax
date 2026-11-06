@@ -17,6 +17,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/capture"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -114,7 +115,7 @@ func buildCapture(env agent.Env, c *plan.AgentConfig) (agent.ModuleSpec, error) 
 		DiskBudget:   int64(lc.DiskBudgetMB) << 20,
 		FreezeBefore: time.Duration(lc.FreezeBeforeS) * time.Second, FreezeAfter: time.Duration(lc.FreezeAfterS) * time.Second,
 		ScanTargets: lc.ScanThreshold, ScanWindow: time.Duration(lc.ScanWindowS) * time.Second,
-		Subscribe: env.Subscribe, Logger: env.Logger,
+		Subscribe: func(buf int) (<-chan event.Event, func()) { return env.Subscribe(buf) }, Logger: env.Logger,
 	}
 	slices.Sort(cfg.ScoredPorts)
 	cfg.ScoredPorts = slices.Compact(cfg.ScoredPorts)
