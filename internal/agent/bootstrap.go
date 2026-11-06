@@ -32,6 +32,9 @@ type Bundle struct {
 	Host string `json:"host"`
 	// Token is the one-time enrollment token; removed after enrollment.
 	Token string `json:"token,omitempty"`
+	// Safe starts the agent in safe mode (act actions are refused until an
+	// operator clears the marker).
+	Safe bool `json:"safe,omitempty"`
 	// Roles are the initial role switches from the manifest.
 	Roles []string `json:"roles,omitempty"`
 	// PlanKey is the controller's Ed25519 plan-signing public key (64 hex).
