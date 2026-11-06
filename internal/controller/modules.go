@@ -219,10 +219,6 @@ func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by s
 	panic("unimplemented: W1 Task 28")
 }
 
-func (c *Controller) SendFact(ctx context.Context, mod string, m module.ControlMsg) error {
-	panic("unimplemented: W1 Task 30")
-}
-
 // noteAutoRollback feeds the auto circuit breaker.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
 	panic("unimplemented: W1 Task 28")

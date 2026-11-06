@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -189,7 +190,11 @@ func (h *moduleHost) RunStanding(approvalID, template string, params map[string]
 func (h *moduleHost) RunAuto(template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 26")
 }
-func (h *moduleHost) Control(m module.ControlMsg) error { panic("unimplemented: W1 Task 30") }
+func (h *moduleHost) Control(m module.ControlMsg) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return h.c.SendFact(ctx, h.name, m)
+}
 
 func (h *moduleHost) Secrets(names ...string) (vault.Reader, error) {
 	if h.c.opt.Vault == nil {

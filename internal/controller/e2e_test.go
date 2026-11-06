@@ -22,6 +22,7 @@ import (
 type ctl struct {
 	t    *testing.T
 	cfg  Config
+	opt  Options
 	addr string
 	c    *Controller
 	stop context.CancelFunc
@@ -39,7 +40,9 @@ func freeAddr(t *testing.T) string {
 
 func (x *ctl) start() {
 	x.t.Helper()
-	c, err := New(context.Background(), x.cfg, Options{HostKnown: func(h string) bool { return h != "ghost" }})
+	opt := x.opt
+	opt.HostKnown = func(h string) bool { return h != "ghost" }
+	c, err := New(context.Background(), x.cfg, opt)
 	if err != nil {
 		x.t.Fatal(err)
 	}
@@ -75,11 +78,16 @@ func (x *ctl) shutdown() {
 }
 
 func newCtl(t *testing.T) *ctl {
-	cfg := Config{AgentListen: "127.0.0.1:0", DataDir: filepath.Join(t.TempDir(), "data"), SilenceThreshold: Duration(300 * time.Millisecond)}
+	return newCtlWith(t, Config{AgentListen: "127.0.0.1:0", DataDir: filepath.Join(t.TempDir(), "data"), SilenceThreshold: Duration(300 * time.Millisecond)}, Options{})
+}
+
+// newCtlWith starts a controller with the given config and options on a free
+// loopback address.
+func newCtlWith(t *testing.T, cfg Config, opt Options) *ctl {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	x := &ctl{t: t, cfg: cfg, addr: freeAddr(t)}
+	x := &ctl{t: t, cfg: cfg, opt: opt, addr: freeAddr(t)}
 	x.start()
 	t.Cleanup(func() {
 		select {
@@ -158,7 +166,7 @@ func (a *agent) once(ctx context.Context) {
 	if a.welcomed.Load() {
 		tok = ""
 	}
-	sess.Send(rctx, link.PrioCritical, &link.Hello{Proto: 1, Host: a.host, Version: "test", LastSeq: head, Token: tok})
+	sess.Send(rctx, link.PrioCritical, &link.Hello{Proto: 1, Minor: link.ProtoMinor, Host: a.host, Version: "test", LastSeq: head, Token: tok})
 	up := &link.Uplink{Session: sess, Source: spoolSource{a.sp}, Poll: 10 * time.Millisecond}
 	go up.Run(rctx)
 	go func() {
