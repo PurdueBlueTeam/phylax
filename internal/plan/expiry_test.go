@@ -3,7 +3,6 @@ package plan
 import "testing"
 
 func TestNodeExpiresAfterValidates(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22a")
 	ok := Node{ID: "a", Action: "file.write", Target: "h1", ExpiresAfterSec: 1800}
 	if err := validateNode(ok); err != nil {
 		t.Fatal(err)
@@ -21,7 +20,6 @@ func TestNodeExpiresAfterValidates(t *testing.T) {
 }
 
 func TestStepSignatureCoversExpiry(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22a")
 	f := newFixture(t)
 	s := f.issue(t, "fw_shadow", IssueOpts{})
 	if s.ExpiresAfterSec != 1800 {

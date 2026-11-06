@@ -147,6 +147,14 @@ func (c *Controller) signer(ctx context.Context) (*plan.Signer, error) {
 func (c *Controller) CreatePlan(ctx context.Context, def plan.Plan, by string) error {
 	p := def
 	p.Nodes = append([]plan.Node(nil), def.Nodes...)
+	for _, n := range p.Nodes {
+		if n.ExpiresAfterSec <= 0 || n.Gate {
+			continue
+		}
+		if a, err := c.reg.Get(n.Action); err == nil && a.Spec().OnController() {
+			return fmt.Errorf("plan %s node %s: expires_after: controller-side action", p.ID, n.ID)
+		}
+	}
 	if p.OnFailure == plan.RollbackPlan {
 		for i, n := range p.Nodes {
 			if n.Gate || n.DeadmanSec != 0 {
@@ -978,6 +986,9 @@ func (rt *planRT) confirmLocked(id string) {
 	}
 	if plan.EffectiveDeadmanSec(n, rt.run.Risk(id)) <= 0 {
 		return
+	}
+	if n.ExpiresAfterSec > 0 {
+		return // the expiry itself is the undo: the controller never confirms it
 	}
 	args, _ := json.Marshal(map[string]string{"plan": rt.p.ID, "node": id})
 	ag := rt.c.sessionFor(n.Target)

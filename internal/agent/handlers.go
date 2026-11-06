@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -131,11 +132,37 @@ func (a *Agent) stepStatus(ctx context.Context, c *plan.Control, reply Reply) er
 		Seq: q.Seq, Phase: q.Phase, Status: status})
 }
 
-// onDeadmanResult reports every in-process dead-man timer fire to the controller.
+// onDeadmanResult reports every in-process dead-man timer fire to the
+// controller. An entry that was armed by an expires_after node is reported as
+// its expiry (design: Expiry): an agent.step_result with phase expire and the
+// node and plan ids from the entry.
 func (a *Agent) onDeadmanResult(e deadman.Entry, err error) {
 	f := event.AgentDeadmanFired{ID: e.ID, Node: e.NodeID, State: string(e.State)}
 	if err != nil {
 		f.Error = err.Error()
 	}
 	a.emit(core("agent.deadman_fired", f))
+	planID, node, ok := splitNodeKey(e.NodeID)
+	if !ok {
+		return
+	}
+	outcome := plan.OutcomeRolledBack
+	if err != nil {
+		outcome = plan.OutcomeFailed
+	}
+	ef := event.AgentStepResult{Plan: planID, Node: node, Phase: plan.PhaseExpire, Outcome: outcome}
+	if err != nil {
+		ef.Error = err.Error()
+	}
+	a.emit(core("agent.step_result", ef))
+}
+
+// splitNodeKey splits the dead-man entry's "<plan>:<node>" key. Plan ids may
+// contain ':', node ids may not, so the last colon separates them.
+func splitNodeKey(key string) (planID, node string, ok bool) {
+	i := strings.LastIndex(key, ":")
+	if i <= 0 || i == len(key)-1 {
+		return "", "", false
+	}
+	return key[:i], key[i+1:], true
 }

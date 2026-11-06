@@ -33,6 +33,9 @@ const (
 	PhaseApply    = "apply"
 	PhaseVerify   = "verify"
 	PhaseRollback = "rollback"
+	// PhaseExpire reports a time-boxed node whose change ended at its
+	// expires_after deadline (design: Execution engine, Expiry).
+	PhaseExpire = "expire"
 )
 
 // Rollback policies.

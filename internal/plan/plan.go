@@ -204,6 +204,9 @@ func (p *Plan) resolve(cat Catalog) (*resolved, error) {
 		if n.DeadmanSec < 0 {
 			add("node %q: negative deadman", n.ID)
 		}
+		if err := validateNode(n); err != nil {
+			add("%v", err)
+		}
 		if n.Gate {
 			if n.Action != "" || n.Target != "" || len(n.Params) > 0 {
 				add("node %q: gate must not have action, target or params", n.ID)

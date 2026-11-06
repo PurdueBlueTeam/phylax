@@ -119,6 +119,9 @@ func ParseTemplate(raw []byte) (plan.Plan, error) {
 	if err := dec.Decode(&generic); err != nil {
 		return p, fmt.Errorf("yaml: %w", err)
 	}
+	if err := translateNodeKeys(generic); err != nil {
+		return p, err
+	}
 	js, err := json.Marshal(generic) // yaml.v3 maps have string keys
 	if err != nil {
 		return p, fmt.Errorf("yaml: %w", err)
@@ -151,6 +154,58 @@ func PlanIDFor(p plan.Plan, template, chosen string, now time.Time) string {
 		id = id[len(id)-64:]
 	}
 	return id
+}
+
+// translateNodeKeys is the one place YAML sugar at node level becomes the JSON
+// keys of plan.Node: `expires_after: 30m` becomes `expires_after_sec: 1800`.
+// Every later option spelled as sugar (gate: auto, window:, txn:) is added here.
+func translateNodeKeys(doc any) error {
+	top, ok := doc.(map[string]any)
+	if !ok {
+		return nil
+	}
+	raw, ok := top["nodes"]
+	if !ok {
+		return nil
+	}
+	nodes, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("template: nodes must be a list")
+	}
+	for i, item := range nodes {
+		n, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("template: node %d must be a mapping", i)
+		}
+		if err := translateExpiresAfter(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func translateExpiresAfter(n map[string]any) error {
+	raw, ok := n["expires_after"]
+	if !ok {
+		return nil
+	}
+	if _, dup := n["expires_after_sec"]; dup {
+		return fmt.Errorf("template: node %v sets both expires_after and expires_after_sec", n["id"])
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("template: node %v: expires_after must be a duration like 30m", n["id"])
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("template: node %v: expires_after: %w", n["id"], err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("template: node %v: expires_after must be positive", n["id"])
+	}
+	delete(n, "expires_after")
+	n["expires_after_sec"] = int(d.Seconds())
+	return nil
 }
 
 var moduleNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)

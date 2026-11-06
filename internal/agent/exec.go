@@ -41,6 +41,10 @@ const DryRunApprover = "dry-run"
 
 const maxUnsent = 64
 
+// expireUnit scales a step's ExpiresAfterSec into wall time. Tests shrink it so
+// a 60-second expiry does not take a minute.
+var expireUnit = time.Second
+
 type execState struct {
 	env   *actions.Env
 	ver   *plan.Verifier
@@ -196,19 +200,38 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 		}
 		a.finishStep(ctx, reply, s, plan.OutcomeChecked, "", planDetail(out))
 	case plan.PhaseApply:
+		expiry := s.ExpiresAfterSec > 0
 		switch {
+		case expiry:
+			req.Deadman = time.Duration(s.ExpiresAfterSec) * expireUnit
 		case s.DeadmanSec > 0:
 			req.Deadman = time.Duration(s.DeadmanSec) * time.Second
 		case s.RollbackPolicy == plan.RollbackNone:
 			req.Deadman = actions.NoDeadman
 		}
 		out, err := x.env.Execute(ctx, req)
+		if expiry && out.DeadmanID == "" {
+			// A time-boxed node without undo data cannot expire: nothing may
+			// remain applied (the action either was read-only or had no undo).
+			msg := "expires_after: action has no undo"
+			if err != nil && !errors.Is(err, actions.ErrNotReversible) {
+				msg = err.Error() + "; " + msg
+			}
+			a.finishStep(ctx, reply, s, plan.OutcomeFailed, msg, planDetail(out))
+			return
+		}
 		if err != nil {
 			// Execute already fired any armed rollback before returning.
 			a.finishStep(ctx, reply, s, plan.OutcomeFailed, err.Error(), planDetail(out))
 			return
 		}
-		if out.DeadmanID != "" && x.fresh {
+		if expiry {
+			a.replaceExpiry(ctx, s, out.DeadmanID)
+		}
+		// A time-boxed change is undone by its own deadline, so the
+		// fresh-connection check (which exists to confirm a pending change) is
+		// skipped for it.
+		if out.DeadmanID != "" && x.fresh && !expiry {
 			if ferr := a.freshConn(ctx); ferr != nil {
 				msg := "fresh connection to the controller failed: " + ferr.Error()
 				if rerr := x.env.Rollback(context.WithoutCancel(ctx), out.DeadmanID); rerr != nil {
@@ -255,6 +278,26 @@ func (x *execState) registry() *actions.Registry {
 		x.env.Registry = actions.Core()
 	}
 	return x.env.Registry
+}
+
+// replaceExpiry drops the node's earlier armed records after a new apply: a
+// later apply of the same node extends the expiry (design: Expiry). The old
+// record's undo data is stale, the new record carries the same change.
+func (a *Agent) replaceExpiry(ctx context.Context, s *plan.Step, keep string) {
+	entries, err := a.dm.List()
+	if err != nil {
+		a.log.Warn("expiry: list armed records", "err", err)
+		return
+	}
+	key := nodeKey(s.PlanID, s.NodeID)
+	for _, e := range entries {
+		if e.NodeID != key || e.ID == keep || e.State != deadman.StateArmed {
+			continue
+		}
+		if _, err := a.dm.Cancel(ctx, e.ID); err != nil && !errors.Is(err, deadman.ErrAlreadyFired) {
+			a.log.Warn("expiry: cancel superseded record", "id", e.ID, "err", err)
+		}
+	}
 }
 
 // rollbackNode fires the node's pending dead-man entries now. A node whose
