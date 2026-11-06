@@ -242,4 +242,20 @@ CREATE TABLE proposals (
 );
 CREATE INDEX proposals_state_created ON proposals(state, created_ns);
 `,
+	// 8: standing approvals (W1 Task 24): an operator's one-time approval of a
+	// module template, target labels and action list, until it expires.
+	`
+CREATE TABLE standing_approvals (
+  id         TEXT PRIMARY KEY,
+  module     TEXT NOT NULL,
+  template   TEXT NOT NULL,
+  targets    TEXT NOT NULL,
+  actions    TEXT NOT NULL,             -- JSON array of action names
+  expires_ns INTEGER NOT NULL,
+  approver   TEXT NOT NULL,
+  created    TEXT NOT NULL,             -- operator login
+  revoked    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX standing_expires ON standing_approvals(expires_ns);
+`,
 }

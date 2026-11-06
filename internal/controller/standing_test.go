@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,6 @@ func sa() plan.StandingApproval {
 }
 
 func TestCreateStandingValidates(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 24")
 	c := newStandingController(t)
 	for i, f := range []func(*plan.StandingApproval){
 		func(s *plan.StandingApproval) { s.Expires = time.Time{} },
@@ -36,18 +36,25 @@ func TestCreateStandingValidates(t *testing.T) {
 }
 
 func TestRunStandingInScope(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 24")
 	c := newStandingController(t)
 	_ = c.CreateStanding(ctx, sa())
 	id, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"})
 	if err != nil || id == "" {
 		t.Fatalf("%q %v", id, err)
 	}
-	// want: stored plan Class standing, Approver "Captain (standing s1)"
+	d, err := c.PlanDetail(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Plan.Class != plan.ClassStanding || d.Plan.Approver != "Captain (standing s1)" {
+		t.Fatalf("plan %+v", d)
+	}
+	if n := d.Nodes["a"]; n.Approval == nil {
+		t.Fatalf("node was not approved: %+v", n)
+	}
 }
 
 func TestRunStandingOutOfScopeProposes(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 24")
 	c := newStandingController(t)
 	s := sa()
 	s.Targets = "windows"
@@ -62,6 +69,18 @@ func TestRunStandingOutOfScopeProposes(t *testing.T) {
 }
 
 func TestRunStandingExpired(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 24")
-	// insert s with Expires one second ahead via CreateStanding, wait until past, RunStanding -> ErrProposed
+	c := newStandingController(t)
+	s := sa()
+	s.Expires = time.Now().Add(time.Second)
+	if err := c.CreateStanding(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	if _, err := c.RunStanding(ctx, "ctltest", "s1", "dump", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
+		t.Fatalf("got %v", err)
+	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil || len(open) != 1 || !strings.Contains(open[0].Reason, "expired") {
+		t.Fatalf("open %+v %v", open, err)
+	}
 }

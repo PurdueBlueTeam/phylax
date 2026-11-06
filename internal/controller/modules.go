@@ -10,7 +10,6 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
-	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
 // moduleRunState is one controller module's runner state.
@@ -210,18 +209,6 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 		out[name] = h
 	}
 	return out
-}
-
-func (c *Controller) CreateStanding(ctx context.Context, sa plan.StandingApproval) error {
-	panic("unimplemented: W1 Task 24")
-}
-
-func (c *Controller) RevokeStanding(ctx context.Context, id, by string) error {
-	panic("unimplemented: W1 Task 24")
-}
-
-func (c *Controller) RunStanding(ctx context.Context, mod, approvalID, template string, params map[string]string) (string, error) {
-	panic("unimplemented: W1 Task 24")
 }
 
 func (c *Controller) RunAuto(ctx context.Context, mod, template string, params map[string]string) (string, error) {

@@ -184,7 +184,7 @@ func (h *moduleHost) RunReadOnly(template string, params map[string]string) (str
 	return h.c.RunReadOnly(context.Background(), h.name, template, params)
 }
 func (h *moduleHost) RunStanding(approvalID, template string, params map[string]string) (string, error) {
-	panic("unimplemented: W1 Task 24")
+	return h.c.RunStanding(context.Background(), h.name, approvalID, template, params)
 }
 func (h *moduleHost) RunAuto(template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 26")

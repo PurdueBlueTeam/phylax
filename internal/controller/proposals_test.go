@@ -45,7 +45,6 @@ func TestProposeRejectsBrokenTemplate(t *testing.T) {
 }
 
 func TestRunStandingFallbackRecordsProposal(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 25")
 	c := newStandingController(t)
 	s := sa()
 	s.Targets = "windows"
