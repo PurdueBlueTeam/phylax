@@ -71,3 +71,15 @@ code from the `main` or `qwen-wip` branches; their review is in ccdc-private
 - This dev VM and most containers mount `/proc` with `noexec`, so a memfd
   cannot be executed through `/proc/self/fd`; the depot falls back to a private
   0500 copy of the verified bytes. Keep that fallback (`internal/depot/exec_*.go`).
+- The controller's own events are a hash chain under store agent `controller`
+  (`internal/controller/chain.go`, keyed by the controller identity). It is not
+  a host: `controller.New` skips it when it loads known agents into the live
+  agent states, or the silence watcher would report the controller silent and
+  the agents page would list it. Emit through `EmitController`, never by
+  building an `event.Event` and calling `Ingest` (the head read and the ingest
+  are one critical section).
+- A module's tables go through `store.ModuleDB(name)`: migrations are numbered
+  per module and statements may only touch `<name>_*` tables. The ownership
+  check is a regexp over the statement text (a shortcut for a SQLite
+  authorizer), so quoted table names are refused and `ON CONFLICT ... DO UPDATE`
+  is skipped rather than mistaken for an `UPDATE` on `SET`.
