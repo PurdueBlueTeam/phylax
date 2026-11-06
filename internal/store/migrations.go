@@ -209,4 +209,11 @@ CREATE INDEX ui_audit_actor ON ui_audit(actor, id);
 CREATE INDEX ui_audit_action ON ui_audit(action, id);
 CREATE INDEX alerts_source ON alerts(agent, seq);
 `,
+	// 5: envelope schema and tag (W1 Task 2). Events sealed before this
+	// migration carry schema 0 and an empty tag, which their canonical
+	// encoding omits, so their hashes still verify.
+	`
+ALTER TABLE events ADD COLUMN schema INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN tag TEXT NOT NULL DEFAULT '';
+`,
 }

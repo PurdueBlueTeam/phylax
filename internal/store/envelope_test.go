@@ -9,7 +9,6 @@ import (
 )
 
 func TestStoreRoundTripsSchemaAndTag(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 2")
 	st, _ := open(t)
 	ctx := context.Background()
 	enroll(t, st, "h1")

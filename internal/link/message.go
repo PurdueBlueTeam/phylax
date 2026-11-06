@@ -20,10 +20,11 @@ const ProtoVersion = 1
 
 // ProtoMinor is the minor revision within ProtoVersion. Minor 1 introduced the
 // typed signed envelopes of step, step_result and control (docs/protocol.md,
-// "Versioning"). Peers announce theirs in hello/welcome; a controller sends
-// steps and controls only to agents that announce at least MinSignedMinor.
+// "Versioning"); minor 2 added schema and tag to the event envelope. Peers
+// announce theirs in hello/welcome; a controller sends steps and controls only
+// to agents that announce at least MinSignedMinor.
 const (
-	ProtoMinor     = 1
+	ProtoMinor     = 2
 	MinSignedMinor = 1
 )
 

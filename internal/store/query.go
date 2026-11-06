@@ -25,14 +25,14 @@ type Query struct {
 	Fields map[string]string
 }
 
-const eventCols = `agent, seq, time_ns, kind, prio, fields, prev, hash`
+const eventCols = `agent, seq, time_ns, kind, schema, prio, tag, fields, prev, hash`
 
 func scanEvent(r scanner) (event.Event, error) {
 	var e event.Event
 	var ns int64
 	var prio int
 	var fields string
-	if err := r.Scan(&e.Agent, &e.Seq, &ns, &e.Kind, &prio, &fields, &e.PrevHash, &e.Hash); err != nil {
+	if err := r.Scan(&e.Agent, &e.Seq, &ns, &e.Kind, &e.Schema, &prio, &e.Tag, &fields, &e.PrevHash, &e.Hash); err != nil {
 		return e, err
 	}
 	e.Time = time.Unix(0, ns).UTC()

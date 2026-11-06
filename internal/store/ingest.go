@@ -82,7 +82,7 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	ack := start
 	curSeq, curHash := a.LastSeq, a.LastHash
 
-	ins, err := tx.PrepareContext(ctx, `INSERT INTO events(agent, seq, time_ns, kind, prio, fields, prev, hash) VALUES (?,?,?,?,?,?,?,?)`)
+	ins, err := tx.PrepareContext(ctx, `INSERT INTO events(agent, seq, time_ns, kind, schema, prio, tag, fields, prev, hash) VALUES (?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return start, err
 	}
@@ -237,7 +237,7 @@ func insertEvent(ctx context.Context, st *sql.Stmt, ev *event.Event) error {
 	if err != nil {
 		return fmt.Errorf("store: encode fields: %w", err)
 	}
-	_, err = st.ExecContext(ctx, ev.Agent, ev.Seq, ev.Time.UnixNano(), ev.Kind, int(ev.Priority), string(fields), ev.PrevHash, ev.Hash)
+	_, err = st.ExecContext(ctx, ev.Agent, ev.Seq, ev.Time.UnixNano(), ev.Kind, ev.Schema, int(ev.Priority), ev.Tag, string(fields), ev.PrevHash, ev.Hash)
 	return err
 }
 
