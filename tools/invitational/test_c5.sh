@@ -27,17 +27,25 @@ pick_port() {
     printf '%s\n' "$p"
 }
 
-PORT=$(pick_port)
+# The server binds port 0 and prints the port it got: choosing a port first
+# and binding it afterwards races another process under load.
 mkdir -p "$T/site"
 head -c 1000 /dev/zero | tr '\0' 'x' > "$T/site/index.html"
-(cd "$T/site" && exec python3 -m http.server "$PORT" --bind 127.0.0.1) >"$T/server.log" 2>&1 &
+(cd "$T/site" && exec python3 -u -m http.server 0 --bind 127.0.0.1) >"$T/server.log" 2>&1 &
 py=$!
+PORT=
 i=0
-while [ "$i" -lt 50 ]; do
-    nc -z -w 1 127.0.0.1 "$PORT" >/dev/null 2>&1 && break
+while [ "$i" -lt 100 ]; do
+    PORT=$(sed -n 's/.* port \([0-9][0-9]*\) .*/\1/p' "$T/server.log" | head -n 1)
+    [ -n "$PORT" ] && break
     sleep 0.1
     i=$((i + 1))
 done
+if [ -z "$PORT" ]; then
+    t_fail c5_server "the test server printed no port: $(cat "$T/server.log")"
+    kill $py 2>/dev/null # inv:ro: stops only this test's own python server
+    return 0
+fi
 DEAD=$(pick_port)
 
 printf '127.0.0.1 %s web\n127.0.0.1 %s dead\n' "$PORT" "$DEAD" >"$T/targets"
