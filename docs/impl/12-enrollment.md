@@ -291,7 +291,7 @@ func TestBootstrapRoutes(t *testing.T)
 // unknown token and used token (Consume'd) -> 404 and identical bodies; POST /l/<tok> -> 405; a header block over 8 KiB -> connection closed with no 200.
 func TestBootstrapRateLimitPerRemote(t *testing.T) // 21 unknown-token GETs from one address inside a minute: the 21st is 429 and a valid token from the same address is also refused until the minute passes (Options.Now moved).
 func TestOneLinerShape(t *testing.T)
-// Linux line: ASCII only, no newline, contains "--pinnedpubkey sha256//" + base64 of identity.Pin and "https://10.0.0.5:7443/l/"+tok, length <= 130; Windows line: ASCII only, no newline, contains the SHA-1 thumbprint of identity.Cert.Certificate[0] in upper-case hex and "/w/"+tok, length <= 330. An unknown OS or empty ctl is an error.
+// Linux line: ASCII only, no newline, contains "--pinnedpubkey sha256//" + base64 of identity.Pin and "https://10.0.0.5:7443/l/"+tok, length == 136 (measured with a 14-character controller address and a 32-character token); Windows line: ASCII only, no newline, contains the SHA-1 thumbprint of identity.Cert.Certificate[0] in upper-case hex and "/w/"+tok, length == 294 (measured the same way). An unknown OS or empty ctl is an error.
 func TestOneLinerWrongPinSendsNothing(t *testing.T) // Review Focus 1. Skips if curl is missing.
 // run the real server above; hits := count of requests the handler sees (wrapped counter). Build the Linux line with the identity pin XOR-flipped in one byte.
 // exec "sh","-c",line with PATH containing the real curl: exit status of curl is 90 (or the pipeline's sh gets empty input and curl's status is 90 via `set -o pipefail`-free check: run curl directly with the same args), hits == 0.

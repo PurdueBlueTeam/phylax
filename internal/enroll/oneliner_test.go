@@ -44,10 +44,11 @@ func TestOneLinerShape(t *testing.T) {
 	if strings.ContainsAny(linux, "\r\n") || !isASCII(linux) {
 		t.Fatalf("Linux line is not one ASCII line: %q", linux)
 	}
-	// The plan's 130-byte bound is below the line's fixed minimum: the
-	// required flag, pin, URL and a 32-character token already total 136.
-	if len(linux) > 140 {
-		t.Fatalf("Linux line is %d bytes, want <= 140: %q", len(linux), linux)
+	// Measured with the real generator, a 14-byte controller address and a
+	// 32-character token.
+	const linuxLen = 136
+	if len(linux) != linuxLen {
+		t.Fatalf("Linux line is %d bytes, measured %d: %q", len(linux), linuxLen, linux)
 	}
 	if !strings.Contains(linux, "--pinnedpubkey "+f.id.Pin.Curl()) {
 		t.Fatalf("Linux line does not pin the identity key: %q", linux)
@@ -63,8 +64,10 @@ func TestOneLinerShape(t *testing.T) {
 	if strings.ContainsAny(win, "\r\n") || !isASCII(win) {
 		t.Fatalf("Windows line is not one ASCII line: %q", win)
 	}
-	if len(win) > 330 {
-		t.Fatalf("Windows line is %d bytes, want <= 330: %q", len(win), win)
+	// Measured with the same address and token.
+	const windowsLen = 294
+	if len(win) != windowsLen {
+		t.Fatalf("Windows line is %d bytes, measured %d: %q", len(win), windowsLen, win)
 	}
 	sum := sha1.Sum(f.id.Cert.Certificate[0])
 	thumb := strings.ToUpper(hex.EncodeToString(sum[:]))
