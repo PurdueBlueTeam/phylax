@@ -137,6 +137,10 @@ type Controller struct {
 	// quota is the controller data disk's shed level (quota.go).
 	quota *store.Quota
 
+	// bs counts what the bench records: stored events per class, latency,
+	// gaps, connects and down time (benchstats.go).
+	bs benchStats
+
 	modMu   sync.Mutex
 	mods    map[string]*moduleRunState
 	runMu   sync.Mutex

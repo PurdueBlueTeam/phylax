@@ -37,6 +37,12 @@ type AgentStatus struct {
 	SafeMode      bool
 	Drops         uint64
 	Buffered      int
+	// Bench figures (bench.go): accepted hellos, the controller time of the
+	// last one, the head sequence of the last heartbeat and its RTT.
+	Connects    uint64
+	ConnectedAt time.Time
+	HeadSeq     uint64
+	RTT         time.Duration
 }
 
 type agentState struct {
@@ -50,6 +56,11 @@ type agentState struct {
 	lastSeen time.Time
 	silent   bool
 	hb       AgentStatus
+	// bench bookkeeping (bench.go): accepted hellos, when the last one was,
+	// and when the last session ended (0 while one is up).
+	connects    uint64
+	connectedAt time.Time
+	downAt      time.Time
 	// config push bookkeeping (agentconfig.go)
 	cfgSess   *agentConn
 	cfgSent   *link.Config
@@ -85,6 +96,7 @@ func (c *Controller) AgentStatus(host string) (AgentStatus, bool) {
 	defer s.mu.Unlock()
 	st := s.hb
 	st.Host, st.Connected, st.Acked, st.LastSeen, st.Silent, st.Buffered = host, s.sess != nil, s.acked, s.lastSeen, s.silent, len(s.buf)
+	st.Connects, st.ConnectedAt = s.connects, s.connectedAt
 	return st, true
 }
 
@@ -125,6 +137,7 @@ func (c *Controller) handleAgent(ctx context.Context, conn *link.Conn) {
 			st.sess = nil
 			st.buf = map[uint64]event.Event{}
 			st.gapFrom = map[uint64]uint64{}
+			st.downAt = c.now()
 		}
 		st.mu.Unlock()
 		c.log.Info("agent session ended", "host", st.host, "err", err)
@@ -215,7 +228,15 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	st.acked = ag.LastSeq
 	st.buf = map[uint64]event.Event{}
 	st.gapFrom = map[uint64]uint64{}
-	st.lastSeen = c.now()
+	now := c.now()
+	st.lastSeen = now
+	st.connects++
+	st.connectedAt = now
+	c.bs.connects.Add(1)
+	if !st.downAt.IsZero() {
+		c.bs.down.Observe(now.Sub(st.downAt))
+		st.downAt = time.Time{}
+	}
 	if st.silent {
 		st.silent = false
 		defer c.alert(h.Host, "agent.resumed", "agent reconnected")
@@ -256,6 +277,7 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	st.hb.SpoolDepth, st.hb.Congestion, st.hb.Modules = hb.SpoolDepth, hb.Congestion, hb.Modules
 	st.hb.Health = hb.Health
 	st.hb.SafeMode, st.hb.Drops = hb.SafeMode, hb.Drops
+	st.hb.HeadSeq, st.hb.RTT = hb.Seq, time.Duration(hb.RTTUs)*time.Microsecond
 	acked := st.acked
 	st.mu.Unlock()
 	a.sess.TrySend(link.PrioCritical, &link.Ack{Seq: acked, HB: hb.ID}) // keepalive and RTT echo; a full queue means a newer ack is coming
@@ -336,6 +358,17 @@ func (a *agentConn) drain(ctx context.Context) error {
 			}
 			st.acked = ack.Seq
 			progressed = true
+		}
+		now := c.now()
+		for _, e := range run {
+			if e.Seq > ack.Seq {
+				continue
+			}
+			if e.Kind == store.KindGap {
+				c.bs.gap(e)
+			} else {
+				c.bs.stored(e, now, st.hb.ClockSkew)
+			}
 		}
 		c.captureObserve(ctx, run, ack.Seq) // controller-scope rules over network events (capture_ingest.go)
 		if err != nil {
