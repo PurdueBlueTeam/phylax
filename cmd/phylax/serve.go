@@ -14,6 +14,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
 
@@ -112,6 +113,11 @@ func runServe(ctx context.Context, args []string) error {
 			}
 		}()
 	}
+	go func() {
+		if err := c.RunModules(ctx, module.Registered()); err != nil {
+			log.Error("controller module runner stopped", "err", err)
+		}
+	}()
 	log.Info("plan-signing public key (bootstrap plan_key)", "plan_key", hex.EncodeToString(c.PlanPublicKey()))
 	log.Info("controller key pin", "pin", c.Pin().String(), "curl", c.Pin().Curl())
 	if cfg.UIListen != "off" {
