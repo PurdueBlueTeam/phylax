@@ -24,7 +24,6 @@ hosts:
 }
 
 func TestLoadModuleBlocks(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 11")
 	fsys := minimalManifestFS()
 	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\nact_enabled: true\nauto: [harden]\nlevel: 3\n")}
 	fsys["modules/other.yml"] = &fstest.MapFile{Data: []byte("level: 1\n")}
@@ -40,9 +39,14 @@ func TestLoadModuleBlocks(t *testing.T) {
 		t.Fatal("absent enabled must be nil")
 	}
 	var cfg struct {
-		Level int `yaml:"level"`
+		// module.Common's fields; spelled out because internal/module imports
+		// this package (deviation 17), so the test cannot import it back.
+		Enabled    bool     `yaml:"enabled"`
+		ActEnabled bool     `yaml:"act_enabled"`
+		Auto       []string `yaml:"auto"`
+		Level      int      `yaml:"level"`
 	}
-	if err := b.Decode(&cfg); err != nil || cfg.Level != 3 {
+	if err := b.Decode(&cfg); err != nil || cfg.Level != 3 || !cfg.ActEnabled {
 		t.Fatalf("decode %+v %v", cfg, err)
 	}
 	var strict struct {
@@ -54,7 +58,6 @@ func TestLoadModuleBlocks(t *testing.T) {
 }
 
 func TestModuleBlockBadFileName(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 11")
 	fsys := minimalManifestFS()
 	fsys["modules/Demo.yaml"] = &fstest.MapFile{Data: []byte("{}")}
 	if _, err := Load(fsys, Options{}); err == nil {
@@ -63,7 +66,6 @@ func TestModuleBlockBadFileName(t *testing.T) {
 }
 
 func TestModuleEnabledPrecedence(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 11")
 	fsys := minimalManifestFS()
 	fsys["modules/demo.yml"] = &fstest.MapFile{Data: []byte("enabled: false\n")}
 	m, _ := Load(fsys, Options{})

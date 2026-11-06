@@ -147,6 +147,10 @@ func Load(fsys fs.FS, opts Options) (*Manifest, error) {
 		m.Devices[k] = v
 	}
 
+	mods, modErrs := loadModuleBlocks(fsys, team)
+	errs = append(errs, modErrs...)
+	m.Modules = mods
+
 	if len(m.Hosts) > maxEntries || len(m.Services) > maxEntries || len(m.Accounts) > maxEntries {
 		errs.Addf("too many entries (limit %d per file)", maxEntries)
 	}
@@ -157,6 +161,64 @@ func Load(fsys fs.FS, opts Options) (*Manifest, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// loadModuleBlocks reads modules/*.yml. Each file name must be a lower-case
+// module name ending in .yml; each file is template-expanded like the rest of
+// the manifest. The generic keys are parsed here, the rest is kept as Raw.
+func loadModuleBlocks(fsys fs.FS, team int) (map[string]ModuleBlock, ErrorList) {
+	entries, err := fs.ReadDir(fsys, "modules")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, ErrorList{fmt.Sprintf("modules/: %v", err)}
+	}
+	if len(entries) > maxEntries {
+		return nil, ErrorList{fmt.Sprintf("modules/: more than %d entries", maxEntries)}
+	}
+	out := map[string]ModuleBlock{}
+	var errs ErrorList
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !moduleFileRE.MatchString(name) {
+			errs.Addf("modules/%s: a module block must be named %s", name, moduleFileRE)
+			continue
+		}
+		n, ok, err := readNode(fsys, "modules/"+name)
+		if err != nil {
+			errs.Addf("%v", err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if err := expandNode(n, team); err != nil {
+			errs.Addf("modules/%s: %v", name, err)
+			continue
+		}
+		buf, err := yaml.Marshal(n)
+		if err != nil {
+			errs.Addf("modules/%s: %v", name, err)
+			continue
+		}
+		var generic struct {
+			Enabled    *bool    `yaml:"enabled"`
+			ActEnabled bool     `yaml:"act_enabled"`
+			Auto       []string `yaml:"auto"`
+		}
+		if err := yaml.Unmarshal(buf, &generic); err != nil {
+			errs.Addf("modules/%s: %v", name, err)
+			continue
+		}
+		out[strings.TrimSuffix(name, ".yml")] = ModuleBlock{
+			Raw:        buf,
+			Enabled:    generic.Enabled,
+			ActEnabled: generic.ActEnabled,
+			Auto:       generic.Auto,
+		}
+	}
+	return out, errs
 }
 
 func readNode(fsys fs.FS, name string) (*yaml.Node, bool, error) {

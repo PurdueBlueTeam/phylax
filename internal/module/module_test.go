@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 )
 
 func good() Manifest {
@@ -79,6 +80,29 @@ func TestEffective(t *testing.T) {
 	for i, c := range cases {
 		if Effective(c.host, c.block, c.def) != c.want {
 			t.Errorf("case %d", i)
+		}
+	}
+}
+
+// TestModuleEnabledAgreesWithEffective pins the two copies of the enablement
+// rule (manifest cannot import module, deviation 17).
+func TestModuleEnabledAgreesWithEffective(t *testing.T) {
+	tr, fa := true, false
+	ptrs := []*bool{nil, &tr, &fa}
+	for _, host := range ptrs {
+		for _, block := range ptrs {
+			m := &manifest.Manifest{
+				Hosts:   map[string]manifest.Host{"h1": {}},
+				Modules: map[string]manifest.ModuleBlock{"demo": {Enabled: block}},
+			}
+			if host != nil {
+				m.Hosts["h1"] = manifest.Host{Modules: map[string]bool{"demo": *host}}
+			}
+			for _, def := range []bool{true, false} {
+				if got, want := m.ModuleEnabled("h1", "demo", def), Effective(host, block, def); got != want {
+					t.Errorf("host %v block %v def %v: ModuleEnabled %v, Effective %v", host, block, def, got, want)
+				}
+			}
 		}
 	}
 }

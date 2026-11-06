@@ -6,7 +6,6 @@ import (
 )
 
 func TestParseLabels(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 11")
 	cases := []struct {
 		expr   string
 		labels []string
