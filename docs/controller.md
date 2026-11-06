@@ -123,11 +123,15 @@ plan: see "Restart and resume" below.
 3. **Failure.** `stop_dependents` / `continue` follow `plan.Run.Fail`; a node
    that fails verify is also rolled back individually. `rollback_plan` waits
    for in-flight nodes, then sends `rollback` steps one at a time in reverse
-   topological order (`Run.RollbackOrder`). A node whose apply failed is not
-   sent a rollback: the agent's executor already undid it. For `rollback_plan`
-   plans nodes without a `deadman_sec` get `RollbackWindowSec` (600 s, part of
-   the signed plan), confirmation is deferred until the whole plan has
-   succeeded, and the agent keeps rollback data until then.
+   topological order (`Run.RollbackOrder`). Only a node that never applied is
+   skipped. A failed apply is already undone by the agent's executor: the
+   controller marks it rolled back, unless the signed result says the agent's
+   own undo failed (`rollback_failed`), which is reported as
+   `plan.rollback_failed`. A failed verify is rolled back by the controller, and
+   a rollback that fails is reported and not retried. For `rollback_plan` plans
+   nodes without a `deadman_sec` get `RollbackWindowSec` (600 s, part of the
+   signed plan), confirmation is deferred until the whole plan has succeeded,
+   and the agent keeps rollback data until then.
 4. **Results.** A `step_result` is matched by `(host, epoch, seq)`, verified
    against the ECDSA key of the live TLS session (whose pin is the enrolled
    key) and against the step it answers, then applied. Unsigned `rejected`

@@ -131,6 +131,10 @@ type Outcome struct {
 	Output    Output
 	DeadmanID string // armed entry awaiting Confirm; empty if none
 	Tag       Tag
+	// RollbackFailed reports that a failed apply or verify could not be undone:
+	// the dead-man fire returned an error. The agent carries this as a typed
+	// result outcome so the controller never has to read error text.
+	RollbackFailed bool
 }
 
 var idClean = regexp.MustCompile(`[^A-Za-z0-9]+`)
@@ -249,6 +253,7 @@ func (e *Env) Execute(ctx context.Context, req Request) (*Outcome, error) {
 	fail := func(err error) (*Outcome, error) {
 		if armed != "" {
 			if _, ferr := e.Deadman.Fire(context.WithoutCancel(ctx), armed, "executor"); ferr != nil {
+				out.RollbackFailed = true
 				err = errors.Join(err, fmt.Errorf("rollback: %w", ferr))
 			}
 		}

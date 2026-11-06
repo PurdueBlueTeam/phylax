@@ -375,3 +375,41 @@ func TestTagRecordedAndLogged(t *testing.T) {
 		t.Fatalf("persisted: %+v", r2)
 	}
 }
+
+// failUndo fails verification and its own rollback, so the executor must mark
+// the outcome typed as RollbackFailed (the agent turns that into the signed
+// result outcome `rollback_failed`).
+type failUndo struct{}
+
+func (failUndo) Spec() Spec                                       { return Spec{Name: "test.failundo", Risk: RiskService} }
+func (failUndo) Locks(Params) []string                            { return nil }
+func (failUndo) Touches(Params) []Touch                           { return nil }
+func (failUndo) Plan(context.Context, *Env, Params) (Plan, error) { return Plan{}, nil }
+func (failUndo) Capture(context.Context, *Env, Params) (Rollback, error) {
+	return Rollback{Kind: "test.failundo", Data: map[string]string{}}, nil
+}
+func (failUndo) Apply(context.Context, *Env, Params) (Output, error) { return nil, nil }
+func (failUndo) Verify(context.Context, *Env, Params) error {
+	return errors.New("health probe failed")
+}
+
+func TestRollbackFailureIsTyped(t *testing.T) {
+	f := newFixture(t)
+	dm, err := deadman.Open(t.TempDir(), deadman.Options{Handlers: map[string]deadman.Handler{
+		"test.failundo": func(context.Context, deadman.Entry) error { return errors.New("undo broken") },
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dm.Close() })
+	f.env.Deadman = dm
+	f.env.Registry = NewRegistry()
+	f.env.Registry.Register(failUndo{})
+	o, err := f.run(t, "test.failundo", nil, func(r *Request) { r.Deadman = time.Minute })
+	if err == nil || !strings.Contains(err.Error(), "undo broken") {
+		t.Fatalf("err=%v", err)
+	}
+	if !o.RollbackFailed {
+		t.Fatalf("outcome did not carry the typed rollback failure: %+v", o)
+	}
+}

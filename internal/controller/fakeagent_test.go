@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
@@ -73,6 +74,15 @@ func (f *fakeStepAgent) answer(w *link.Step) {
 		return
 	}
 	s := plan.StepFromWire(w)
+	if outcome == phyagent.StatusRejected {
+		now := time.Now().UnixMilli()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = f.sess.Send(ctx, link.PrioStep, &link.StepResult{Plan: s.PlanID, Node: s.NodeID, Host: s.Host,
+			Epoch: s.Epoch, Seq: s.Seq, Phase: s.Phase, Status: phyagent.StatusRejected,
+			Error: "refused by the test agent", StartedMS: now, FinishedMS: now})
+		return
+	}
 	res, err := plan.NewResult(s, outcome)
 	if err != nil {
 		return

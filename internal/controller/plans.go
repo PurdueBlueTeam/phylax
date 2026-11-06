@@ -82,6 +82,7 @@ type phaseRec struct {
 	Detail  string `json:"detail,omitempty"`
 	AtMS    int64  `json:"at_ms"`
 	Signed  bool   `json:"signed"`
+	Refused bool   `json:"refused,omitempty"` // the agent's typed `rejected` status: the step never ran
 }
 
 type planRT struct {
@@ -165,6 +166,7 @@ type pending struct {
 type checkResult struct {
 	outcome, err string
 	detail       []byte
+	refused      bool // the agent's typed `rejected` status: the step never ran
 }
 
 func (c *Controller) catalog() registryCatalog { return registryCatalog{c.reg} }
@@ -617,7 +619,7 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 	var rec *plan.StepResult
 	switch m.Status {
 	case phyagent.StatusRejected:
-		out = checkResult{outcome: plan.OutcomeFailed, err: "agent refused the step: " + m.Error}
+		out = checkResult{outcome: plan.OutcomeFailed, err: "agent refused the step: " + m.Error, refused: true}
 	case phyagent.StatusRunning, phyagent.StatusUnknown, phyagent.StatusLost:
 		c.onStatusAnswer(ag, host, key, pd, m.Status)
 		return
@@ -804,7 +806,7 @@ func (c *Controller) deliver(pd *pending, out checkResult, rec *plan.StepResult)
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	pr := phaseRec{Phase: pd.phase, Outcome: out.outcome, Error: out.err, Epoch: pd.exp.Epoch, Seq: pd.exp.Seq,
-		AtMS: c.now().UnixMilli(), Detail: string(out.detail)}
+		AtMS: c.now().UnixMilli(), Detail: string(out.detail), Refused: out.refused}
 	if rec != nil {
 		pr.Digest, pr.Signed = rec.StepDigest, true
 	}
@@ -946,15 +948,62 @@ func (rt *planRT) rollbackStepLocked() {
 		id := rt.rbQueue[0]
 		rt.rbQueue = rt.rbQueue[1:]
 		nr := rt.nodes[id]
-		if rt.run.State(id) == plan.StateFailed && nr.failedIn != plan.PhaseVerify {
-			if nr.failedIn == plan.PhaseApply {
-				// The agent's executor already rolled back a failed apply.
-				_ = rt.run.MarkRolledBack(id)
+		if nr.failedIn == plan.PhaseRollback {
+			continue // its rollback already failed and was reported; do not retry silently
+		}
+		if rt.run.State(id) == plan.StateFailed {
+			if !nr.applyRan() {
+				continue // a node that never applied has nothing to undo
 			}
-			continue // a node that never applied has nothing to undo
+			if nr.failedIn == plan.PhaseApply {
+				// The agent's executor already undid a failed apply, unless its
+				// own rollback failed; then the failure is reported, not hidden.
+				if nr.applyRollbackFailed() {
+					rt.noteRollbackFailedLocked(id, "the agent's own undo of the failed apply failed")
+				} else {
+					_ = rt.run.MarkRolledBack(id)
+				}
+				continue
+			}
 		}
 		nr.want, rt.rbBusy = plan.PhaseRollback, true
 	}
+}
+
+// applyRan reports whether the node's apply step ran. A node failed before its
+// apply left the controller has nothing to undo; a typed `rejected` result
+// proves the agent refused the step without running it.
+func (nr *nodeRT) applyRan() bool {
+	if nr.failedIn == plan.PhaseVerify {
+		return true
+	}
+	for _, pr := range nr.results {
+		if pr.Phase == plan.PhaseApply && !pr.Refused {
+			return true
+		}
+	}
+	return false
+}
+
+// applyRollbackFailed reports whether the agent's typed result says that its
+// own undo of a failed apply failed.
+func (nr *nodeRT) applyRollbackFailed() bool {
+	for _, pr := range nr.results {
+		if pr.Phase == plan.PhaseApply && pr.Outcome == plan.OutcomeRollbackFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// noteRollbackFailedLocked records and alerts a rollback that failed. The node
+// stays failed; the plan is reported failed rather than silently rolled back.
+func (rt *planRT) noteRollbackFailedLocked(id, why string) {
+	rt.rbFailed = true
+	nr := rt.nodes[id]
+	nr.failedIn = plan.PhaseRollback
+	nr.reason += " rollback failed: " + why
+	rt.c.alert(rt.node(id).Target, "plan.rollback_failed", fmt.Sprintf("%s/%s: %s", rt.p.ID, id, why))
 }
 
 func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
@@ -1053,9 +1102,7 @@ func (rt *planRT) onResultLocked(id string, pr phaseRec) {
 		if ok == plan.OutcomeRolledBack {
 			_ = rt.run.MarkRolledBack(id)
 		} else {
-			rt.rbFailed = true
-			nr.reason += " rollback failed: " + pr.Error
-			rt.c.alert(rt.node(id).Target, "plan.rollback_failed", fmt.Sprintf("%s/%s: %s", rt.p.ID, id, pr.Error))
+			rt.noteRollbackFailedLocked(id, pr.Error)
 		}
 	}
 	_ = rt.persistLocked(context.Background())

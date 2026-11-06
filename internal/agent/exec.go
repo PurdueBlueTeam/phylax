@@ -228,8 +228,13 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 			return
 		}
 		if err != nil {
-			// Execute already fired any armed rollback before returning.
-			a.finishStep(ctx, reply, s, plan.OutcomeFailed, err.Error(), planDetail(out))
+			// Execute already fired any armed rollback before returning; the
+			// typed outcome tells the controller whether that undo worked.
+			outcome := plan.OutcomeFailed
+			if out != nil && out.RollbackFailed {
+				outcome = plan.OutcomeRollbackFailed
+			}
+			a.finishStep(ctx, reply, s, outcome, err.Error(), planDetail(out))
 			return
 		}
 		if expiry {
@@ -271,7 +276,7 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 	case plan.PhaseRollback:
 		msg, err := a.rollbackNode(ctx, s)
 		if err != nil {
-			a.finishStep(ctx, reply, s, plan.OutcomeFailed, err.Error(), nil)
+			a.finishStep(ctx, reply, s, plan.OutcomeRollbackFailed, err.Error(), nil)
 			return
 		}
 		a.finishStep(ctx, reply, s, plan.OutcomeRolledBack, "", []byte(fmt.Sprintf(`{"note":%q}`, msg)))
