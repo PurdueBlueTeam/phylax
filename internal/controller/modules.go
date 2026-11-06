@@ -18,11 +18,6 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 	panic("unimplemented: W1 Task 19")
 }
 
-// AgentHealth returns per-module health reported by an agent.
-func (c *Controller) AgentHealth(host string) map[string]module.Health {
-	panic("unimplemented: W1 Task 14")
-}
-
 func (c *Controller) RunReadOnly(ctx context.Context, mod, template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 23")
 }

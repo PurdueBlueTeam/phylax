@@ -8,7 +8,6 @@ import (
 )
 
 func TestHeartbeatHealthBounds(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 14")
 	ok := &Heartbeat{HostClock: time.Now(), Health: map[string]module.Health{"a": {State: module.StateOK}}}
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)

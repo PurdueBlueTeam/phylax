@@ -123,6 +123,17 @@ func RegisterFactory(f Factory) {
 // Registered returns the process-wide factory registry, sorted by name.
 func Registered() []Factory { return registered(nil) }
 
+// moduleManifests returns the manifests of the agent's factories, for hello.
+func (a *Agent) moduleManifests() []module.Manifest {
+	var out []module.Manifest
+	for _, f := range registered(a.cfg.Factories) {
+		if f.Manifest.Name != "" {
+			out = append(out, f.Manifest)
+		}
+	}
+	return out
+}
+
 // registered returns the factories sorted by name, with extra overriding.
 func registered(extra []Factory) []Factory {
 	regMu.Lock()

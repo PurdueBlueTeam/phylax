@@ -203,6 +203,33 @@ func (m *Heartbeat) Validate() error {
 	if len(m.Modules) > 256 {
 		return invalid("heartbeat: too many modules")
 	}
+	if len(m.Health) > 256 {
+		return invalid("heartbeat: too many health entries")
+	}
+	for name, h := range m.Health {
+		if err := checkStr("health module", name, 64, true); err != nil {
+			return err
+		}
+		if len(h.Detail) > 1024 {
+			return invalid("heartbeat: health %s detail too long", name)
+		}
+		if len(h.Gaps) > 32 {
+			return invalid("heartbeat: health %s has too many gaps", name)
+		}
+		for _, g := range h.Gaps {
+			if len(g.What) > 256 || len(g.Why) > 256 {
+				return invalid("heartbeat: health %s gap too long", name)
+			}
+		}
+		if len(h.Info) > 32 {
+			return invalid("heartbeat: health %s has too many info entries", name)
+		}
+		for k, v := range h.Info {
+			if len(k) > 64 || len(v) > 256 {
+				return invalid("heartbeat: health %s info %q too long", name, k)
+			}
+		}
+	}
 	return checkStr("congestion", m.Congestion, 32, false)
 }
 

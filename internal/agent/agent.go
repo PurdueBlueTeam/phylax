@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 )
@@ -362,7 +364,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	}})
 
 	hello := &link.Hello{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Deadman: a.deadmanReport(), Host: a.bundle.Host, Version: a.cfg.Version,
-		Roles: a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH}}
+		Roles: a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
 	hello.LastSeq, _ = a.sp.Head()
 	if !enrolled {
 		hello.Token = a.bundle.Token
@@ -480,7 +482,7 @@ func (a *Agent) heartbeat(s *link.Session) {
 		cong = spool.StateOK
 	}
 	hb := &link.Heartbeat{Seq: st.HeadSeq, HostClock: time.Now().UTC(), SpoolDepth: st.HeadSeq - st.AckSeq,
-		Congestion: cong, Modules: a.heartbeatModules(), SafeMode: a.safeMode.Load(), Drops: st.Shed}
+		Congestion: cong, Modules: a.heartbeatModules(), Health: a.heartbeatHealth(), SafeMode: a.safeMode.Load(), Drops: st.Shed}
 	// TrySend: never block on a congested link; a newer heartbeat replaces a queued one.
 	if err := s.TrySend(link.PrioCritical, hb); err != nil {
 		a.log.Debug("heartbeat not queued", "err", err)
@@ -522,4 +524,29 @@ func (a *Agent) heartbeatModules() map[string]string {
 	m := a.sup.States()
 	m[ConfigStatusModule] = a.configHeartbeat()
 	return m
+}
+
+// heartbeatHealth is the supervisor's merged health for every module, plus a
+// config-status module that could not be built (unavailable: why) as a gap.
+func (a *Agent) heartbeatHealth() map[string]module.Health {
+	a.mu.Lock()
+	sup := a.sup
+	a.mu.Unlock()
+	out := map[string]module.Health{}
+	if sup != nil {
+		for name := range sup.Snapshot() {
+			if h, ok := sup.Health(name); ok {
+				out[name] = h
+			}
+		}
+	}
+	for name, v := range a.ConfigStatus().Modules {
+		if name == ConfigStatusModule {
+			continue
+		}
+		if why, ok := strings.CutPrefix(v, "unavailable: "); ok {
+			out[name] = module.Health{State: module.StateUnavailable, Gaps: []module.Gap{{What: name, Why: why}}}
+		}
+	}
+	return out
 }

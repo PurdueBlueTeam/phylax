@@ -11,6 +11,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
 
@@ -26,6 +27,8 @@ type AgentStatus struct {
 	SpoolDepth uint64
 	Congestion string
 	Modules    map[string]string
+	// Health is the per-module health blocks of the latest heartbeat.
+	Health map[string]module.Health
 	// ConfigState/ConfigEpoch/ConfigVersion are what the agent last reported
 	// about its signed config ("none" until it applies one).
 	ConfigState   string
@@ -280,6 +283,7 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	st.hb.ClockSkew = hb.HostClock.Sub(now)
 	st.hb.SkewAt = now
 	st.hb.SpoolDepth, st.hb.Congestion, st.hb.Modules = hb.SpoolDepth, hb.Congestion, hb.Modules
+	st.hb.Health = hb.Health
 	st.hb.SafeMode, st.hb.Drops = hb.SafeMode, hb.Drops
 	acked := st.acked
 	st.mu.Unlock()
