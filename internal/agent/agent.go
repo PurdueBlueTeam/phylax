@@ -62,19 +62,24 @@ type Config struct {
 
 // Agent is the running agent.
 type Agent struct {
-	cfg     Config
-	log     *slog.Logger
-	bundle  *Bundle
-	pin     link.Pin
-	id      *link.Identity
-	sp      *spool.Spool
-	dm      *deadman.Manager
-	sup     *Supervisor
-	exec    *execState
-	ctlVer  *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
-	cfgVer  *plan.ConfigVerifier  // likewise: a config is never accepted unsigned
-	planKey ed25519.PublicKey
-	binHash string // sha256 of this binary, "" when unreadable
+	cfg    Config
+	log    *slog.Logger
+	bundle *Bundle
+	pin    link.Pin
+	// bundleSize/bundleMod notice a set-controller rewrite; bundleErr keeps a
+	// failing reload from logging on every reconnect.
+	bundleSize int64
+	bundleMod  time.Time
+	bundleErr  string
+	id         *link.Identity
+	sp         *spool.Spool
+	dm         *deadman.Manager
+	sup        *Supervisor
+	exec       *execState
+	ctlVer     *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
+	cfgVer     *plan.ConfigVerifier  // likewise: a config is never accepted unsigned
+	planKey    ed25519.PublicKey
+	binHash    string // sha256 of this binary, "" when unreadable
 
 	// config handling (see config.go)
 	cfgKick chan struct{}
@@ -172,6 +177,9 @@ func New(cfg Config) (*Agent, error) {
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
 		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now(),
 		tags: NewTagScope(cfg.Logger)}
+	if fi, err := os.Stat(cfg.Layout.Bootstrap()); err == nil {
+		a.bundleSize, a.bundleMod = fi.Size(), fi.ModTime()
+	}
 	a.window = newWindowState(cfg.Layout.Root, a.mono)
 	if err := a.initExec(); err != nil {
 		return nil, err
@@ -414,13 +422,16 @@ func (s spoolSource) Events(after uint64, max int) ([]event.Event, error) {
 // session runs one connection. established reports whether it got as far as
 // welcome and the controller's first ack.
 func (a *Agent) session(ctx context.Context) (established bool, err error) {
+	a.reloadBundle()
 	a.mu.Lock()
-	addr := a.bundle.Controllers[a.attempt%len(a.bundle.Controllers)]
+	b := a.bundle
+	addr := b.Controllers[a.attempt%len(b.Controllers)]
 	a.attempt++
 	enrolled := a.state.Enrolled
+	pin := a.pin
 	a.mu.Unlock()
 
-	conn, err := link.Dial(ctx, addr, link.DialOptions{Identity: a.id, ServerPin: a.pin, ALPN: link.ALPNAgent, Timeout: a.cfg.DialTimeout})
+	conn, err := link.Dial(ctx, addr, link.DialOptions{Identity: a.id, ServerPin: pin, ALPN: link.ALPNAgent, Timeout: a.cfg.DialTimeout})
 	if err != nil {
 		return false, err
 	}
@@ -453,12 +464,12 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 		return nil
 	}})
 
-	hello := &link.Hello{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Deadman: a.deadmanReport(), Host: a.bundle.Host, Version: a.cfg.Version,
+	hello := &link.Hello{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Deadman: a.deadmanReport(), Host: b.Host, Version: a.cfg.Version,
 		BinarySHA256: a.binHash,
-		Roles:        a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
+		Roles:        b.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
 	hello.LastSeq, _ = a.sp.Head()
 	if !enrolled {
-		hello.Token = a.bundle.Token
+		hello.Token = b.Token
 	}
 	if err := sess.Send(ctx, link.PrioCritical, hello); err != nil {
 		return false, err
@@ -507,6 +518,45 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 			return true, ctx.Err()
 		}
 	}
+}
+
+// reloadBundle re-reads bootstrap.json when its size or mtime changed, so a
+// set-controller rewrite takes effect on the next dial without a restart. A
+// bundle that does not parse keeps the old one and logs once.
+func (a *Agent) reloadBundle() {
+	path := a.cfg.Layout.Bootstrap()
+	fi, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	same := fi.Size() == a.bundleSize && fi.ModTime().Equal(a.bundleMod)
+	a.mu.Unlock()
+	if same {
+		return
+	}
+	b, err := a.cfg.Layout.LoadBundle()
+	if err == nil {
+		_, err = b.Validate()
+	}
+	if err != nil {
+		a.mu.Lock()
+		first := a.bundleErr != err.Error()
+		a.bundleErr = err.Error()
+		a.mu.Unlock()
+		if first {
+			a.log.Warn("bootstrap reload failed; keeping the old bundle", "err", err)
+		}
+		return
+	}
+	pin, _ := b.Validate() // validated above; this returns the pin
+	a.mu.Lock()
+	a.bundle, a.pin = b, pin
+	a.bundleSize, a.bundleMod = fi.Size(), fi.ModTime()
+	a.bundleErr = ""
+	a.attempt = 0
+	a.mu.Unlock()
+	a.log.Info("bootstrap reloaded", "controllers", b.Controllers)
 }
 
 func pick[T any](f, def func(context.Context, T) error) func(context.Context, T) error {
