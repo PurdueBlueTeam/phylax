@@ -25,8 +25,11 @@ type fakeWinRM struct {
 	authed   map[string]bool
 	steps    []string // per request: remote|hasAuth|action
 	cmd      string
+	stdout   string // a non-hostname command's stdout
 	stderr   string
+	exit     int // ExitCode of the last command
 	hostname string
+	deleted  []string // shell ids the server saw a Delete for
 }
 
 func (f *fakeWinRM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +68,11 @@ func (f *fakeWinRM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch act {
 	case "Create":
 		fmt.Fprint(w, `<s:Envelope><s:Body><rsp:Shell><rsp:ShellId>SHELL-1</rsp:ShellId></rsp:Shell></s:Body></s:Envelope>`)
+	case "Delete":
+		if m := reSelector.FindSubmatch(body); m != nil {
+			f.deleted = append(f.deleted, string(m[1]))
+		}
+		fmt.Fprint(w, `<s:Envelope><s:Body/></s:Envelope>`)
 	case "Command":
 		m := regexp.MustCompile(`-EncodedCommand</rsp:Arguments><rsp:Arguments>([^<]+)<`).FindSubmatch(body)
 		if m != nil {
@@ -73,7 +81,7 @@ func (f *fakeWinRM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprint(w, `<s:Envelope><s:Body><rsp:CommandResponse><rsp:CommandId>CMD-1</rsp:CommandId></rsp:CommandResponse></s:Body></s:Envelope>`)
 	case "Receive":
-		out := ""
+		out := f.stdout
 		if f.cmd == "hostname" {
 			out = f.hostname + "\r\n"
 		}
@@ -81,8 +89,8 @@ func (f *fakeWinRM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f.stderr != "" {
 			se = `<rsp:Stream Name="stderr" CommandId="CMD-1">` + base64.StdEncoding.EncodeToString([]byte(f.stderr)) + `</rsp:Stream>`
 		}
-		fmt.Fprintf(w, `<s:Envelope><s:Body><rsp:ReceiveResponse><rsp:Stream Name="stdout" CommandId="CMD-1">%s</rsp:Stream>%s<rsp:CommandState CommandId="CMD-1" State="http://schemas.microsoft.com/wbem/wsman/1/windows/shell/CommandState/Done"><rsp:ExitCode>0</rsp:ExitCode></rsp:CommandState></rsp:ReceiveResponse></s:Body></s:Envelope>`,
-			base64.StdEncoding.EncodeToString([]byte(out)), se)
+		fmt.Fprintf(w, `<s:Envelope><s:Body><rsp:ReceiveResponse><rsp:Stream Name="stdout" CommandId="CMD-1">%s</rsp:Stream>%s<rsp:CommandState CommandId="CMD-1" State="http://schemas.microsoft.com/wbem/wsman/1/windows/shell/CommandState/Done"><rsp:ExitCode>%d</rsp:ExitCode></rsp:CommandState></rsp:ReceiveResponse></s:Body></s:Envelope>`,
+			base64.StdEncoding.EncodeToString([]byte(out)), se, f.exit)
 	default:
 		fmt.Fprint(w, `<s:Envelope><s:Body/></s:Envelope>`)
 	}
