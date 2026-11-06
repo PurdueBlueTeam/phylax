@@ -42,12 +42,15 @@ func startExpiryAgent(t *testing.T) (*fakeController, ed25519.PrivateKey, *runni
 func issueExpiry(t *testing.T, sg *plan.Signer, planID, node, action string, risk plan.Risk, params map[string]any, expiresSec int) *plan.Step {
 	t.Helper()
 	p := &plan.Plan{ID: planID, OnFailure: plan.StopDependents, Class: plan.ClassAuto, Nodes: []plan.Node{{
-		ID: node, Action: action, Target: "h", Risk: risk, Params: params, ExpiresAfterSec: expiresSec}}}
+		ID: node, Action: action, Target: "h", Risk: risk, Params: params, ExpiresAfterSec: plan.MinExpiresAfterSec}}}
 	cat := plan.MapCatalog{action: {Name: action, Risk: risk}}
 	run, err := plan.NewRun(p, cat)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The plan validates the design's 60 s lower bound; shorten the issued
+	// step so the test does not wait out a real expiry window.
+	p.Nodes[0].ExpiresAfterSec = expiresSec
 	now := time.Now()
 	run.ApprovePlan("operator", now) // approves the node unless it needs its own record
 	if run.State(node) == plan.StatePending {
@@ -89,15 +92,7 @@ func armedFor(t *testing.T, r *runningAgent, nodeKey string) []deadman.Entry {
 	return out
 }
 
-func setExpireUnit(t *testing.T, d time.Duration) {
-	t.Helper()
-	old := expireUnit
-	expireUnit = d
-	t.Cleanup(func() { expireUnit = old })
-}
-
 func TestExpiryRollsBackWithoutConfirm(t *testing.T) {
-	setExpireUnit(t, 10*time.Millisecond) // 60 "seconds" is 600 ms
 	ctl, priv, r, root := startExpiryAgent(t)
 	target := filepath.Join(root, "srv", "x")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -109,7 +104,7 @@ func TestExpiryRollsBackWithoutConfirm(t *testing.T) {
 
 	sg := &plan.Signer{Key: priv, Epoch: 1, Seqs: &plan.MemSeq{}}
 	step := issueExpiry(t, sg, "exp", "n", "file.write", plan.RiskService,
-		map[string]any{"path": "/srv/x", "content": "new\n"}, 60)
+		map[string]any{"path": "/srv/x", "content": "new\n"}, 1)
 	if err := ctl.send(plan.StepToWire(step)); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +135,6 @@ func TestExpiryRollsBackWithoutConfirm(t *testing.T) {
 }
 
 func TestExpiryActionWithoutUndoFails(t *testing.T) {
-	setExpireUnit(t, 10*time.Millisecond)
 	ctl, priv, _, root := startExpiryAgent(t)
 	target := filepath.Join(root, "etc", "hosts")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -152,7 +146,7 @@ func TestExpiryActionWithoutUndoFails(t *testing.T) {
 	sg := &plan.Signer{Key: priv, Epoch: 1, Seqs: &plan.MemSeq{}}
 	// file.hash is read-only: it can never produce undo data.
 	step := issueExpiry(t, sg, "exp2", "h", "file.hash", plan.RiskNone,
-		map[string]any{"path": "/etc/hosts"}, 60)
+		map[string]any{"path": "/etc/hosts"}, 1)
 	if err := ctl.send(plan.StepToWire(step)); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +158,6 @@ func TestExpiryActionWithoutUndoFails(t *testing.T) {
 }
 
 func TestExpiryExtendReplacesRecord(t *testing.T) {
-	setExpireUnit(t, 100*time.Millisecond) // a 6 s window; the test re-applies after 300 ms
 	ctl, priv, r, root := startExpiryAgent(t)
 	target := filepath.Join(root, "srv", "y")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {

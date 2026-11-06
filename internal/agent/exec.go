@@ -41,10 +41,6 @@ const DryRunApprover = "dry-run"
 
 const maxUnsent = 64
 
-// expireUnit scales a step's ExpiresAfterSec into wall time. Tests shrink it so
-// a 60-second expiry does not take a minute.
-var expireUnit = time.Second
-
 type execState struct {
 	env   *actions.Env
 	ver   *plan.Verifier
@@ -210,7 +206,7 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 		expiry := s.ExpiresAfterSec > 0
 		switch {
 		case expiry:
-			req.Deadman = time.Duration(s.ExpiresAfterSec) * expireUnit
+			req.Deadman = time.Duration(s.ExpiresAfterSec) * time.Second
 		case s.DeadmanSec > 0:
 			req.Deadman = time.Duration(s.DeadmanSec) * time.Second
 		case s.RollbackPolicy == plan.RollbackNone:

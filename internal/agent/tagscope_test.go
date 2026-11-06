@@ -16,7 +16,7 @@ import (
 )
 
 func TestTagScopeChildAndDescendants(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 5000)
 	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)}); got != "plan:p1" {
 		t.Fatalf("child: %q", got)
@@ -33,7 +33,7 @@ func TestTagScopeChildAndDescendants(t *testing.T) {
 // registration has a start time, an event that cannot prove the same process
 // (missing or different start) is not tagged.
 func TestTagScopePidReuseIsNotTagged(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 5000)
 	for _, f := range []map[string]any{
 		{"pid": 100},
@@ -60,7 +60,7 @@ func TestTagScopePidReuseIsNotTagged(t *testing.T) {
 // A registration without a start time is the only case where a pid-only event
 // matches: the platform could not read the start time when the step started.
 func TestTagScopePidOnlyRegistration(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p0", 200, 0)
 	for _, f := range []map[string]any{
 		{"pid": 200},
@@ -75,7 +75,7 @@ func TestTagScopePidOnlyRegistration(t *testing.T) {
 // A descendant whose own start time is unknown is tagged on its process_start
 // event but not registered, so its later events cannot be mistaken for ours.
 func TestTagScopeUnstartedDescendantNotRegistered(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 0)
 	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100}); got != "plan:p1" {
 		t.Fatalf("the process_start itself: %q", got)
@@ -86,7 +86,7 @@ func TestTagScopeUnstartedDescendantNotRegistered(t *testing.T) {
 }
 
 func TestTagScopeIgnoresOtherProcesses(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 5000)
 	for _, f := range []map[string]any{{"pid": 900, "ppid": 1}, {"pid": 901, "ppid": 4}, {"pid": 100, "pid_start": uint64(9999)}} {
 		if got := s.Tag("process_start", f); got != "" {
@@ -96,7 +96,7 @@ func TestTagScopeIgnoresOtherProcesses(t *testing.T) {
 }
 
 func TestTagScopeRelease(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 5000)
 	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)})
 	s.Release("plan:p1")
@@ -106,7 +106,7 @@ func TestTagScopeRelease(t *testing.T) {
 }
 
 func TestTagScopeProcessExitRemovesPID(t *testing.T) {
-	s := NewTagScope()
+	s := NewTagScope(nil)
 	s.Register("plan:p1", 100, 5000)
 	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)})
 	if got := s.Tag("file_change", map[string]any{"pid": 101, "pid_start": uint64(5001)}); got != "plan:p1" {
