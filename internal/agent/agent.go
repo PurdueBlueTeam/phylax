@@ -103,6 +103,8 @@ type Agent struct {
 
 	// facts are the controller facts held in memory, keyed by id.
 	facts factStore
+	// tags scopes plan tags to the step's own process tree (Task 32a).
+	tags *TagScope
 	// the work window stamps change-class events made by hand (Task 32).
 	window *windowState
 	// clkMu guards nowFn and monoFn, the agent's wall and monotonic clocks.
@@ -168,7 +170,8 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
-		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now()}
+		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now(),
+		tags: NewTagScope()}
 	a.window = newWindowState(cfg.Layout.Root, a.mono)
 	if err := a.initExec(); err != nil {
 		return nil, err
@@ -231,12 +234,19 @@ func (a *Agent) setMono(f func() time.Duration) {
 	a.clkMu.Unlock()
 }
 
-// stamp puts a tag on an event of our own activity: a work-window tag on a
+// stamp puts a tag on an event of our own activity: a plan tag on an event
+// from the step's own process tree (Task 32a), else a work-window tag on a
 // change-class event of the claimed user (Task 32). An event that already
 // carries a tag keeps it.
 func (a *Agent) stamp(e event.Event) event.Event {
 	if e.Tag != "" {
 		return e
+	}
+	if a.tags != nil {
+		if t := a.tags.Tag(e.Kind, e.Fields); t != "" {
+			e.Tag = t
+			return e
+		}
 	}
 	if a.window != nil {
 		e.Tag = a.window.tagFor(e)

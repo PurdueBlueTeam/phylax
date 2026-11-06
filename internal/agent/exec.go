@@ -99,6 +99,7 @@ func (a *Agent) initExec() error {
 		env.Host = a.bundle.Host
 	}
 	env.Safe = sm
+	env.Children = a.tags
 	a.safeMode.Store(sm.On())
 	n := c.MaxConcurrent
 	if n <= 0 {
@@ -178,6 +179,10 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 			a.finishStep(ctx, reply, s, plan.OutcomeFailed, "bad params: "+err.Error(), nil)
 			return
 		}
+	}
+	planTag := actions.Tag{Plan: s.PlanID}.PlanTag()
+	if a.tags != nil {
+		defer a.tags.Release(planTag) // the step ended: its process tree is no longer ours
 	}
 	ctx = actions.WithTag(ctx, actions.Tag{Plan: s.PlanID, Node: s.NodeID})
 	// The step's secrets (digest signed with the step) reach the action only

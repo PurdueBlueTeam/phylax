@@ -27,6 +27,10 @@ type Cmd struct {
 	Argv    []string
 	Env     []string // extra KEY=VALUE entries (e.g. the patch-window proxy)
 	Timeout time.Duration
+	// Started, when set, is called with the child's pid and start time right
+	// after it starts, before it can exit, so the agent can tag the step's own
+	// process tree (design: what may be tagged).
+	Started func(pid int, start uint64)
 }
 
 // CmdResult is a finished command.
@@ -137,7 +141,13 @@ func (r execRunner) Run(ctx context.Context, c Cmd) (CmdResult, error) {
 	var so, se capBuf
 	so.n, se.n = maxCmdOutput, maxCmdOutput
 	cmd.Stdout, cmd.Stderr = &so, &se
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return CmdResult{}, err
+	}
+	if c.Started != nil {
+		c.Started(cmd.Process.Pid, pidStartTicks(cmd.Process.Pid))
+	}
+	err := cmd.Wait()
 	res := CmdResult{Stdout: so.b.String(), Stderr: se.b.String()}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {

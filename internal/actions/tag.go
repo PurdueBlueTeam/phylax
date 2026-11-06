@@ -27,6 +27,15 @@ func (t Tag) String() string {
 	return "phylax:" + t.Plan
 }
 
+// PlanTag is the envelope tag of a change made under this tag: "plan:<id>", or
+// "" when no plan is set.
+func (t Tag) PlanTag() string {
+	if t.Plan == "" {
+		return ""
+	}
+	return "plan:" + t.Plan
+}
+
 type tagKey struct{}
 
 func WithTag(ctx context.Context, t Tag) context.Context { return context.WithValue(ctx, tagKey{}, t) }

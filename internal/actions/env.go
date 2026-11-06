@@ -48,6 +48,25 @@ type Env struct {
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
 	QuarantineDir string
 	Clock         func() time.Time
+	// Children is told the pid and start time of every process an action
+	// spawns, so the agent tags events from the step's own process tree and
+	// from no other process on the host (design: what may be tagged, R6).
+	Children ChildRegistrar
+}
+
+// ChildRegistrar records a process an action spawned under its plan tag.
+type ChildRegistrar interface {
+	Register(planTag string, pid int, start uint64)
+}
+
+// spawnHook is the Cmd.Started hook that registers a spawned child with the
+// agent's tag scope; nil when nothing registers children.
+func (e *Env) spawnHook(ctx context.Context) func(pid int, start uint64) {
+	tag := TagFrom(ctx).PlanTag()
+	if e.Children == nil || tag == "" {
+		return nil
+	}
+	return func(pid int, start uint64) { e.Children.Register(tag, pid, start) }
 }
 
 func (e *Env) Now() time.Time {
