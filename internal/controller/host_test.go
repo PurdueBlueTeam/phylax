@@ -6,6 +6,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
+	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
 
 func init() {
@@ -15,7 +16,6 @@ func init() {
 }
 
 func TestHostConfigStrict(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17")
 	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\nlevel: 2\ndb: ecom.db\n"})
 	h := c.hostFor(testMod())
 	var cfg struct {
@@ -40,7 +40,6 @@ func TestHostConfigStrict(t *testing.T) {
 }
 
 func TestHostEmitOnlyManifestKinds(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17")
 	c := newTestControllerWithManifest(t, nil)
 	h := c.hostFor(testMod())
 	e, _ := event.New("ctltest.found", struct {
@@ -61,14 +60,28 @@ func TestHostEmitOnlyManifestKinds(t *testing.T) {
 }
 
 func TestHostSecretsScoped(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17")
-	// controller with an unlocked test vault holding "ecom.db" and "other"; block as in TestHostConfigStrict
-	// h.Secrets("ecom.db") -> reader; Get("ecom.db") ok
-	// h.Secrets("other") -> errors.Is(err, vault.ErrNotAllowed)
+	v := newVault(t)
+	for _, name := range []string{"ecom.db", "other"} {
+		if _, err := v.Put(name, vault.NewSecretString("value"), "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\nlevel: 2\ndb: ecom.db\n"})
+	c.opt.Vault = v
+	h := c.hostFor(testMod())
+	r, err := h.Secrets("ecom.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Get("ecom.db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Secrets("other"); !errors.Is(err, vault.ErrNotAllowed) {
+		t.Fatalf("got %v", err)
+	}
 }
 
 func TestHostTablesNeedDeclaration(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17")
 	c := newTestControllerWithManifest(t, nil)
 	if _, err := c.hostFor(testMod()).Tables(); err == nil {
 		t.Fatal("tables without declaration")

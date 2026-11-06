@@ -64,5 +64,8 @@ func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	c.uiMu.Lock()
+	c.ui = srv
+	c.uiMu.Unlock()
 	return srv, ops, nil
 }

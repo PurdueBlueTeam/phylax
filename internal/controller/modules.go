@@ -2,11 +2,23 @@ package controller
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
+
+// moduleRunState is one controller module's runner state.
+type moduleRunState struct {
+	mod     module.ControllerModule
+	mu      sync.Mutex
+	state   module.State
+	detail  string
+	gaps    []module.Gap
+	running bool
+	done    chan struct{}
+}
 
 // RunModules runs every enabled controller module until ctx ends.
 func (c *Controller) RunModules(ctx context.Context, mods []module.ControllerModule) error {

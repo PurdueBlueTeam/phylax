@@ -17,6 +17,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
+	"github.com/PurdueBlueTeam/phylax/internal/ui"
 )
 
 // Alert is something an operator should see. Until the controller has its own
@@ -108,6 +109,14 @@ type Controller struct {
 	modBackoffMin    time.Duration
 	analysisDeadline time.Duration
 	bus              *eventBus
+
+	modMu   sync.Mutex
+	mods    map[string]*moduleRunState
+	runMu   sync.Mutex
+	running map[string]bool
+	uiMu    sync.Mutex
+	ui      *ui.Server
+	manMu   sync.Mutex // serialises overrides.yml writes and manifest reloads
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -159,7 +168,8 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	}
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
-		plans: map[string]*planRT{}, pend: map[stepKey]*pending{}}
+		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
+		bus: &eventBus{}, mods: map[string]*moduleRunState{}, running: map[string]bool{}}
 	c.checks = newChecksHub(c)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()
