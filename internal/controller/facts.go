@@ -21,6 +21,9 @@ const maxFactID = 128
 // module cannot send another module's facts. An agent that is not connected is
 // logged and skipped: it treats the fact as unknown, which is the safe side.
 func (c *Controller) SendFact(ctx context.Context, mod string, m module.ControlMsg) error {
+	if err := c.signingWaitErr(); err != nil {
+		return err
+	}
 	if m.Type != "fact" {
 		return fmt.Errorf("controller: control type %q is not a fact", m.Type)
 	}

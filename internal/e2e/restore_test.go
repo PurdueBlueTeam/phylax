@@ -12,6 +12,8 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
@@ -363,4 +365,93 @@ func (h *harness) addForger(t *testing.T, host string, real *testHost) *testHost
 	h.hosts["forger"] = th
 	th.start(h)
 	return th
+}
+
+// waitSigning waits for the restored controller to sign and returns its epoch.
+func waitSigning(t *testing.T, h *harness) uint64 {
+	t.Helper()
+	eventually(t, "signing to be ready", 20*time.Second, func() bool {
+		ready, _ := h.c.SigningReady()
+		return ready
+	})
+	ep, err := h.c.Store().Epoch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ep
+}
+
+// R7: a second restore from the same snapshot produces the same epoch, so the
+// controller raises it above what the agents report before it signs anything.
+func TestRestoreTwiceFromSameSnapshot(t *testing.T) {
+	h := newHarness(t)
+	h.addHost("h1")
+	ctx := context.Background()
+	if ep, _ := h.c.Store().Epoch(ctx); ep != 1 {
+		t.Fatalf("start epoch %d, want 1", ep)
+	}
+	snap := snapshotStateOnly(t, h)
+
+	// Restore #1: epoch 2. h1 accepts a control signed at (2, 1).
+	h.restoreFromSnapshot(snap)
+	if ep := waitSigning(t, h); ep != 2 {
+		t.Fatalf("epoch after restore #1 = %d, want 2", ep)
+	}
+	if err := h.c.SendControl(ctx, "h1", plan.ControlSafeMode, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "h1 to enter safe mode", 20*time.Second, func() bool {
+		st, ok := h.c.AgentStatus("h1")
+		return ok && st.SafeMode
+	})
+	var first *link.Control
+	h.mu.Lock()
+	for _, c := range h.ctls {
+		if first == nil && c.Kind == plan.ControlSafeMode && c.On {
+			first = c
+		}
+	}
+	h.mu.Unlock()
+	if first == nil || first.Epoch != 2 {
+		t.Fatalf("first safe-mode control %+v; want epoch 2", first)
+	}
+
+	// Restore #2 from the same snapshot: the snapshot's epoch 1 again, so the
+	// store starts at 2 again; h1 reports 2 and the controller raises to 3.
+	h.stopController()
+	h.restoreFromSnapshot(snap)
+	if ep, _ := h.c.Store().Epoch(ctx); ep != 2 {
+		t.Fatalf("epoch after restore #2 = %d, want the snapshot's 2 before any report", ep)
+	}
+	if ep := waitSigning(t, h); ep != 3 {
+		t.Fatalf("epoch after h1's report = %d, want 3", ep)
+	}
+
+	// The (2, 1) control h1 already accepted is a replay now; without the
+	// raise every new control would look like one.
+	before := len(h.agentEvents("h1", "agent.control_refused"))
+	h.c.SendRaw(ctx, "h1", first)
+	eventually(t, "the replayed control to be refused", 20*time.Second, func() bool {
+		return len(h.agentEvents("h1", "agent.control_refused")) > before
+	})
+
+	// A control signed after the report is in the raised epoch and accepted.
+	if err := h.c.SendControl(ctx, "h1", plan.ControlSafeMode, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "h1 to leave safe mode", 20*time.Second, func() bool {
+		st, ok := h.c.AgentStatus("h1")
+		return ok && !st.SafeMode
+	})
+	h.mu.Lock()
+	var last *link.Control
+	for _, c := range h.ctls {
+		if c.Kind == plan.ControlSafeMode && !c.On {
+			last = c
+		}
+	}
+	h.mu.Unlock()
+	if last == nil || last.Epoch != 3 {
+		t.Fatalf("the control after the raise is %+v; want epoch 3", last)
+	}
 }

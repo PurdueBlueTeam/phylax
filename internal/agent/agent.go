@@ -201,6 +201,21 @@ func New(cfg Config) (*Agent, error) {
 // Pin is this agent's own key pin (what the controller records at enrollment).
 func (a *Agent) Pin() link.Pin { return a.id.Pin }
 
+// acceptedEpoch is the highest epoch of a signed config, step or control the
+// agent has accepted: what a restored controller must exceed before it signs.
+func (a *Agent) acceptedEpoch() uint64 {
+	var ep uint64
+	if a.cfg.Layout.Root == "" {
+		return 0
+	}
+	for _, path := range []string{a.cfg.Layout.PlanSeq(), a.cfg.Layout.ConfigSeq(), a.cfg.Layout.ControlSeq()} {
+		if m, err := (plan.FileSeqStore{Path: path}).Load(); err == nil && m.Epoch > ep {
+			ep = m.Epoch
+		}
+	}
+	return ep
+}
+
 // emit stamps our own activity's tag (a plan step's process tree or an open
 // work window), then appends the event to the spool without touching the
 // network.
@@ -473,6 +488,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 		BinarySHA256: a.binHash,
 		Roles:        b.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
 	hello.LastSeq, _ = a.sp.Head()
+	hello.Epoch = a.acceptedEpoch()
 	if !enrolled {
 		hello.Token = b.Token
 	}

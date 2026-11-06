@@ -215,6 +215,11 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if err != nil {
 		return err
 	}
+	// A restored controller fences on the epoch the fleet accepted before it
+	// signs; this hello is that report (restorewait.go).
+	if err := c.noteRestoreReport(ctx, h); err != nil {
+		return err
+	}
 	// The watch sees every accepted connection, not the refused ones (those
 	// alert in authorize); it checks the reported binary hash and withdraws
 	// the host's bundle.

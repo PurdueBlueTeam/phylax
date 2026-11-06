@@ -125,7 +125,7 @@ error and closes the connection.
 
 | Code | Name | Direction | Fields |
 | --- | --- | --- | --- |
-| 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only), `binary_sha256` (sha256 hex of the running agent binary; absent when unreadable), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
+| 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `epoch` (the highest epoch of a signed config, step or control the agent has accepted; 0 before the first), `token` (enrollment only), `binary_sha256` (sha256 hex of the running agent binary; absent when unreadable), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
 | 0x18 | `welcome` | controller to agent | `proto`, `minor`, `enrolled` (bool), `config` (optional signed config) |
 | 0x02 | `heartbeat` | agent to controller | `seq`, `host_clock` (RFC 3339), `spool_depth`, `congestion` (`ok`/`warning`/`full`/`flood`/`recovered`), `modules{name:status}`, `safe_mode`, `drops`, `id` (per-session counter), `rtt_us` (last heartbeat round trip, microseconds) |
 | 0x03 | `events` | agent to controller | `events[]`: `internal/event` records (`agent`, `seq`, `time`, `kind`, `prio`, `fields`, `prev`, `hash`), 1..5000 per batch |
@@ -236,7 +236,9 @@ ignore; a sender uses a feature only with peers announcing the minor that
 introduced it. Minor 1 (2026-10-22) replaced the step/result envelopes tunnelled
 in `step.params` / `step_result.after`, and the unsigned `control`, with the
 typed signed forms above, and added `hello.deadman`. A controller sends steps
-and controls only to agents announcing minor >= 1.
+and controls only to agents announcing minor >= 1. `hello.epoch` (the highest
+signed epoch the agent accepted) was added within the version: an agent that
+starts without a mark sends no `epoch` and the controller reads it as 0.
 
 `hello.proto` and `welcome.proto` carry the major protocol version (now 1). A
 controller that does not support the agent's `proto` MUST close the connection

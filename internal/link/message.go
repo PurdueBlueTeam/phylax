@@ -127,7 +127,11 @@ type Hello struct {
 	Roles   []string       `json:"roles,omitempty"`
 	Caps    map[string]any `json:"caps,omitempty"`
 	LastSeq uint64         `json:"last_seq"`
-	Token   string         `json:"token,omitempty"` // one-time enrollment token, first contact only
+	// Epoch is the highest epoch of a signed config, step or control this
+	// agent has accepted (its sequence mark). A restored controller raises its
+	// epoch above every reported one before it signs anything.
+	Epoch uint64 `json:"epoch,omitempty"`
+	Token string `json:"token,omitempty"` // one-time enrollment token, first contact only
 	// Minor is the sender's protocol minor revision (absent = 0).
 	Minor int `json:"minor,omitempty"`
 	// BinarySHA256 is the sha256 hex of the running agent binary

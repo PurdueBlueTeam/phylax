@@ -157,6 +157,41 @@ func checkSnapshot(ctx context.Context, path string) error {
 	return nil
 }
 
+// RaiseEpoch sets the epoch to max(current, atLeast), appending an epochs row
+// with reason when it rose. It returns the epoch in force.
+func (s *Store) RaiseEpoch(ctx context.Context, atLeast uint64, reason string) (uint64, error) {
+	tx, err := s.w.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var cur uint64
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key='epoch'`).Scan(&cur); err != nil {
+		return 0, err
+	}
+	if atLeast <= cur {
+		return cur, nil
+	}
+	if reason == "" {
+		reason = "raise"
+	}
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`UPDATE meta SET value=? WHERE key='epoch'`, []any{fmt.Sprint(atLeast)}},
+		{`INSERT INTO epochs(epoch, started, reason) VALUES (?,?,?)`, []any{atLeast, time.Now().UnixNano(), reason}},
+	} {
+		if _, err := tx.ExecContext(ctx, q.sql, q.args...); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return atLeast, nil
+}
+
 // EpochRecord is one entry of the epoch history.
 type EpochRecord struct {
 	Epoch   uint64

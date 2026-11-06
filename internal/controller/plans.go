@@ -177,6 +177,9 @@ func (c *Controller) PlanPublicKey() ed25519.PublicKey {
 }
 
 func (c *Controller) signer(ctx context.Context) (*plan.Signer, error) {
+	if err := c.signingWaitErr(); err != nil {
+		return nil, err
+	}
 	ep, err := c.st.Epoch(ctx)
 	if err != nil {
 		return nil, err
@@ -542,6 +545,11 @@ func (c *Controller) SendControl(ctx context.Context, host, kind string, on bool
 // lock so controls reach the (FIFO) critical queue in sequence order; the agent
 // refuses a control whose sequence number is not above the last it accepted.
 func (c *Controller) sendControl(ctx context.Context, ag *agentConn, host, kind string, on bool, args []byte, try bool) error {
+	if kind == plan.ControlDeadmanConfirm {
+		if err := c.signingWaitErr(); err != nil {
+			return err
+		}
+	}
 	if ag.minor < link.MinSignedMinor {
 		return fmt.Errorf("controller: agent %q speaks protocol minor %d; signed controls need %d", host, ag.minor, link.MinSignedMinor)
 	}

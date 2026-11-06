@@ -110,6 +110,11 @@ type Controller struct {
 	agents map[string]*agentState
 	alerts []Alert
 
+	// restoreWait is the hosts a restored controller still waits for before
+	// it signs (restorewait.go); persisted under restoreWaitKey.
+	rwmu        sync.Mutex
+	restoreWait map[string]bool
+
 	reg     *actions.Registry
 	planKey ed25519.PrivateKey
 	pmu     sync.Mutex // guards plans and pend
@@ -214,7 +219,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{},
-		probeRetry: 5 * time.Second}
+		probeRetry: 5 * time.Second, restoreWait: map[string]bool{}}
 	enr, err := enroll.New(enroll.Options{
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
 		PlanKey:    pk.Public().(ed25519.PublicKey),
@@ -274,6 +279,10 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		// instantly report every agent silent.
 		s := c.stateLocked(a.ID)
 		s.lastSeen = c.now()
+	}
+	if err := c.loadRestoreWait(ctx); err != nil {
+		st.Close()
+		return nil, err
 	}
 	return c, nil
 }
