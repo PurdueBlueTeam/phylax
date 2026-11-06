@@ -22,6 +22,9 @@ const (
 	OutcomeVerified   = "verified"
 	OutcomeFailed     = "failed"
 	OutcomeRolledBack = "rolled_back"
+	// OutcomeBusy is a valid step the agent did not start because its
+	// executor is full. The controller retries it; it is never a failure.
+	OutcomeBusy = "busy"
 )
 
 // ResultBody is the signed content of a step result.
@@ -131,7 +134,7 @@ func (r *StepResult) VerifyExpect(pub *ecdsa.PublicKey, step Expect) error {
 		return fmt.Errorf("result: does not answer step (%s,%d,%d)", step.NodeID, step.Epoch, step.Seq)
 	}
 	switch r.Outcome {
-	case OutcomeChecked, OutcomeApplied, OutcomeVerified, OutcomeFailed, OutcomeRolledBack:
+	case OutcomeChecked, OutcomeApplied, OutcomeVerified, OutcomeFailed, OutcomeRolledBack, OutcomeBusy:
 	default:
 		return fmt.Errorf("result: unknown outcome %q", r.Outcome)
 	}

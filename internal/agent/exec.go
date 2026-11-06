@@ -145,15 +145,17 @@ func (a *Agent) handleStep(ctx context.Context, w *link.Step, reply Reply) error
 	if err := x.ver.Verify(s); err != nil {
 		return refuse(err.Error())
 	}
-	x.setRunning(s, true)
 	if s.Phase != plan.PhaseCheck && (s.Approval == nil || s.Approval.By == "" || s.Approval.By == DryRunApprover) {
 		return a.finishStep(ctx, reply, s, plan.OutcomeFailed, "step has no approval record", nil)
 	}
 	select {
 	case x.sem <- struct{}{}:
 	default:
-		return a.finishStep(ctx, reply, s, plan.OutcomeFailed, "agent busy: too many steps executing", nil)
+		// Valid step over the cap: answer busy, do not record it as running.
+		// The controller re-sends the node with a fresh sequence number.
+		return a.finishStep(ctx, reply, s, plan.OutcomeBusy, "agent busy", nil)
 	}
+	x.setRunning(s, true)
 	a.execWG.Add(1)
 	go func() {
 		defer a.execWG.Done()

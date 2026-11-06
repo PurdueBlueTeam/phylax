@@ -163,9 +163,13 @@ content: changing any field fails verification.
   `sig` (Ed25519, plan key). Executor checks: signature, host binding, window,
   `(epoch, seq)` monotonic (durable mark), approval record for non-check phases.
 - **`step_result`**: the fields are `plan.ResultBody`; `status` is the signed
-  outcome (`checked|applied|verified|failed|rolled_back`), `sig` is the agent's
-  ECDSA P-256 identity signature. `detail` is an optional object (diff, notes)
-  whose SHA-256 is the signed `after_digest`. Four statuses are **unsigned**
+  outcome (`checked|applied|verified|failed|rolled_back|busy`), `sig` is the
+  agent's ECDSA P-256 identity signature. `busy` is a valid step the agent did
+  not start because its executor was full (the 8-step cap): the controller
+  re-sends the node with a fresh sequence number and never treats it as a
+  failure, so it cannot trigger `on_failure` or the auto circuit breaker.
+  `detail` is an optional object (diff, notes) whose SHA-256 is the signed
+  `after_digest`. Four statuses are **unsigned**
   (no `sig`) and never accepted as an outcome: `rejected` (step refused before
   verification), and the answers to a `step_status` query: `unknown` (the
   agent never accepted `(epoch, seq)`: nothing was applied), `lost` (accepted

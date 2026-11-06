@@ -638,7 +638,43 @@ func (c *Controller) onStepResult(ag *agentConn, host string, m *link.StepResult
 	if c.takePending(key) == nil {
 		return
 	}
+	if out.outcome == plan.OutcomeBusy {
+		if pd.phase == plan.PhaseCheck {
+			out = checkResult{outcome: plan.OutcomeFailed, err: "agent busy"}
+		} else {
+			c.onBusy(pd)
+			return
+		}
+	}
 	c.deliver(pd, out, rec)
+}
+
+// maxBusyRetries bounds the re-sends of a node the agent answers busy.
+const maxBusyRetries = 30
+
+// onBusy re-queues a step the agent answered busy. It is a retry, never a
+// failure: no on_failure policy, audit failure or auto breaker sees it.
+func (c *Controller) onBusy(pd *pending) {
+	rt := pd.rt
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	nr := rt.nodes[pd.node]
+	if nr == nil || !nr.inflight {
+		return
+	}
+	nr.inflight, nr.cur, nr.want = false, nil, pd.phase
+	rt.busyRetries[pd.node]++
+	if rt.busyRetries[pd.node] > maxBusyRetries {
+		rt.failLocked(pd.node, "agent busy for 60 s", pd.phase)
+		rt.advanceLocked()
+		return
+	}
+	_ = rt.persistLocked(context.Background())
+	time.AfterFunc(c.opt.BusyRetry, func() {
+		rt.mu.Lock()
+		rt.advanceLocked()
+		rt.mu.Unlock()
+	})
 }
 
 // onStatusAnswer handles the unsigned answers to a step_status query.
@@ -972,6 +1008,7 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 }
 
 func (rt *planRT) onResultLocked(id string, pr phaseRec) {
+	delete(rt.busyRetries, id)
 	nr := rt.nodes[id]
 	nr.inflight, nr.cur = false, nil
 	nr.results = append(nr.results, pr)
