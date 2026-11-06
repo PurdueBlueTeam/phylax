@@ -52,24 +52,27 @@ func Agent(t *testing.T, c AgentCase) {
 	}
 }
 
+// agentChecks is the list of agent-side checks; checkNames reads it so the
+// design's count of conformance checks and the suite cannot drift.
+var agentChecks = []struct {
+	name string
+	fn   func(AgentCase) error
+}{
+	{"no_config", checkNoConfig},
+	{"default_config", checkDefaultConfig},
+	{"stops_cleanly", checkStopsCleanly},
+	{"health", checkHealth},
+	{"declared_kinds", checkDeclaredKinds},
+	{"link_loss", checkLinkLoss},
+	{"reconfig", checkReconfig},
+	{"config_decode", checkConfigDecode},
+}
+
 // runAgentChecks returns one error per named check. A check panicking is a
 // failure of that check, not of the suite.
 func runAgentChecks(c AgentCase) map[string]error {
-	checks := []struct {
-		name string
-		fn   func(AgentCase) error
-	}{
-		{"no_config", checkNoConfig},
-		{"default_config", checkDefaultConfig},
-		{"stops_cleanly", checkStopsCleanly},
-		{"health", checkHealth},
-		{"declared_kinds", checkDeclaredKinds},
-		{"link_loss", checkLinkLoss},
-		{"reconfig", checkReconfig},
-		{"config_decode", checkConfigDecode},
-	}
-	errs := make(map[string]error, len(checks))
-	for _, ch := range checks {
+	errs := make(map[string]error, len(agentChecks))
+	for _, ch := range agentChecks {
 		errs[ch.name] = safeCheck(ch.name, c, ch.fn)
 	}
 	return errs

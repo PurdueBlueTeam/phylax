@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, v4]
+    branches: [main, v4, "v4-*"]
   pull_request:
   workflow_dispatch:
 
@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,38 @@ jobs:
         run: make size
       - name: Vet (linux, windows)
         run: make vet
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Tests
         run: go test ./...
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Race
-        run: go test -race ./...
+        run: make race
+
+  # The module contract's T46 gate: the conformance suite over every
+  # registered module, with the full 60 s link loss window (no -short).
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Conformance
+        run: make conformance

@@ -245,7 +245,7 @@ func TestPinStaleAfterLegitUpdateIsInformational(t *testing.T) {
 	cmd := startSleep(t, bin)
 	truePath, err := exec.LookPath("true")
 	if err != nil {
-		t.Skip()
+		t.Skip("no true binary in PATH: the test needs a second executable to stage the update")
 	}
 	next := filepath.Join(dir, "next")
 	copyFile(t, truePath, next, 0o755)

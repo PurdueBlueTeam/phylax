@@ -48,21 +48,24 @@ func Controller(t *testing.T, c ControllerCase) {
 	}
 }
 
+// controllerChecks is the list of controller-side checks; checkNames reads it
+// so the design's count of conformance checks and the suite cannot drift.
+var controllerChecks = []struct {
+	name string
+	fn   func(ControllerCase) error
+}{
+	{"no_config", checkControllerNoConfig},
+	{"default_config", checkControllerDefaultConfig},
+	{"stops_cleanly", checkControllerStopsCleanly},
+	{"declared_kinds", checkControllerDeclaredKinds},
+	{"config_decode", checkControllerConfigDecode},
+	{"analysers", checkControllerAnalysers},
+	{"tables_replay", checkControllerTablesReplay},
+}
+
 func runControllerChecks(c ControllerCase) map[string]error {
-	checks := []struct {
-		name string
-		fn   func(ControllerCase) error
-	}{
-		{"no_config", checkControllerNoConfig},
-		{"default_config", checkControllerDefaultConfig},
-		{"stops_cleanly", checkControllerStopsCleanly},
-		{"declared_kinds", checkControllerDeclaredKinds},
-		{"config_decode", checkControllerConfigDecode},
-		{"analysers", checkControllerAnalysers},
-		{"tables_replay", checkControllerTablesReplay},
-	}
-	errs := make(map[string]error, len(checks))
-	for _, ch := range checks {
+	errs := make(map[string]error, len(controllerChecks))
+	for _, ch := range controllerChecks {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {

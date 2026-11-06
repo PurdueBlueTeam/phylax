@@ -4,7 +4,7 @@ GOOS    ?= linux
 GOARCH  ?= amd64
 CGO     ?= 0
 
-.PHONY: build build-windows test race vet size gate clean
+.PHONY: build build-windows test race vet size gate conformance clean
 
 build:
 	CGO_ENABLED=$(CGO) $(GO) build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/phylax
@@ -18,6 +18,13 @@ test:
 # -race needs cgo and gcc; the other targets stay CGO_ENABLED=0.
 race:
 	CGO_ENABLED=1 $(GO) test -race ./...
+
+# conformance is CI's T46 gate: the suite's own checks over the whole module
+# package tree, then every module's conformance test. It runs the full 60 s
+# link-loss window (no -short) and needs cgo for the race detector.
+conformance:
+	CGO_ENABLED=1 $(GO) test -race -count=1 ./internal/module/...
+	CGO_ENABLED=1 $(GO) test -race -count=1 -run Conformance ./...
 
 vet:
 	$(GO) vet ./...
