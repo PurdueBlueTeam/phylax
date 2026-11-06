@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"sort"
-	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -67,8 +65,7 @@ func (a *Agent) AppliedConfig() *plan.AgentConfig {
 
 func (a *Agent) refuseConfig(w *link.Config, why string) error {
 	a.log.Warn("config refused", "version", w.Version, "epoch", w.Epoch, "why", why)
-	a.emit(event.Event{Kind: "agent.config_rejected", Priority: event.PriorityHigh,
-		Fields: map[string]any{"version": w.Version, "epoch": w.Epoch, "reason": why}})
+	a.emit(core("agent.config_rejected", event.AgentConfigRejected{Version: w.Version, Epoch: w.Epoch, Reason: why}))
 	return nil
 }
 
@@ -137,8 +134,9 @@ func (a *Agent) loadPersistedConfig() {
 	}
 	if err != nil {
 		a.log.Error("persisted config rejected", "err", err)
-		a.emit(event.Event{Kind: "agent.config_rejected", Priority: event.PriorityCritical,
-			Fields: map[string]any{"reason": "persisted config: " + err.Error()}})
+		ev := core("agent.config_rejected", event.AgentConfigRejected{Reason: "persisted config: " + err.Error()})
+		ev.Priority = event.PriorityCritical // today's emitter: the agent runs without a config
+		a.emit(ev)
 		return
 	}
 	a.adopt(cfg)
@@ -240,16 +238,6 @@ func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 		a.cfgStat = ConfigStatus{State: state, Epoch: cfg.Epoch, Version: cfg.Version, Modules: res}
 	}
 	a.mu.Unlock()
-	names := make([]string, 0, len(res))
-	for n := range res {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	mf := map[string]any{}
-	for _, n := range names {
-		mf[n] = res[n]
-	}
 	a.log.Info("config applied", "epoch", cfg.Epoch, "version", cfg.Version, "state", state)
-	a.emit(event.Event{Kind: "agent.config_applied", Priority: event.PriorityHigh, Time: time.Now(),
-		Fields: map[string]any{"epoch": cfg.Epoch, "version": cfg.Version, "state": state, "modules": mf}})
+	a.emit(core("agent.config_applied", event.AgentConfigApplied{Epoch: cfg.Epoch, Version: cfg.Version, State: state, Modules: res}))
 }

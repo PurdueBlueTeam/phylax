@@ -162,6 +162,17 @@ func (a *Agent) emit(e event.Event) error {
 	return err
 }
 
+// core builds an event of a declared kind. The kind and its payload struct are
+// declared together, so a mismatch is a programming error: emitting a core
+// event under the wrong shape must never silently drop security telemetry.
+func core[T any](kind string, v T) event.Event {
+	e, err := event.New(kind, v)
+	if err != nil {
+		panic("agent: " + err.Error())
+	}
+	return e
+}
+
 // HealthSource implementation.
 func (a *Agent) SpoolStats() spool.Stats { return a.sp.Stats() }
 func (a *Agent) Modules() map[string]ModuleStatus {
@@ -214,13 +225,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	acted, rerr := a.dm.Recover(ctx)
 	for _, e := range acted {
-		a.emit(event.Event{Kind: "agent.deadman_recovered", Priority: event.PriorityCritical,
-			Fields: map[string]any{"id": e.ID, "node": e.NodeID, "state": string(e.State), "error": e.Error}})
+		ev := core("agent.deadman_recovered", event.AgentDeadmanRecovered{ID: e.ID, Node: e.NodeID, State: string(e.State), Error: e.Error})
+		ev.Priority = event.PriorityCritical // today's emitter: a rollback a human must see
+		a.emit(ev)
 	}
 	if rerr != nil {
 		a.log.Error("dead-man recovery", "err", rerr)
-		a.emit(event.Event{Kind: "agent.deadman_recovery_error", Priority: event.PriorityCritical,
-			Fields: map[string]any{"error": rerr.Error()}})
+		ev := core("agent.deadman_recovery_error", event.AgentDeadmanRecoveryError{Error: rerr.Error()})
+		ev.Priority = event.PriorityCritical
+		a.emit(ev)
 	}
 
 	so2 := a.cfg.Supervisor
@@ -247,8 +260,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	go func() { defer wg.Done(); a.configLoop(ctx) }()
 	// Last good config first: with the controller away the modules still run.
 	a.loadPersistedConfig()
-	a.emit(event.Event{Kind: "agent.start", Priority: event.PriorityHigh, Fields: map[string]any{
-		"version": a.cfg.Version, "os": runtime.GOOS, "arch": runtime.GOARCH, "roles": a.bundle.Roles}})
+	a.emit(core("agent.start", event.AgentStart{Version: a.cfg.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Roles: a.bundle.Roles}))
 	sdNotify("READY=1")
 	go a.watchdog(ctx)
 

@@ -306,8 +306,7 @@ func (s *Supervisor) supervise(ctx context.Context, m *modState) {
 }
 
 func (s *Supervisor) crashEvent(name string, err error, d time.Duration) {
-	_ = s.o.Emit(event.Event{Kind: "agent.module_crash", Priority: event.PriorityHigh,
-		Fields: map[string]any{"module": name, "error": err.Error(), "restart_in_ms": d.Milliseconds()}})
+	_ = s.o.Emit(core("agent.module_crash", event.AgentModuleCrash{Module: name, Error: err.Error(), RestartInMS: d.Milliseconds()}))
 }
 
 // runOnce runs the module with panic recovery and the budget watcher.

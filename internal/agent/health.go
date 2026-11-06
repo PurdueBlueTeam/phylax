@@ -77,14 +77,14 @@ func (h *healthModule) report(emit Emit, now time.Time) {
 		mf[n] = map[string]any{"state": m.State, "restarts": m.Restarts, "emitted": m.Emitted,
 			"rate_dropped": m.RateDropped, "spool_drops": m.SpoolDrops, "last_error": m.LastError}
 	}
-	emit(event.Event{Kind: "agent.health", Priority: event.PriorityNormal, Fields: map[string]any{
-		"spool": map[string]any{"head": sp.HeadSeq, "ack": sp.AckSeq, "depth": sp.HeadSeq - sp.AckSeq,
+	emit(core("agent.health", event.AgentHealth{
+		Spool: map[string]any{"head": sp.HeadSeq, "ack": sp.AckSeq, "depth": sp.HeadSeq - sp.AckSeq,
 			"used_bytes": sp.UsedBytes, "max_bytes": sp.MaxBytes, "unacked_bytes": sp.UnackedBytes,
 			"shed": sp.Shed, "gap_records": sp.GapRecords, "state": sp.State},
-		"modules": mf,
-		"link": map[string]any{"connected": lk.Connected, "enrolled": lk.Enrolled, "connects": lk.Connects,
+		Modules: mf,
+		Link: map[string]any{"connected": lk.Connected, "enrolled": lk.Enrolled, "connects": lk.Connects,
 			"last_error": lk.LastError},
-	}})
+	}))
 	from := h.last.UTC().Format(time.RFC3339Nano)
 	to := now.UTC().Format(time.RFC3339Nano)
 	for _, n := range names {
@@ -106,8 +106,7 @@ func (h *healthModule) report(emit Emit, now time.Time) {
 }
 
 func gap(source, reason string, count uint64, from, to string) event.Event {
-	return event.Event{Kind: "telemetry_gap", Priority: event.PriorityHigh,
-		Fields: map[string]any{"source": source, "reason": reason, "count": count, "from": from, "to": to}}
+	return core(event.KindTelemetryGap, event.TelemetryGap{Source: source, Reason: reason, Count: count, From: from, To: to})
 }
 
 const healthDefaultFP = "default"

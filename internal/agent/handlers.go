@@ -49,8 +49,7 @@ func (a *Agent) placeholderFetch(_ context.Context, f *link.Fetch, _ Reply) erro
 func (a *Agent) handleControl(ctx context.Context, w *link.Control, reply Reply) error {
 	refuse := func(why string) error {
 		a.log.Warn("control refused", "kind", w.Kind, "why", why)
-		a.emit(event.Event{Kind: "agent.control_refused", Priority: event.PriorityHigh,
-			Fields: map[string]any{"kind": w.Kind, "reason": why, "epoch": w.Epoch, "seq": w.Seq}})
+		a.emit(core("agent.control_refused", event.AgentControlRefused{Kind: w.Kind, Reason: why, Epoch: w.Epoch, Seq: w.Seq}))
 		return nil
 	}
 	if a.ctlVer == nil {
@@ -134,9 +133,9 @@ func (a *Agent) stepStatus(ctx context.Context, c *plan.Control, reply Reply) er
 
 // onDeadmanResult reports every in-process dead-man timer fire to the controller.
 func (a *Agent) onDeadmanResult(e deadman.Entry, err error) {
-	f := map[string]any{"id": e.ID, "node": e.NodeID, "state": string(e.State)}
+	f := event.AgentDeadmanFired{ID: e.ID, Node: e.NodeID, State: string(e.State)}
 	if err != nil {
-		f["error"] = err.Error()
+		f.Error = err.Error()
 	}
-	a.emit(event.Event{Kind: "agent.deadman_fired", Priority: event.PriorityCritical, Fields: f})
+	a.emit(core("agent.deadman_fired", f))
 }

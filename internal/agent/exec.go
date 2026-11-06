@@ -126,8 +126,7 @@ func (a *Agent) handleStep(ctx context.Context, w *link.Step, reply Reply) error
 	x := a.exec
 	refuse := func(msg string) error {
 		a.log.Warn("step refused", "plan", w.Plan, "node", w.Node, "why", msg)
-		a.emit(event.Event{Kind: "agent.step_refused", Priority: event.PriorityHigh,
-			Fields: map[string]any{"plan": w.Plan, "node": w.Node, "phase": w.Phase, "reason": msg}})
+		a.emit(core("agent.step_refused", event.AgentStepRefused{Plan: w.Plan, Node: w.Node, Phase: w.Phase, Reason: msg}))
 		phase := w.Phase
 		if phase == "" {
 			phase = plan.PhaseCheck
@@ -185,8 +184,7 @@ func (a *Agent) runStep(ctx context.Context, s *plan.Step, reply Reply) {
 		return
 	}
 	req := actions.Request{Action: s.Action, Params: params, NodeID: nodeKey(s.PlanID, s.NodeID)}
-	a.emit(event.Event{Kind: "agent.step", Priority: event.PriorityHigh, Fields: map[string]any{
-		"plan": s.PlanID, "node": s.NodeID, "phase": s.Phase, "action": s.Action, "epoch": s.Epoch, "seq": s.Seq}})
+	a.emit(core("agent.step", event.AgentStep{Plan: s.PlanID, Node: s.NodeID, Phase: s.Phase, Action: s.Action, Epoch: s.Epoch, Seq: s.Seq}))
 
 	switch s.Phase {
 	case plan.PhaseCheck:

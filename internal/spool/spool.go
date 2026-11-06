@@ -247,7 +247,7 @@ func (s *Spool) flushRun() error {
 		return err // no room even for the record: keep the run pending
 	}
 	g := event.Event{
-		Agent: s.opts.Agent, Time: s.opts.Now(), Kind: GapKind, Priority: event.PriorityCritical,
+		Agent: s.opts.Agent, Time: s.opts.Now(), Kind: GapKind, Schema: 1, Priority: event.PriorityCritical,
 		Fields: map[string]any{"from": r.from, "to": to, "count": r.count, "class": r.className()},
 	}
 	if err := g.Seal(to, s.headHash); err != nil {
