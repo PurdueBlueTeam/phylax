@@ -27,9 +27,12 @@ type enrFixture struct {
 func newEnroller(t *testing.T) *enrFixture { return newEnrollerWith(t, nil) }
 
 func newEnrollerWith(t *testing.T, mod func(*Options)) *enrFixture {
+	return newEnrollerAt(t, t.TempDir(), mod)
+}
+
+func newEnrollerAt(t *testing.T, dir string, mod func(*Options)) *enrFixture {
 	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
 	id, err := link.GenerateIdentity("phylax-controller")
 	if err != nil {
 		t.Fatal(err)

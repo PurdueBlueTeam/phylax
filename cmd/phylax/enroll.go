@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -283,10 +282,18 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 		targets = append(targets, enroll.Target{Host: host, Addr: enrollPushAddr(h), User: user,
 			Pass: vault.NewSecretString(pass), Hostname: host})
 	}
+	secrets := make(map[string][]byte, len(targets))
+	for _, t := range targets {
+		sec, err := e.HostNameSecret(t.Host)
+		if err != nil {
+			return err
+		}
+		secrets[t.Host] = sec
+	}
 	pusher := &enroll.SSHPusher{Binary: bin, Controller: *ctl, Timeout: 30 * time.Second}
 	results := enroll.PushAll(ctx, targets, *parallel, func(ctx context.Context, t enroll.Target) error {
 		p := *pusher
-		p.NameSecret = enrollNameSecret(t.Host)
+		p.NameSecret = secrets[t.Host]
 		return p.Push(ctx, e, t)
 	})
 	failed := 0
@@ -307,13 +314,6 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 		return fmt.Errorf("enroll: push failed for %d of %d hosts", failed, len(results))
 	}
 	return nil
-}
-
-// enrollNameSecret is the stable per-host secret the service, binary and
-// directory names derive from, so a later push lands on the same paths.
-func enrollNameSecret(host string) []byte {
-	sum := sha256.Sum256([]byte("phylax-enroll:" + host))
-	return sum[:]
 }
 
 func enrollStatus(ctx context.Context, b *enrollBase, args []string, stdout io.Writer) error {

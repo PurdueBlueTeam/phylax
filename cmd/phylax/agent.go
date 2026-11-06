@@ -168,8 +168,8 @@ func agentRollback(ctx context.Context, args []string) error {
 }
 
 type installFlags struct {
-	stateDir, boot, name, binName, dir, secret string
-	memMax, cpu                                string
+	stateDir, boot, name, binName, dir, secret, secretFile string
+	memMax, cpu                                            string
 }
 
 func parseInstallFlags(name string, args []string) (*installFlags, error) {
@@ -181,10 +181,21 @@ func parseInstallFlags(name string, args []string) (*installFlags, error) {
 	fs.StringVar(&f.dir, "dir", "", "install directory (default: derived under /opt or %ProgramFiles%)")
 	fs.StringVar(&f.stateDir, "state-dir", "", "state directory (default: <dir>/state)")
 	fs.StringVar(&f.secret, "secret", "", "hex secret to derive randomised names from")
+	fs.StringVar(&f.secretFile, "secret-file", "", "read the hex secret from this file (the install deletes it)")
 	fs.StringVar(&f.memMax, "memory-max", "256M", "systemd MemoryMax")
 	fs.StringVar(&f.cpu, "cpu-quota", "50%", "systemd CPUQuota")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
+	}
+	if f.secretFile != "" {
+		if f.secret != "" {
+			return nil, errors.New("--secret and --secret-file are mutually exclusive")
+		}
+		b, err := readSecretFile(f.secretFile)
+		if err != nil {
+			return nil, err
+		}
+		f.secret = strings.TrimSpace(string(b))
 	}
 	n := svcinstall.Names{Service: "phylax", Binary: "phylax", Dir: "phylax"}
 	if f.secret != "" {
@@ -216,6 +227,23 @@ func parseInstallFlags(name string, args []string) (*installFlags, error) {
 	return f, nil
 }
 
+// readSecretFile bounds and reads the secret file; os.Remove happens in
+// agentInstall after a dry run is ruled out.
+func readSecretFile(path string) ([]byte, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("--secret-file: %w", err)
+	}
+	if fi.Size() > 1024 {
+		return nil, errors.New("--secret-file is larger than 1 KiB")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("--secret-file: %w", err)
+	}
+	return b, nil
+}
+
 func (f *installFlags) spec(bin string) svcinstall.Spec {
 	return svcinstall.Spec{Name: f.name, DisplayName: f.name, Description: f.name, Binary: bin,
 		Args:      []string{"agent", "run", "--state-dir", f.stateDir, "--service-name", f.name},
@@ -232,6 +260,10 @@ func agentInstall(ctx context.Context, dry bool, args []string) error {
 		u, err := svcinstall.SystemdUnit(f.spec(bin))
 		fmt.Print(u)
 		return err
+	}
+	if f.secretFile != "" {
+		// The install step reads and deletes the secret file.
+		_ = os.Remove(f.secretFile)
 	}
 	if f.boot == "" {
 		return errors.New("--bootstrap is required")

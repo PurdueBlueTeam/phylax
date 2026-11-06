@@ -13,6 +13,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// sshFakeCmd is one exec request the fake server saw.
+type sshFakeCmd struct {
+	cmd   string
+	stdin []byte
+}
+
 // sshFake is a minimal in-process SSH server for the enroll pusher tests.
 type sshFake struct {
 	user     string
@@ -20,7 +26,7 @@ type sshFake struct {
 	hostname string
 
 	mu   sync.Mutex
-	cmds []string
+	cmds []sshFakeCmd
 }
 
 func startSSHFake(t *testing.T, f *sshFake) string {
@@ -85,12 +91,15 @@ func (f *sshFake) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		var p struct{ Command string }
 		ssh.Unmarshal(r.Payload, &p)
 		r.Reply(true, nil)
+		var stdin []byte
+		if strings.Contains(p.Command, "base64 -d") {
+			stdin, _ = io.ReadAll(ch)
+		}
 		f.mu.Lock()
-		f.cmds = append(f.cmds, p.Command)
+		f.cmds = append(f.cmds, sshFakeCmd{cmd: p.Command, stdin: stdin})
 		f.mu.Unlock()
 		switch {
 		case strings.Contains(p.Command, "base64 -d"):
-			io.Copy(io.Discard, ch)
 		case p.Command == "echo PHYLAXOK":
 			io.WriteString(ch, "PHYLAXOK\n")
 		case p.Command == "hostname -s":
@@ -102,4 +111,10 @@ func (f *sshFake) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		ch.Close()
 		return
 	}
+}
+
+func (f *sshFake) commands() []sshFakeCmd {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sshFakeCmd(nil), f.cmds...)
 }

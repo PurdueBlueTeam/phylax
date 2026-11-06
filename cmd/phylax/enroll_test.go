@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -158,6 +159,43 @@ func TestEnrollPushAgainstFakeSSH(t *testing.T) {
 	if strings.Contains(out, "root:pw") || strings.Contains(out, "root:bad") {
 		t.Errorf("stdout leaked a password:\n%s", out)
 	}
+	// The randomised-name secret must not be on any command line; the install
+	// step reads it from a 0600 file instead.
+	var secretHex string
+	for _, c := range fake.commands() {
+		if strings.Contains(c.cmd, "name.key") && strings.Contains(c.cmd, "base64 -d") {
+			secretHex = strings.TrimSpace(string(mustBase64(t, c.stdin)))
+		}
+	}
+	if len(secretHex) != 64 {
+		t.Fatalf("no name-secret upload of a 32-byte hex secret: %q", secretHex)
+	}
+	for _, c := range fake.commands() {
+		if strings.Contains(c.cmd, secretHex) {
+			t.Errorf("a command line carries the name secret: %q", c.cmd)
+		}
+		if strings.Contains(c.cmd, "--secret ") {
+			t.Errorf("a command line carries --secret: %q", c.cmd)
+		}
+	}
+	var install string
+	for _, c := range fake.commands() {
+		if strings.Contains(c.cmd, "agent install") {
+			install = c.cmd
+		}
+	}
+	if !strings.Contains(install, "--secret-file") {
+		t.Errorf("the install command does not use --secret-file: %q", install)
+	}
+}
+
+func mustBase64(t *testing.T, b []byte) []byte {
+	t.Helper()
+	out, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(b), "\n", ""))
+	if err != nil {
+		t.Fatalf("not base64: %v", err)
+	}
+	return out
 }
 
 func TestEnrollStatus(t *testing.T) {

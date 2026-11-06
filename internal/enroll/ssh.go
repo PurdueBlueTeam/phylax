@@ -173,8 +173,18 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		return fail(ClassInstall, "bundle upload: "+strings.TrimSpace(out+errOut))
 	}
 
-	install := fmt.Sprintf("'%s/%s' agent install --bootstrap '%s/boot.json' --secret %s",
-		dir, names.Binary, state, hex.EncodeToString(p.NameSecret))
+	secretHex := hex.EncodeToString(p.NameSecret)
+	secretCmd := fmt.Sprintf("base64 -d > '%[1]s/name.key.tmp' && chmod 600 '%[1]s/name.key.tmp' && mv '%[1]s/name.key.tmp' '%[1]s/name.key'", state)
+	out, errOut, code, err = runSSH(ctx, client, secretCmd, []byte(secretHex))
+	if ctx.Err() != nil {
+		return fail(ClassTimeout, "secret upload")
+	}
+	if err != nil || code != 0 {
+		return fail(ClassInstall, "secret upload: "+strings.TrimSpace(out+errOut))
+	}
+
+	install := fmt.Sprintf("'%s/%s' agent install --bootstrap '%s/boot.json' --secret-file '%s/name.key'",
+		dir, names.Binary, state, state)
 	out, errOut, code, err = runSSH(ctx, client, install, nil)
 	if ctx.Err() != nil {
 		return fail(ClassTimeout, "agent install")

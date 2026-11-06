@@ -254,8 +254,20 @@ func TestSSHPushInstalls(t *testing.T) {
 	if !strings.Contains(installCmd, "agent install --bootstrap") {
 		t.Fatalf("no install command: %+v", cmds)
 	}
-	if !strings.Contains(installCmd, "--secret "+hex.EncodeToString(secret)) {
-		t.Errorf("install command lacks the name secret: %q", installCmd)
+	if !strings.Contains(installCmd, "--secret-file") {
+		t.Errorf("install command does not use --secret-file: %q", installCmd)
+	}
+	if strings.Contains(installCmd, "--secret ") {
+		t.Errorf("install command carries --secret: %q", installCmd)
+	}
+	var secretHex string
+	for _, c := range cmds {
+		if strings.Contains(c.cmd, "name.key") && strings.Contains(c.cmd, "base64 -d") {
+			secretHex = strings.TrimSpace(string(mustDecode(t, c.stdin)))
+		}
+	}
+	if secretHex != hex.EncodeToString(secret) {
+		t.Errorf("secret upload = %q, want %q", secretHex, hex.EncodeToString(secret))
 	}
 	for _, c := range cmds {
 		if strings.Contains(c.cmd, "pw") {
@@ -264,7 +276,19 @@ func TestSSHPushInstalls(t *testing.T) {
 		if strings.Contains(c.cmd, bundle.Token) {
 			t.Errorf("a command line carries the token: %q", c.cmd)
 		}
+		if strings.Contains(c.cmd, secretHex) {
+			t.Errorf("a command line carries the name secret: %q", c.cmd)
+		}
 	}
+}
+
+func mustDecode(t *testing.T, b []byte) []byte {
+	t.Helper()
+	out, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(b), "\n", ""))
+	if err != nil {
+		t.Fatalf("not base64: %v", err)
+	}
+	return out
 }
 
 func TestSSHPushHostnameMismatchUploadsNothing(t *testing.T) {
