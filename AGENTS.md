@@ -68,3 +68,6 @@ code from the `main` or `qwen-wip` branches; their review is in ccdc-private
 - Go's `tls.NewListener` defers the handshake: call `HandshakeContext` before
   reading `ConnectionState().NegotiatedProtocol` (ALPN), and do it off the accept
   loop with a deadline.
+- This dev VM and most containers mount `/proc` with `noexec`, so a memfd
+  cannot be executed through `/proc/self/fd`; the depot falls back to a private
+  0500 copy of the verified bytes. Keep that fallback (`internal/depot/exec_*.go`).
