@@ -34,11 +34,11 @@ func TestReadEVE(t *testing.T) {
 	if len(evs) != 2 || st.Bad != 1 || st.Skipped != 2 {
 		t.Fatalf("%d events, %+v", len(evs), st)
 	}
-	a, err := event.Decode[Alert](evs[0], KindAlert)
+	a, err := event.Decode[Event](evs[0], Kind)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !evs[0].Time.Before(evs[1].Time) || a.SignatureID != 2001219 || evs[0].Kind != KindAlert {
+	if !evs[0].Time.Before(evs[1].Time) || a.SignatureID != 2001219 || a.Type != TypeAlert {
 		t.Fatalf("not time-sorted or wrong parse: %+v", evs[0])
 	}
 	if evs[0].Priority >= evs[1].Priority { // severity 1 outranks 2
@@ -58,7 +58,7 @@ func TestZeekAndJoin(t *testing.T) {
 	ef, _ := os.Open("testdata/eve.json")
 	alerts, _, _ := ReadEVE(ef, false)
 	cf, _ := os.Open("testdata/conn.log")
-	conns, st, err := ReadZeek(cf, KindZeekConn)
+	conns, st, err := ReadZeek(cf, TypeZeekConn)
 	if err != nil || len(conns) != 1 || st.Bad != 1 {
 		t.Fatalf("%v %+v %v", conns, st, err)
 	}
@@ -66,22 +66,22 @@ func TestZeekAndJoin(t *testing.T) {
 		t.Fatal(conns[0].Time)
 	}
 	df, _ := os.Open("testdata/dns.jsonl")
-	dns, _, _ := ReadZeek(df, KindZeekDNS)
+	dns, _, _ := ReadZeek(df, TypeZeekDNS)
 	if len(dns) != 1 {
 		t.Fatalf("%+v", dns)
 	}
-	d, err := event.Decode[ZeekDNS](dns[0], KindZeekDNS)
-	if err != nil || d.Query != "evil.example" {
+	d, err := event.Decode[Event](dns[0], Kind)
+	if err != nil || d.Query != "evil.example" || d.Type != TypeZeekDNS {
 		t.Fatalf("%+v %v", dns, err)
 	}
 	j := Join(alerts, conns, dns)
 	g := j["1:LQU9qZlK+B5F3KDmev6m5PMibrg="]
-	if len(g) != 2 || g[0].Kind != KindAlert && g[1].Kind != KindAlert {
+	if len(g) != 2 {
 		t.Fatalf("suricata alert and zeek conn not joined by community id: %+v", g)
 	}
-	kinds := g[0].Kind + "," + g[1].Kind
-	if !strings.Contains(kinds, "suricata.alert") || !strings.Contains(kinds, "suricata.zeek_conn") {
-		t.Fatal(kinds)
+	types := g[0].Fields["type"].(string) + "," + g[1].Fields["type"].(string)
+	if !strings.Contains(types, TypeAlert) || !strings.Contains(types, TypeZeekConn) {
+		t.Fatal(types)
 	}
 }
 

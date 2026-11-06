@@ -8,107 +8,74 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 )
 
-// The kinds this module emits. Zeek's records are named under suricata because
-// the contract allows only the module's own prefix, and the module is the
-// integration for both tools (design: renaming map).
+// Kind is the one kind this module emits (design: Event kinds). Type names the
+// record and the rest of the payload is that record's fields.
+const Kind = "suricata.event"
+
+// The record types carried by the one kind.
 const (
-	KindAlert    = "suricata.alert"
-	KindDNS      = "suricata.dns"
-	KindHTTP     = "suricata.http"
-	KindZeekConn = "suricata.zeek_conn"
-	KindZeekDNS  = "suricata.zeek_dns"
-	KindRun      = "suricata.run"
+	TypeAlert    = "alert"
+	TypeDNS      = "dns"
+	TypeHTTP     = "http"
+	TypeZeekConn = "zeek_conn"
+	TypeZeekDNS  = "zeek_dns"
+	TypeRun      = "run"
 )
 
-// Alert is one Suricata alert, with the flow it belongs to.
-type Alert struct {
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DestIP      string `json:"dest_ip"`
-	DestPort    int    `json:"dest_port"`
-	Proto       string `json:"proto"`
+// Event is one Suricata or Zeek record. The flow fields are shared by alert,
+// dns, http, zeek_conn and zeek_dns; the rest belong to the record named by
+// Type.
+type Event struct {
+	Type string `json:"type"`
+
+	// flow fields
+	SrcIP       string `json:"src_ip,omitempty"`
+	SrcPort     int    `json:"src_port,omitempty"`
+	DestIP      string `json:"dest_ip,omitempty"`
+	DestPort    int    `json:"dest_port,omitempty"`
+	Proto       string `json:"proto,omitempty"`
 	CommunityID string `json:"community_id,omitempty"`
 	FlowID      int64  `json:"flow_id,omitempty"`
-	SignatureID int    `json:"signature_id"`
+
+	// alert
+	SignatureID int    `json:"signature_id,omitempty"`
 	Signature   string `json:"signature,omitempty"`
 	Category    string `json:"category,omitempty"`
-	Severity    int    `json:"severity"`
+	Severity    int    `json:"severity,omitempty"`
 	Action      string `json:"action,omitempty"`
-}
 
-// DNS is one EVE dns record, carried as context for the alerts on its flow.
-type DNS struct {
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DestIP      string `json:"dest_ip"`
-	DestPort    int    `json:"dest_port"`
-	Proto       string `json:"proto"`
-	CommunityID string `json:"community_id,omitempty"`
-	FlowID      int64  `json:"flow_id,omitempty"`
-	RRName      string `json:"rrname,omitempty"`
-	RRType      string `json:"rrtype,omitempty"`
-}
+	// dns and zeek_dns
+	RRName    string `json:"rrname,omitempty"`
+	RRType    string `json:"rrtype,omitempty"`
+	Query     any    `json:"query,omitempty"`
+	QTypeName any    `json:"qtype_name,omitempty"`
+	RCodeName any    `json:"rcode_name,omitempty"`
+	Answers   any    `json:"answers,omitempty"`
 
-// HTTP is one EVE http record, carried as context for the alerts on its flow.
-type HTTP struct {
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DestIP      string `json:"dest_ip"`
-	DestPort    int    `json:"dest_port"`
-	Proto       string `json:"proto"`
-	CommunityID string `json:"community_id,omitempty"`
-	FlowID      int64  `json:"flow_id,omitempty"`
-	Hostname    string `json:"hostname,omitempty"`
-	URL         string `json:"url,omitempty"`
-	Method      string `json:"method,omitempty"`
-}
+	// http
+	Hostname string `json:"hostname,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Method   string `json:"method,omitempty"`
 
-// ZeekConn is one Zeek conn.log record.
-type ZeekConn struct {
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DestIP      string `json:"dest_ip"`
-	DestPort    int    `json:"dest_port"`
-	Proto       string `json:"proto"`
-	CommunityID string `json:"community_id,omitempty"`
-	UID         string `json:"uid,omitempty"`
-	Service     any    `json:"service,omitempty"`
-	ConnState   any    `json:"conn_state,omitempty"`
-	Duration    any    `json:"duration,omitempty"`
-	OrigBytes   any    `json:"orig_bytes,omitempty"`
-	RespBytes   any    `json:"resp_bytes,omitempty"`
-}
+	// zeek_conn
+	UID       string `json:"uid,omitempty"`
+	Service   any    `json:"service,omitempty"`
+	ConnState any    `json:"conn_state,omitempty"`
+	Duration  any    `json:"duration,omitempty"`
+	OrigBytes any    `json:"orig_bytes,omitempty"`
+	RespBytes any    `json:"resp_bytes,omitempty"`
 
-// ZeekDNS is one Zeek dns.log record.
-type ZeekDNS struct {
-	SrcIP       string `json:"src_ip"`
-	SrcPort     int    `json:"src_port"`
-	DestIP      string `json:"dest_ip"`
-	DestPort    int    `json:"dest_port"`
-	Proto       string `json:"proto"`
-	CommunityID string `json:"community_id,omitempty"`
-	UID         string `json:"uid,omitempty"`
-	Query       any    `json:"query,omitempty"`
-	QTypeName   any    `json:"qtype_name,omitempty"`
-	RCodeName   any    `json:"rcode_name,omitempty"`
-	Answers     any    `json:"answers,omitempty"`
-}
-
-// Run is one pcap analysis: what was read, and why it failed if it did.
-type Run struct {
-	Pcap    string `json:"pcap"`
-	Alerts  int    `json:"alerts"`
-	Records int    `json:"records"`
+	// run
+	Pcap    string `json:"pcap,omitempty"`
+	Alerts  int    `json:"alerts,omitempty"`
+	Records int    `json:"records,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 
 func init() {
-	event.Declare(event.Type{Kind: KindAlert, Schema: 1, Priority: event.PriorityNormal, Fields: Alert{}})
-	event.Declare(event.Type{Kind: KindDNS, Schema: 1, Priority: event.PriorityBulk, Fields: DNS{}})
-	event.Declare(event.Type{Kind: KindHTTP, Schema: 1, Priority: event.PriorityBulk, Fields: HTTP{}})
-	event.Declare(event.Type{Kind: KindZeekConn, Schema: 1, Priority: event.PriorityBulk, Fields: ZeekConn{}})
-	event.Declare(event.Type{Kind: KindZeekDNS, Schema: 1, Priority: event.PriorityBulk, Fields: ZeekDNS{}})
-	event.Declare(event.Type{Kind: KindRun, Schema: 1, Priority: event.PriorityNormal, Fields: Run{}})
+	// Not alert-class: even a high record is stored and shown, never an alert
+	// row. The priority is set per record (alert severity, bulk context).
+	event.Declare(event.Type{Kind: Kind, Schema: 1, Priority: event.PriorityNormal, Fields: Event{}})
 	module.Register(&Module{})
 }
 
@@ -131,12 +98,9 @@ func (*Module) Manifest() module.Manifest {
 		Name:      "suricata",
 		Sides:     []module.Side{module.SideController},
 		Privilege: "none",
-		Emits: []event.Type{
-			mustType(KindAlert), mustType(KindDNS), mustType(KindHTTP),
-			mustType(KindZeekConn), mustType(KindZeekDNS), mustType(KindRun),
-		},
-		Default: false,
-		Actions: []string{"suricata.analyze_pcap"},
+		Emits:     []event.Type{mustType(Kind)},
+		Default:   false,
+		Actions:   []string{"suricata.analyze_pcap"},
 	}
 }
 

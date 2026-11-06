@@ -40,8 +40,8 @@ func TestReadEVEEmitsDeclaredKinds(t *testing.T) {
 }
 
 func TestReadZeekKinds(t *testing.T) {
-	evs, _, _ := ReadZeek(mustOpen(t, "testdata/conn.log"), KindZeekConn)
-	if len(evs) == 0 || evs[0].Kind != "suricata.zeek_conn" {
+	evs, _, _ := ReadZeek(mustOpen(t, "testdata/conn.log"), TypeZeekConn)
+	if len(evs) == 0 || evs[0].Kind != Kind || evs[0].Fields["type"] != TypeZeekConn {
 		t.Fatalf("%v", evs)
 	}
 }

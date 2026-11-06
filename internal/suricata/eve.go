@@ -124,27 +124,27 @@ func ReadEVE(r io.Reader, includeContext bool) ([]event.Event, ReadStats, error)
 			cid = CommunityID(rec.SrcIP, rec.DestIP, uint16(rec.SrcPort), uint16(rec.DestPort), rec.Proto)
 		}
 		var e event.Event
+		var priority event.Priority
 		switch {
 		case rec.EventType == "alert" && rec.Alert != nil:
-			e, newErr = event.New(KindAlert, Alert{
+			e, newErr = event.New(Kind, Event{Type: TypeAlert,
 				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
 				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
 				SignatureID: rec.Alert.SignatureID, Signature: rec.Alert.Signature,
 				Category: rec.Alert.Category, Severity: rec.Alert.Severity, Action: rec.Alert.Action})
-			if newErr != nil {
-				return
-			}
-			e.Priority = prio(rec.Alert.Severity) // the kind's default is normal
+			priority = prio(rec.Alert.Severity) // the kind's default is normal
 		case includeContext && rec.EventType == "dns" && rec.DNS != nil:
-			e, newErr = event.New(KindDNS, DNS{
+			e, newErr = event.New(Kind, Event{Type: TypeDNS,
 				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
 				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
 				RRName: rec.DNS.RRName, RRType: rec.DNS.RRType})
+			priority = event.PriorityBulk
 		case includeContext && rec.EventType == "http" && rec.HTTP != nil:
-			e, newErr = event.New(KindHTTP, HTTP{
+			e, newErr = event.New(Kind, Event{Type: TypeHTTP,
 				SrcIP: rec.SrcIP, SrcPort: rec.SrcPort, DestIP: rec.DestIP, DestPort: rec.DestPort,
 				Proto: rec.Proto, CommunityID: cid, FlowID: rec.FlowID,
 				Hostname: rec.HTTP.Hostname, URL: rec.HTTP.URL, Method: rec.HTTP.Method})
+			priority = event.PriorityBulk
 		default:
 			st.Skipped++
 			return
@@ -152,6 +152,7 @@ func ReadEVE(r io.Reader, includeContext bool) ([]event.Event, ReadStats, error)
 		if newErr != nil {
 			return
 		}
+		e.Priority = priority
 		e.Time = t
 		out = append(out, e)
 	})

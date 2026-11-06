@@ -58,7 +58,7 @@ func TestModulesCommand(t *testing.T) {
 		case "health":
 			sawHealth = f[1] == "agent" && f[2] == "-" && f[3] == "true" && f[4] == "2" && f[5] == "contract"
 		case "suricata":
-			sawSuricata = f[1] == "controller" && f[4] == "6" && f[5] == "contract"
+			sawSuricata = f[1] == "controller" && f[4] == "1" && f[5] == "contract"
 		case "audit":
 			sawAudit = f[5] == "pre-contract"
 		}

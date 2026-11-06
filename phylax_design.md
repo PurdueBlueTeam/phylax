@@ -8682,9 +8682,9 @@ Emitted (controller-origin events are stored under agent `controller`; the code 
 
 | Kind | Priority | Key fields |
 | --- | --- | --- |
-| `suricata` | per `record`, below | `record` (`alert`, `dns`, `http`, `zeek_conn`, `zeek_dns` or `run`) plus the fields of that record. One kind carries everything the module emits. It is not alert-class, so even a high one is stored and shown, never an alert row |
+| `suricata.event` | per `type`, below | `type` (`alert`, `dns`, `http`, `zeek_conn`, `zeek_dns` or `run`) plus the fields of that record. One kind carries everything the module emits. It is not alert-class, so even a high one is stored and shown, never an alert row |
 
-| `record` | Priority | Key fields |
+| `type` | Priority | Key fields |
 | --- | --- | --- |
 | `alert` | default `normal`; set per event: high for severity 1, normal for 2, bulk for 3 (builder check) | `src_ip`, `src_port`, `dest_ip`, `dest_port`, `proto`, `community_id` (read, or computed from the 5-tuple), `flow_id`, `signature_id`, `signature`, `category`, `severity`, `action` |
 | `dns` | bulk | the flow fields, `rrname`, `rrtype` (context only) |
@@ -8693,7 +8693,7 @@ Emitted (controller-origin events are stored under agent `controller`; the code 
 | `zeek_dns` | bulk | the flow fields, `query`, `qtype_name`, `rcode_name`, `answers`. Code name `zeek.dns`; renamed in the retrofit |
 | `run` | normal | `pcap_sha256`, `source` (`capture` host, `palo`, `file`), `window`, `tools`, `rules_version`, `flags`, `alerts`, `events`, `skipped` (lines skipped by reason), `duration_ms`, `error` |
 
-Zeek records are `suricata` records because the module is the integration for both tools; the one kind avoids a second prefix.
+Zeek records are `suricata.event` records because the module is the integration for both tools; the one kind avoids a second prefix.
 
 ##### 6. Behaviour
 
@@ -9583,7 +9583,7 @@ One line per capability v3 had that v4 drops, with the reason. Cut code is delet
 - `backup.restore` for files and `binary.restore_from_depot`: `file.restore{source: backup}` and `file.restore{source: depot}`.
 - `pkg.upgrade` and `pkg.reinstall`: `pkg.install{version, source}`.
 - `splunk.sidecar_off`: a `service.state` step on the sidecar unit.
-- `suricata.alert`, `.dns`, `.http`, `.zeek_conn`, `.zeek_dns` and `.run`: one `suricata` kind with a `record` field.
+- `suricata.alert`, `.dns`, `.http`, `.zeek_conn`, `.zeek_dns` and `.run`: one `suricata.event` kind with a `type` field.
 - `notify` naming each alert-class kind: it consumes alert rows from the core alert pipeline.
 - `act_enabled` in the module blocks of `checks`, `scorer`, `vantage`, `traceback`, `chains`, `deps`, `vuln`, `deception`, `report`, `teamfeed`, `notify`, `depot`, `wazuh`, `splunk` and `suricata`: the key stays only on modules that act on their own.
 - The per-module act switch, `detect.override_mode`, `rule_modes`, the content guard's shadow-to-act promotion and the per-template circuit breaker as described in Operations, the test matrix, the complexity register and the risks: a `respond` recipe tied to a rule id and enabled for the host, one `autonomy: propose|shadow|auto` setting per action template, and one attempt ledger per (host, object, kind); the kill switch is fleet safe mode.
