@@ -119,6 +119,16 @@ type agent struct {
 	cur      *link.Session
 	conns    atomic.Int64
 	welcomed atomic.Bool
+	// hbEvery is how often the agent heartbeats once connected (0 = never);
+	// tests that check one heartbeat's figures set it before run starts.
+	hbEvery time.Duration
+}
+
+// session is the agent's current session, nil before the first connection.
+func (a *agent) session() *link.Session {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cur
 }
 
 func (a *agent) kill() {
@@ -170,21 +180,23 @@ func (a *agent) once(ctx context.Context) {
 	sess.Send(rctx, link.PrioCritical, &link.Hello{Proto: 1, Minor: link.ProtoMinor, Host: a.host, Version: "test", LastSeq: head, Token: tok})
 	up := &link.Uplink{Session: sess, Source: spoolSource{a.sp}, Poll: 10 * time.Millisecond}
 	go up.Run(rctx)
-	go func() {
-		tk := time.NewTicker(50 * time.Millisecond)
-		defer tk.Stop()
-		for {
-			select {
-			case <-tk.C:
-				h, _ := a.sp.Head()
-				sess.TrySend(link.PrioCritical, &link.Heartbeat{Seq: h, HostClock: time.Now().Add(2 * time.Second), SpoolDepth: 1, Congestion: "ok"})
-			case <-sess.Done():
-				return
-			case <-rctx.Done():
-				return
+	if a.hbEvery > 0 {
+		go func() {
+			tk := time.NewTicker(a.hbEvery)
+			defer tk.Stop()
+			for {
+				select {
+				case <-tk.C:
+					h, _ := a.sp.Head()
+					sess.TrySend(link.PrioCritical, &link.Heartbeat{Seq: h, HostClock: time.Now().Add(2 * time.Second), SpoolDepth: 1, Congestion: "ok"})
+				case <-sess.Done():
+					return
+				case <-rctx.Done():
+					return
+				}
 			}
-		}
-	}()
+		}()
+	}
 	go func() {
 		for {
 			ch := sess.AckChanged()
@@ -216,7 +228,7 @@ func newAgent(t *testing.T, x *ctl, host, token string) *agent {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sp.Close() })
-	return &agent{t: t, host: host, id: id, sp: sp, ctl: x, pin: x.c.Pin(), token: token}
+	return &agent{t: t, host: host, id: id, sp: sp, ctl: x, pin: x.c.Pin(), token: token, hbEvery: 50 * time.Millisecond}
 }
 
 // tryHello connects, says hello, and reports whether a welcome arrived.

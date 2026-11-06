@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
+	"github.com/PurdueBlueTeam/phylax/internal/bench"
 	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
@@ -140,6 +141,8 @@ type Controller struct {
 	// bs counts what the bench records: stored events per class, latency,
 	// gaps, connects and down time (benchstats.go).
 	bs benchStats
+	// benchLog is the recorder's file while Serve runs (bench.go).
+	benchLog *bench.Log
 
 	modMu   sync.Mutex
 	mods    map[string]*moduleRunState
@@ -383,6 +386,9 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 	go func() { defer wg.Done(); c.watchSilence(ctx) }()
 	wg.Add(1)
 	go func() { defer wg.Done(); c.startQuota(ctx, quotaSampleEvery) }()
+	if err := c.startBench(ctx, &wg); err != nil {
+		c.log.Warn("bench recorder off", "err", err)
+	}
 	err = srv.Serve(ctx, ln)
 	wg.Wait()
 	return err
@@ -422,5 +428,9 @@ func (c *Controller) Close() error {
 		}
 		rt.mu.Unlock()
 	}
-	return c.st.Close()
+	err := c.st.Close()
+	if berr := c.closeBench(); berr != nil && err == nil {
+		err = berr
+	}
+	return err
 }

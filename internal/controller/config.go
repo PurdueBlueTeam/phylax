@@ -74,6 +74,14 @@ type Config struct {
 	MaxBufferedEvents int      `json:"max_buffered_events"` // per-agent reorder buffer cap (default 16384)
 	MaxLiveTokens     int      `json:"max_live_tokens"`     // default 1024
 	ReleaseDir        string   `json:"release_dir"`         // phylax-linux-amd64 and phylax-windows-amd64.exe
+	// BenchOff disables the bench recorder, which is on by default in every
+	// mode including observe mode.
+	BenchOff bool `json:"bench_off"`
+	// BenchInterval is how often the recorder samples (default 10s).
+	BenchInterval Duration `json:"bench_interval"`
+	// BenchMaxMB bounds the bench file before it rotates to <path>.1 (default
+	// 64).
+	BenchMaxMB int `json:"bench_max_mb"`
 }
 
 func (c *Config) applyDefaults() {
@@ -108,6 +116,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.NextInject <= 0 {
 		c.NextInject = 1
+	}
+	def(&c.BenchInterval, 10*time.Second)
+	if c.BenchMaxMB <= 0 {
+		c.BenchMaxMB = 64
 	}
 }
 
