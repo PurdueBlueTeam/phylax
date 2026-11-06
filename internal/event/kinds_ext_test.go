@@ -3,7 +3,6 @@ package event
 import "testing"
 
 func TestExtensionFieldsRoundTrip(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4a")
 	argc := 0
 	in := ProcessStart{PID: 7, Exe: "/usr/bin/su", Source: "audit", Argc: &argc, CGroup: "/system.slice/x", StartTicks: 99,
 		Env: map[string]string{"LD_PRELOAD": "/tmp/x.so"}, Parent: &ProcessParent{Exe: "/bin/bash", PID: 3, Live: true}}
@@ -18,7 +17,6 @@ func TestExtensionFieldsRoundTrip(t *testing.T) {
 }
 
 func TestZeroArgcSurvives(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4a")
 	zero := 0
 	e, _ := New(KindProcessStart, ProcessStart{PID: 1, Exe: "/x", Source: "audit", Argc: &zero})
 	if _, ok := e.Fields["argc"]; !ok {
@@ -27,7 +25,6 @@ func TestZeroArgcSurvives(t *testing.T) {
 }
 
 func TestUnknownFieldStillRejected(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4a")
 	e, _ := New(KindConn, Conn{Op: "opened", Dir: "outbound", Proto: "tcp", Source: "net"})
 	e.Fields["srcip"] = "10.0.0.1" // a retired name
 	if Validate(e) == nil {
@@ -40,7 +37,6 @@ func TestUnknownFieldStillRejected(t *testing.T) {
 }
 
 func TestReplayOnFourKinds(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 4a")
 	for _, c := range []struct {
 		kind string
 		v    any
