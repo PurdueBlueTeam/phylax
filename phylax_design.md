@@ -274,7 +274,7 @@ A module is:
 8. **Content before code.** Rules, plans and checks are YAML under the module's content directories; a capability that content over existing actions can deliver gets no new Go.
 9. **Off unless the manifest enables it,** except the modules the catalogue marks core-default, which run wherever their OS and role conditions hold.
 
-**Core packages** a module may import: `internal/event`, `internal/module`, `internal/agent` (agent side: `Env`, `Emit`, `RegisterFactory`), `internal/link` (message types only), `internal/plan` (config and step types), `internal/actions` (the action framework: `Action`, `Env`, `Register`, locks, tags, guard), `internal/store` (the read-only query API and the module table migration hook), `internal/manifest` and `internal/manifest/render` (types, and the renderers that turn the manifest into firewall policy, agent configs and plan targets), `internal/deadman` (the dead-man and expiry journal types, for actions that arm one), `internal/ui` (the registrar), `internal/vault` (scoped secret reader). `internal/enroll` (first contact and enrollment) is core and is not importable by modules.
+**Core packages** a module may import: `internal/event`, `internal/module`, `internal/agent` (agent side: `Env`, `Emit`, `RegisterFactory`), `internal/link` (message types only), `internal/plan` (config and step types), the root `plans` package (plan template parsing, for modules that validate packs), `internal/actions` (the action framework: `Action`, `Env`, `Register`, locks, tags, guard), `internal/store` (the read-only query API and the module table migration hook), `internal/manifest` and `internal/manifest/render` (types, and the renderers that turn the manifest into firewall policy, agent configs and plan targets), `internal/deadman` (the dead-man and expiry journal types, for actions that arm one), `internal/ui` (the registrar), `internal/vault` (scoped secret reader). `internal/enroll` (first contact and enrollment) is core and is not importable by modules.
 
 **Shared stateless libraries are allowed; importing another module's package is not.** A shared library is a package that holds no state between calls, emits no events, registers nothing at run time and starts no goroutine that outlives a call. Any module may import it, because it is a function library and not a module: it has no manifest, no config block and no health. The allowed set is a closed list kept in the CI check (`go list -deps` per module package); adding a package to the list is a design change recorded here. The list:
 
@@ -284,7 +284,7 @@ A module is:
 | `internal/parsers/*` | Protocol, log and file-format parsers (HTTP, SMTP, SMB, TDS, DNS, auth logs, access logs, hosts files) | `capture`, `logs`, `traceback`, `deps`, `checks` |
 | `internal/checks/probe` | The scorer-mimic probe library: `Run`, `Faithful`, `Sweep`, `AuthOnly`, `Spec`, `Item`, `Cred`, `Result`. It carries the protocol clients (`ntlm`, `smb`, `winrm`, `ssh`, `mssql`, `ldap`, `web`) and nothing that schedules | `checks` (the owner), `vantage`, `creds`, `backup`, `respond`, `content_guard`, the executor (`Env.Probe`) |
 | `internal/sockets` | `sock_diag` dump and the inode-to-process join (Linux), the extended-table readers (Windows) | `net`, `deps`, `depot` (`gotools`), `inventory` |
-| `internal/signing` | Release-key `Signer` and `Verifier`: the sshsig format (the one `ssh-keygen -Y sign` and `-Y verify` use) for release artifacts and the signed index, so a release verifies with plain `ssh-keygen` and no phylax binary; plus the plan and config signer, which keeps its existing ed25519 domain-separated scheme. One release key (builder check) | `integrity`, `depot`, the core |
+| `internal/signing` | Release-key `Signer` and `Verifier`: the sshsig format (the one `ssh-keygen -Y sign` and `-Y verify` use) for release artifacts and the signed index, so a release verifies with plain `ssh-keygen` and no phylax binary (the sshsig namespace is `phylax-release`: `ssh-keygen -Y verify -f allowed_signers -I release -n phylax-release -s <file>.sig < <file>`); plus the plan and config signer, which keeps its existing ed25519 domain-separated scheme. One release key (builder check) | `integrity`, `depot`, the core |
 | `internal/integrity/format` | Ledger file readers and the package-database readers (dpkg, rpm); read-only | `integrity`, `hunt`, `depot` |
 | `internal/inventory/fold` | One pure function that folds an `inventory.snapshot` plus `inventory.row` events into the current rows of a table | `inventory`, `deps`, `vuln`, `hunt`, `traceback`, the manifest drift check |
 
@@ -678,11 +678,14 @@ type Host interface {
 	Emit(e event.Event) error                               // controller-origin events, stored under agent "controller"; alert-class ones (priority high or critical) also become alert rows
 	Subscribe(kinds []string, buf int) (<-chan event.Event, func()) // events as they are committed
 	Propose(p Proposal) error                               // a one-click suggestion or a plan draft; never applies (an automatic change goes through RunAuto)
-	RunReadOnly(p plan.Plan) (planID string, err error)     // builder check: auto-approved plan of read-only actions only (Execution engine: approval classes)
-	RunStanding(approvalID string, p plan.Plan) (string, error) // builder check: a plan inside an operator's standing approval (scope and expiry)
+	RunReadOnly(template string, params map[string]string) (planID string, err error) // builder check: auto-approved plan of read-only actions only; a template under plans/<module>/, not a plan.Plan (plan imports module, so module cannot import plan)
+	RunStanding(approvalID, template string, params map[string]string) (string, error) // builder check: a template plan inside an operator's standing approval (scope and expiry)
 	RunAuto(template string, params map[string]string) (string, error) // A-AUTO: a plan from the module's own `auto` allowlist, signed by the controller; falls back to a click proposal when a precondition fails (Execution engine: approval classes)
 	Control(m ControlMsg) error                             // builder check: a typed `control: fact` message to agents, signed by the controller (Wire protocol)
-	Secrets(names ...string) (vault.Reader, error)          // only the secret names its config declares
+	Tables() (store.ModuleDB, error)                        // the module's own <module>_* tables (the one writer goroutine's path); error unless the manifest declares Tables
+	Manifest() *manifest.Manifest                           // the loaded manifest (hosts, labels, services, overrides), read-only
+	UpdateOverrides(fn func(*manifest.Overrides) error) error // atomic read-modify-write of overrides.yml (a learned listener, an accepted finding)
+	Secrets(names ...string) (vault.Reader, error)          // only the secret names its config declares; a name ending /* grants a prefix (cred/*)
 	UI() ui.Registrar
 	Logger() *slog.Logger
 }
@@ -1113,7 +1116,7 @@ The operator UI is not on this listener. Four connection types on one port is st
 | --- | --- | --- |
 | Agent → controller | `hello` | Host id, agent version and protocol minor, roles, capabilities block with module manifests, last sequence, dead-man entries of plan nodes, token if not yet enrolled |
 | Controller → agent | `welcome` | Confirms enrollment; the first signed `config` follows |
-| Agent → controller | `heartbeat` | Every 5 s: sequence, host clock, spool depth and congestion state, safe mode, shed count, per-module health, config status |
+| Agent → controller | `heartbeat` | Every 5 s: sequence, host clock, spool depth and congestion state, safe mode, shed count, per-module health, config status, and the round trip of the last heartbeat the controller echoed (`rtt_us`; the controller's `ack` carries the heartbeat `id` it answers) |
 | Agent → controller | `events` | Batch of events, each with its sequence number |
 | Agent → controller | `step_result` | Per-phase outcome with before and after state, signed result kept for resend |
 | Both | `chunk`, `chunk_have` | Content-addressed transfers: evidence, pcap slices and collected files up; step payloads, depot blobs, ledger files and the agent binary down |
@@ -1340,7 +1343,7 @@ Action names follow the code. Where the code registers a name (`internal/actions
 | Local accounts | `user.set_password`, `user.lock`, `user.create`, `user.delete`, `group.members`, `ssh.authorized_keys`, `session.terminate_predating` (*new*) | Edit `/etc/shadow` and friends under the shadow-utils lock (`lckpwdf`), atomically, preserving aging fields and labels; SHA-512 crypt; clears and restores `chattr +i` on `/etc/shadow` and `/etc/passwd` | `NetUserSetInfo`, `NetLocalGroup*`, WTS session APIs | core (review D152, N3.1, N3.3) |
 | Services | `service.state`, `service.config`, `systemd.dropin`, `cockpit.disable`, `win.service.config` | systemd over D-Bus; `validate` hook on config | Service control manager APIs | core (review D154) |
 | Config edits | `ini.set`, `conf.set`, `xml.set`, `agentopt.set` (agent options, e.g. Wazuh agent settings) | Native, in place, with the `validate` hook | Same | core |
-| Registry | `reg.set`, `reg.delete`, `reg.snapshot` (*new*) | — | Native registry API | core (review D158) |
+| Registry | `registry.set`, `registry.delete`, `registry.snapshot` (*new*) | — | Native registry API; `registry.set` and `registry.delete` are the built names (the earlier draft said `reg.*`) | core (review D158) |
 | Kernel and system | `sysctl.set`, `kernel.module_block`, `mount.remount` (*new*), `hosts.file` (*new*), `selinux.restore` (*new*) | `/proc/sys`, modprobe config; `mount.remount` changes the options of a mounted path (risk `service`, lock `mounts`, touches the mount options of the path, rollback remounts the prior options; the `hardening` noexec pack uses it) | — | core (review D157). The unused `modules.disable_loading` action is deleted. `kernel.module_block` verify is fixed (Known bugs 1). The earlier draft's `module.block` is `kernel.module_block` |
 | Persistence cleanup | `cron.disable`, `at.disable`, `unit.disable` (*new*), `unit.mask` (*new*), `task.disable` (*new*), `wmi.subscription_remove` (*new*), `runkey.remove` (*new*), `ld_preload.clear` (*new*), `caps.clear` (*new*), `pkg.unhold` (*new*) | Native file edits, D-Bus | Task Scheduler and WMI through COM; registry | core (review D159). Every hunt finding ends here; disable and quarantine, never delete. |
 | Processes | `proc.kill_tree` (pidfd plus start-time check; `cgroup.kill` for units), `proc.suspend`, `proc.dump` (all *new*) | Signals, cgroup freeze, `/proc/<pid>/mem` | `TerminateProcess`; `MiniDumpWriteDump` | core (review D160). Collected samples and dumps are defanged (ELF or PE magic zeroed) so a stored sample cannot execute or trip AV. |
@@ -2544,7 +2547,7 @@ module.Manifest{
 	},
 	Default:  true, // core-default
 	Tables:   nil,
-	Content:  []string{"logs/parsers"}, // regex parsers with inline tests
+	Content:  []string{"internal/logs/parsers"}, // regex parsers with inline tests, embedded with go:embed
 	Actions:  nil,
 	Pages:    nil,
 	Evidence: []string{"review D73", "review D251", "[Q §9.6]"},
@@ -2575,7 +2578,7 @@ files:
 // package plan (new; ModuleSettings gains `Logs *LogsSettings`)
 type LogFile struct {
 	Path    string `json:"path"`
-	Parser  string `json:"parser"`            // name of a parser in logs/parsers
+	Parser  string `json:"parser"`            // name of a parser in internal/logs/parsers
 	Service string `json:"service,omitempty"` // value of the auth_event service field
 	Lines   bool   `json:"lines,omitempty"`   // also emit logs.line for every line
 }
@@ -2585,7 +2588,7 @@ type LogsSettings struct {
 }
 ```
 
-Parsers are content: `logs/parsers/*.yml`, one file per parser, each with an ordered list of RE2 patterns with named groups, the event they produce, the result and the field mapping, and inline tests (sample line to expected event), under the same CI as rules. A new log format is a new YAML file, not Go. RE2 matches in linear time, so a hostile log line cannot cost more than its length.
+Parsers are content: `internal/logs/parsers/*.yml` (embedded in the binary with `go:embed`, so the agent has them offline and signed with the release), one file per parser, each with an ordered list of RE2 patterns with named groups, the event they produce, the result and the field mapping, and inline tests (sample line to expected event), under the same CI as rules. A new log format is a new YAML file, not Go. RE2 matches in linear time, so a hostile log line cannot cost more than its length.
 
 Fixed internals: poll every 1 s for new data, rotation and truncation; lines longer than 8 KiB are cut and flagged; offsets saved at most once a second; on the first start of a file the offset is the end of the file (history is not replayed).
 
@@ -2630,7 +2633,7 @@ Emitted:
 
 Actions: none. The log format change on web servers is a `hardening` pack node (`service.config` with the `validate` hook).
 
-Content: `logs/parsers/*.yml` (sshd, dovecot, vsftpd, proftpd, cockpit, postfix, access, raw) and the rules that consume the events in `rules/auth.yml` and `rules/logs.yml`. The Falco-style exceptions in those rules take their lists from the manifest.
+Content: `internal/logs/parsers/*.yml` (sshd, dovecot, vsftpd, proftpd, cockpit, postfix, access, raw) and the rules that consume the events in `rules/auth.yml` and `rules/logs.yml`. The Falco-style exceptions in those rules take their lists from the manifest.
 
 ##### 8. UI
 
@@ -2691,7 +2694,7 @@ Not in this module: listeners and connections. `net` already emits them as diffe
 
 Status: missing. Nothing exists except the `collect.inventory` action name in the execution engine's catalogue (`internal/actions`) and plan fixtures that call it. No parser or collector code, no `plan.InventorySettings`, no factory.
 
-To build: `internal/inventory` (the agent collectors, the diff engine, the probe interpreter, the controller fold) and `internal/agent/mods/inventory*.go`. Content: `inventory/probes/*.yml` and `inventory/software/*.yml`.
+To build: `internal/inventory` (the agent collectors, the diff engine, the probe interpreter, the controller fold) and `internal/agent/mods/inventory*.go`. Content: `internal/inventory/probes/*.yml` and `internal/inventory/software/*.yml`, embedded with `go:embed`.
 
 ##### 3. Capability manifest
 
@@ -2710,7 +2713,7 @@ module.Manifest{
 	},
 	Default:  false, // opt-in; the reference manifest enables it on every host
 	Tables:   []string{"inventory_rows", "inventory_epochs"},
-	Content:  []string{"inventory/probes", "inventory/software"},
+	Content:  []string{"internal/inventory/probes", "internal/inventory/software"},
 	Actions:  []string{"collect.inventory", "probe.run"},
 	Pages:    []string{"/inventory"},
 	Evidence: []string{"review D81", "review N2.1", "review N5.1", "[[known-exploited-vulnerabilities#e1]]"},
@@ -2767,7 +2770,7 @@ Tables (the table contract: every table has a name, a schema version, typed colu
 
 Defaults: every table above for the host's OS, collected every 60 s, except `software` (15 min) and `domain_join` (at start and hourly). A host entry may list `tables` to restrict.
 
-Probe definitions are content, `inventory/probes/*.yml`:
+Probe definitions are content, `internal/inventory/probes/*.yml`:
 
 ```yaml
 module: inventory
@@ -2783,7 +2786,7 @@ tests: [ ... ]
 
 Predicates are typed (`eq`, `ne`, `in`, `re`, `prefix`, `gt`, `lt` on one column; `${param}` substitutes a declared, typed parameter). No joins, no expressions, no aggregation except `count`. A probe has at most 16 predicates, a result limit of at most 1000 rows, and declares each parameter's type, bounds and pattern, validated before it runs. Probes cannot read files other than the tables' own sources.
 
-Software product versions are content, `inventory/software/*.yml`: product, file path glob, a RE2 with one capture group, and the `product` name (for example Splunk's `etc/splunk.version`, OpenCart's `VERSION` constant in `index.php`, Roundcube's version constant). A new product is a new YAML file.
+Software product versions are content, `internal/inventory/software/*.yml`: product, file path glob, a RE2 with one capture group, and the `product` name (for example Splunk's `etc/splunk.version`, OpenCart's `VERSION` constant in `index.php`, Roundcube's version constant). A new product is a new YAML file.
 
 ##### 5. Events
 
@@ -2828,7 +2831,7 @@ Per-row events are what the rule engine can match: a rule says `event: inventory
 
 Actions (core `Collection` row; this module implements them): `collect.inventory{tables}` forces a collection and a diff and, with `snapshot: true`, a fresh `inventory.snapshot`; `probe.run{name, params}`. Both are read-only: risk class none, no lock, no scorer-visible touch, no approval record beyond the plan signature, usable in safe mode.
 
-Content: `inventory/probes/*.yml` (probe catalogue with inline tests over fixture tables) and `inventory/software/*.yml` (version-file parsers with inline tests). Both go through the content CI (schema, tests, the module field).
+Content: `internal/inventory/probes/*.yml` (probe catalogue with inline tests over fixture tables) and `internal/inventory/software/*.yml` (version-file parsers with inline tests). Both go through the content CI (schema, tests, the module field).
 
 ##### 8. UI
 
@@ -4163,7 +4166,7 @@ Status: **partial**. The actions are built; the continuous checks, the path quer
 | Privilege | root (SYSTEM) on the agent; none on the controller |
 | Roles | `domain_controller` (agent), `controller` (controller side) |
 | Consumes | agent: `winevt.sec_event` (5136, 5137, 5139, 5141 with `gpo: true`; 4662; 4742), `file_change` with `sysvol_policy: true`, `process_start`. Controller: `hunt.run` and `integrity.sweep_done` (the DC's first clean hunt and ledger sweep trigger the baseline), `ad.gpo_finding` (its own, to send it as a fact) |
-| Emits | `ad.finding` (schema 1, high), `ad.gpo_finding` (schema 1, high), `ad.gpo_baseline` (schema 1, normal) |
+| Emits | `ad.finding` (schema 1, high), `ad.gpo_finding` (schema 1, high), `ad.gpo_baseline` (schema 1, normal), `ad.recycle_restored` (schema 1, high) |
 | Budget | CPU 3 ms/s average (a check run is a short low-priority burst), held 8 MB, 1 event/s, burst 20, 50 KB/min out, disk 20 MB (GPO baseline copies) |
 | Default | core, on hosts with the `domain_controller` role |
 | Tables | none |
@@ -9093,9 +9096,11 @@ Each run fills the metrics table in the runbook: time to detect, attribute and r
 
 Dropped from v3's set because the capability is cut or absent from 2027: the promiscuous NIC (rule D19 is cut) and the IIS native module (IIS is not in the 2027 environment).
 
+**Comms bench.** David asked (2026-11-06) for the communications path to be measured before the Invitational and again at it, with the same numbers, so the two compare. Two parts, one record format (`docs/impl/14-bench.md`). The **live recorder** is part of the controller, on by default in every mode including observe mode: every 10 s it appends one JSONL record for the controller and one per agent to `<data_dir>/bench.jsonl` (rotated at `bench_max_mb`, 64 by default, one previous file kept): events and JSON bytes per second by priority class, event-to-controller latency per class (controller commit time minus the event time corrected by the agent's heartbeat clock skew), SQLite commit time, gap records and reconnects with the disconnected time, controller CPU and RSS, store size, the timing of the Overview, Health and event queries the UI uses, and per agent the heartbeat round trip, ack lag, spool depth and congestion state, clock skew and the per-module usage the heartbeat carries (`cpu_ms`, `held_bytes`, `events`, `bytes_out`, `dropped`). Latencies are fixed 1-2-5 millisecond histograms, so percentiles over any window stay exact to the bucket and 10 000 ms is a bucket edge. `phylax bench report <file>` prints the tables. The **lab load generator**, `phylax bench load -lab`, runs N synthetic agents (the real agent runtime, spool and link, enrolled with real tokens through a proxy it can cut) at configured events per second per class against a lab controller, cuts the link for 60 s, restores it, and checks the four criteria the transport envelope gives (p99 at most 10 s outside the outage and its recovery; no gap or shed events after 60 s; one reconnect per agent within 35 s; the spool drains). The lab task also repeats the cut on the real agents with a firewall drop. Pass criteria are the envelope; everything else is measured and reported (decision 9).
+
 ### Test matrix
 
-**This section owns the list of test ids.** Module sections, the risk table, the simulators and the CI section cite ids from this matrix and define none of their own. The ids are stable. v3's ids T01 to T45 keep their numbers, because module sections and the review cite them; renumbering after the cuts would break those citations (this overrides the review's D514 request to renumber, which would have cost every citation for no gain). Three ids are retired and never reused: T04 (ASPX webshell on IIS), T26 (Windows raw-socket capture) and T42 (Sigma import). New tests continue from T46 and run to T79, 34 tests (T77 to T79 are the A-AUTO and B1 tests). Every id from T01 to T79 is either in the two tables below or retired. Latencies in the "pass when" column are **measured and reported**, not targets (decision 9); where v3 gave a time, the run records it and compares it with the last release. The design envelope for transport (10 s event-to-controller while the link is up; outages up to 60 s) is a sizing figure, not a goal.
+**This section owns the list of test ids.** Module sections, the risk table, the simulators and the CI section cite ids from this matrix and define none of their own. The ids are stable. v3's ids T01 to T45 keep their numbers, because module sections and the review cite them; renumbering after the cuts would break those citations (this overrides the review's D514 request to renumber, which would have cost every citation for no gain). Three ids are retired and never reused: T04 (ASPX webshell on IIS), T26 (Windows raw-socket capture) and T42 (Sigma import). New tests continue from T46 and run to T81, 36 tests (T77 to T79 are the A-AUTO and B1 tests; T80 and T81 are the comms bench). Every id from T01 to T81 is either in the two tables below or retired. Latencies in the "pass when" column are **measured and reported**, not targets (decision 9); where v3 gave a time, the run records it and compares it with the last release. The design envelope for transport (10 s event-to-controller while the link is up; outages up to 60 s) is a sizing figure, not a goal.
 
 **Carried over and revised**
 
@@ -9185,6 +9190,8 @@ Dropped from v3's set because the capability is cut or absent from 2027: the pro
 | T77 | Inbound firewall enforcement and allow-back (A-AUTO) | A host enforced inbound-only drops an unlisted port, keeps scored ports, management, dependency and learned flows, leaves outbound in shadow; a planted scorer-like probe to an unrendered port is allowed back within seconds with `firewall.allow_back`; a forced failure rolls back through the dead-man; no `out_mode: enforce` runs without the outbound gate click |
 | T78 | AD Recycle Bin (B1) | `ad.recycle_enable` checks the functional level first and is idempotent; deleting a scored user on the lab DC triggers D7h and the user returns with the same password hash and groups, verified by a scorer login; a user deleted before enablement is flagged, not re-created |
 | T79 | Automatic default (A-AUTO) | An `auto` plan starts from an allowlisted pack, applies behind the probe and rolls back on a forced red probe; the template halts after two rollbacks; with the link down or no probe the same plan is a click proposal; `proc.kill_tree`, krbtgt, device revert and whole-service restore never run unattended; a rule promoted to `act` through `rule_modes` acts and a demotion stops it; the content guard promotes a service after a clean shadow period and demotes it on a stop |
+| T80 | Comms bench: recorder, report and RTT (builder check) | With a real controller and real agents the recorder writes one `ctl` and one `agent` record per interval to `bench.jsonl` (on by default, `bench_off` disables it), carrying per-class events, bytes and event-to-commit latency histograms, store commit time, gap and reconnect counts, controller CPU and RSS, store size, query times, and per agent the heartbeat RTT, lag, spool depth, congestion and per-module usage; the file never exceeds twice `bench_max_mb`; `phylax bench report` prints the percentile tables and ignores a torn last line; a heartbeat's echoed `ack` yields a round-trip time and a stale echo yields none |
+| T81 | Comms bench: load and 60 s partition on the replica (lab) | `phylax bench load` with N synthetic agents (real `agent` and `spool` code, enrolled with real tokens) at configured rates per class, plus the real agents on the stack: p99 event-to-commit at most 10 s outside the partition and its recovery; after a 60 s partition zero gap events and zero shed events, each agent reconnects once within 35 s of restore and its spool drains; the numbers are recorded in `docs/impl/lab/w14-bench.md` next to the live recording from the Invitational and compared. All other figures (RTT, bytes per second, module CPU and held bytes, commit time, query latency, agents per controller before the envelope is missed) are measured and reported |
 
 ### CI
 
@@ -9519,7 +9526,7 @@ phylax/                          # public product repo
     parsers/                     # shared protocol parsers, one package each (incl. smb2, winrm, tds, ssh)
     sockets/  signing/           # shared stateless libraries: sock_diag and inode join; release-key Signer and Verifier
     # one package per module (agent side, controller side or both):
-    audit/  winevt/  net/  logs/  inventory/
+    audit/  winevt/  net/  logs/  inventory/   # logs/parsers/ and inventory/{probes,software}/ are embedded content inside these packages
     # shared stateless library subpackages inside module trees (the closed list is in the module contract):
     #   checks/probe (the probe library and protocol clients: ntlm, smb, winrm, ssh, mssql, ldap, web),
     #   integrity/format (ledger and package-database readers), inventory/fold (snapshot plus rows to rows)
