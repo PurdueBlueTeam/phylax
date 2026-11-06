@@ -546,6 +546,36 @@ func (s *Spool) ReadBatch(maxEvents, maxBytes int) ([]event.Event, error) {
 	return out, nil
 }
 
+// SetAck sets the acknowledged sequence to upTo (clamped to the head) even
+// when it is lower than the current one, and rewinds the send cursor to it.
+// The first ack of a session after a controller restore really is lower than
+// what the agent believes: the restored controller holds fewer events, and the
+// agent must resend what it lost. The later acks of the session stay
+// monotonic through Ack.
+func (s *Spool) SetAck(upTo uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosed
+	}
+	upTo = min(upTo, s.headSeq)
+	if upTo != s.ack {
+		s.ack = upTo
+		s.ackHash = ""
+		it := newSetIter(s.segs, upTo-1)
+		if ev, _, ok, err := it.next(); err == nil && ok && ev.Seq == upTo {
+			s.ackHash = ev.Hash
+		}
+		it.close()
+	}
+	s.cursor = s.ack
+	s.updateState()
+	if s.opts.Now().Sub(s.metaAt) >= s.opts.SyncInterval {
+		return s.persistMeta()
+	}
+	return nil
+}
+
 // Rewind resets the send cursor to the last acknowledged sequence.
 func (s *Spool) Rewind() {
 	s.mu.Lock()

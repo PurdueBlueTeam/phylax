@@ -48,8 +48,12 @@ type AgentStatus struct {
 type agentState struct {
 	host string
 
-	mu       sync.Mutex
-	acked    uint64
+	mu    sync.Mutex
+	acked uint64
+	// verify is set in hello when the agent's head still equals its restore
+	// point: the restored controller asked for the whole spool, so events at
+	// or below acked go through Ingest for the restore-point check.
+	verify   bool
 	buf      map[uint64]event.Event // out-of-order events waiting for their predecessors
 	gapFrom  map[uint64]uint64      // gap record "from" -> its Seq (the record covers from..Seq-1)
 	sess     *agentConn
@@ -226,6 +230,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	}
 	st.sess = a
 	st.acked = ag.LastSeq
+	st.verify = ag.RestoredSeq > 0 && ag.LastSeq == ag.RestoredSeq
 	st.buf = map[uint64]event.Event{}
 	st.gapFrom = map[uint64]uint64{}
 	now := c.now()
@@ -259,7 +264,13 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if err := c.enr.Announce(ctx, h.Host, pin, res); err != nil {
 		c.log.Error("agent.announce", "host", h.Host, "err", err)
 	}
-	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: ag.LastSeq}); err != nil {
+	firstAck := ag.LastSeq
+	if st.verify {
+		// Ask for everything the spool still holds: a restored controller has
+		// no events, and the run through the recorded point is verified.
+		firstAck = 0
+	}
+	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: firstAck}); err != nil {
 		return err
 	}
 	close(a.ready)
@@ -292,7 +303,32 @@ func (a *agentConn) events(ctx context.Context, m *link.Events) error {
 	if st.sess != a {
 		return errors.New("superseded by a newer session")
 	}
-	for _, e := range m.Events {
+	evs := m.Events
+	if st.verify {
+		// A resend after a restore starts at the oldest event the spool still
+		// holds. Everything at or below the restore point goes back through
+		// Ingest, which backfills it only when the run reaches the point with
+		// the recorded hash; a resend that starts above the point leaves the
+		// missing range to ResumeAfterRestore.
+		i := 0
+		for i < len(evs) && evs[i].Seq <= st.acked {
+			i++
+		}
+		if i > 0 {
+			if err := a.verifyResend(ctx, evs[:i]); err != nil {
+				return err
+			}
+			evs = evs[i:]
+		}
+		if len(evs) > 0 && evs[0].Seq > st.acked+1 && evs[0].Kind != store.KindGap {
+			if err := c.st.ResumeAfterRestore(ctx, st.host, evs[0]); err != nil {
+				c.alert(st.host, "store.chain_error", err.Error())
+				return fmt.Errorf("ingest: %w", err)
+			}
+			st.acked = evs[0].Seq - 1
+		}
+	}
+	for _, e := range evs {
 		if e.Agent != st.host {
 			return fmt.Errorf("event for agent %q on session of %q", e.Agent, st.host)
 		}
@@ -321,6 +357,30 @@ func (a *agentConn) events(ctx context.Context, m *link.Events) error {
 		}
 	}
 	return a.drain(ctx)
+}
+
+// verifyResend passes a resend's events at or below the restore point to the
+// store, in order, in one Ingest call. The store stores nothing until the run
+// reaches the snapshot's sequence with its hash; ErrRestoreMismatch then ends
+// the session like any other chain error.
+//
+// shortcut: a spool that still holds more than store.MaxBatch events below the
+// restore point cannot be backfilled in one call; upgrade by keeping the run
+// across batches if spools ever retain that much acknowledged data.
+func (a *agentConn) verifyResend(ctx context.Context, evs []event.Event) error {
+	c, st := a.c, a.stp.Load()
+	if len(evs) > store.MaxBatch {
+		evs = evs[:store.MaxBatch]
+	}
+	if _, err := c.st.Ingest(ctx, st.host, evs); err != nil {
+		st.buf = map[uint64]event.Event{}
+		st.gapFrom = map[uint64]uint64{}
+		if errors.Is(err, event.ErrChain) {
+			c.alert(st.host, "store.chain_error", err.Error())
+		}
+		return fmt.Errorf("ingest: %w", err)
+	}
+	return nil
 }
 
 // drain stores every event that is now contiguous with the ack point, then
@@ -357,6 +417,7 @@ func (a *agentConn) drain(ctx context.Context) error {
 				delete(st.gapFrom, s)
 			}
 			st.acked = ack.Seq
+			st.verify = false // the chain has moved past the restore point
 			progressed = true
 		}
 		now := c.now()

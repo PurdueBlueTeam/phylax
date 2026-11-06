@@ -492,7 +492,8 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	case <-wctx.Done():
 		return false, errors.New("timed out waiting for welcome")
 	}
-	if _, err := sess.WaitFirstAck(wctx); err != nil {
+	firstAck, err := sess.WaitFirstAck(wctx)
+	if err != nil {
 		return false, fmt.Errorf("waiting for first ack: %w", err)
 	}
 	a.mu.Lock()
@@ -500,7 +501,12 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	a.linkStat.Connects++
 	a.linkStat.LastConnect = time.Now()
 	a.mu.Unlock()
-	a.sp.Rewind()
+	// The first ack of a session may be lower than the agent's: a restored
+	// controller holds fewer events and asks for them again. The later acks
+	// stay monotonic (ackPump uses Ack).
+	if err := a.sp.SetAck(firstAck); err != nil {
+		return false, fmt.Errorf("first ack: %w", err)
+	}
 	a.flushResults(ctx, sess)
 
 	go a.ackPump(ctx, sess)

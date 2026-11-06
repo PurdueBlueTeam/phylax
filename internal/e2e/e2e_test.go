@@ -147,6 +147,7 @@ type testHost struct {
 	root   string
 	svc    *fakeSvc
 	layout agent.Layout
+	mods   []agent.ModuleSpec // extra modules the host runs (tests)
 	cancel context.CancelFunc
 	done   chan error
 }
@@ -355,7 +356,7 @@ func (th *testHost) start(h *harness) {
 		Services:      th.svc,
 		QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
 	a, err := agent.New(agent.Config{Layout: th.layout, Logger: quiet(), Exec: &agent.ExecConfig{Env: env, FreshCheck: true},
-		HeartbeatInterval: 100 * time.Millisecond, DialTimeout: 3 * time.Second,
+		Modules: th.mods, HeartbeatInterval: 100 * time.Millisecond, DialTimeout: 3 * time.Second,
 		Backoff:    link.Backoff{Min: 20 * time.Millisecond, Max: 100 * time.Millisecond},
 		Supervisor: agent.SupervisorOptions{Backoff: link.Backoff{Min: time.Millisecond, Max: 10 * time.Millisecond}}})
 	if err != nil {
@@ -366,10 +367,15 @@ func (th *testHost) start(h *harness) {
 	go func() { th.done <- a.Run(ctx) }()
 }
 
-func (h *harness) addHost(name string) *testHost {
+func (h *harness) addHost(name string) *testHost { return h.addHostMods(name) }
+
+// addHostMods is addHost with extra agent modules: tests that need the agent
+// to emit specific events (restore resends) install one here.
+func (h *harness) addHostMods(name string, mods ...agent.ModuleSpec) *testHost {
 	t := h.t
 	t.Helper()
-	th := &testHost{name: name, root: t.TempDir(), svc: newFakeSvc(), layout: agent.Layout{Root: filepath.Join(t.TempDir(), "state")}}
+	th := &testHost{name: name, root: t.TempDir(), svc: newFakeSvc(), mods: mods,
+		layout: agent.Layout{Root: filepath.Join(t.TempDir(), "state")}}
 	for f, c := range map[string]string{"passwd": passwdFix, "shadow": shadowFix, "group": groupFix, "gshadow": gshadowFix} {
 		if err := os.MkdirAll(th.path("etc"), 0o755); err != nil {
 			t.Fatal(err)
