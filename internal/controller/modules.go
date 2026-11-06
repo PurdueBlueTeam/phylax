@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ type moduleRunState struct {
 	state   module.State
 	detail  string
 	gaps    []module.Gap
+	aGaps   map[string]module.Gap
 	running bool
 	done    chan struct{}
 }
@@ -187,6 +189,14 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 		st.mu.Lock()
 		state, detail := st.state, st.detail
 		gaps := append([]module.Gap(nil), st.gaps...)
+		names := make([]string, 0, len(st.aGaps))
+		for n := range st.aGaps {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			gaps = append(gaps, st.aGaps[n])
+		}
 		st.mu.Unlock()
 		var h module.Health
 		if state != "" {
@@ -244,8 +254,4 @@ func (c *Controller) SendFact(ctx context.Context, mod string, m module.ControlM
 // noteAutoRollback feeds the auto circuit breaker.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
 	panic("unimplemented: W1 Task 28")
-}
-
-func (c *Controller) runAnalyzers(ctx context.Context, m module.ControllerModule, st *moduleRunState, as []module.Analyzer) {
-	panic("unimplemented: W1 Task 20")
 }

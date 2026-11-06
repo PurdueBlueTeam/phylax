@@ -1,0 +1,173 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
+)
+
+const (
+	analysisDefaultDeadline = 10 * time.Second
+	analysisDebounce        = time.Second
+	analysisBusBuf          = 1024
+)
+
+// runAnalyzers drives a module's analysers from its committed input events
+// and their Every periods until ctx ends. One subscription feeds every
+// analyser; a trigger is debounced so a burst runs the analyser once.
+func (c *Controller) runAnalyzers(ctx context.Context, m module.ControllerModule, st *moduleRunState, as []module.Analyzer) {
+	h := c.hostFor(m)
+	inputs := map[string]bool{}
+	for _, a := range as {
+		for _, k := range a.Inputs {
+			inputs[k] = true
+		}
+	}
+	var ch <-chan event.Event
+	stop := func() {}
+	if len(inputs) > 0 {
+		kinds := make([]string, 0, len(inputs))
+		for k := range inputs {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		ch, stop = h.Subscribe(kinds, analysisBusBuf)
+	}
+	defer stop()
+
+	type worker struct {
+		a    module.Analyzer
+		trig chan struct{}
+	}
+	ws := make([]*worker, 0, len(as))
+	for _, a := range as {
+		ws = append(ws, &worker{a: a, trig: make(chan struct{}, 1)})
+	}
+	var wg sync.WaitGroup
+	for _, w := range ws {
+		wg.Add(1)
+		go func(w *worker) {
+			defer wg.Done()
+			c.runAnalyzer(ctx, h, st, w.a, w.trig)
+		}(w)
+	}
+	// An input stored before the subscription was ready still analyses once.
+	for _, w := range ws {
+		if len(w.a.Inputs) > 0 {
+			select {
+			case w.trig <- struct{}{}:
+			default:
+			}
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case e := <-ch:
+			for _, w := range ws {
+				for _, k := range w.a.Inputs {
+					if k == e.Kind {
+						select {
+						case w.trig <- struct{}{}:
+						default:
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+}
+
+// runAnalyzer runs one analyser's trigger and Every timers, one run at a time.
+func (c *Controller) runAnalyzer(ctx context.Context, h *moduleHost, st *moduleRunState, a module.Analyzer, trig <-chan struct{}) {
+	var tick <-chan time.Time
+	if a.Every > 0 {
+		t := time.NewTicker(a.Every)
+		defer t.Stop()
+		tick = t.C
+	}
+	var timer *time.Timer
+	var debounce <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-trig:
+			if timer == nil {
+				timer = time.NewTimer(analysisDebounce)
+			} else {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(analysisDebounce)
+			}
+			debounce = timer.C
+		case <-debounce:
+			debounce = nil
+			c.runAnalyzerOnce(ctx, h, st, a)
+		case <-tick:
+			c.runAnalyzerOnce(ctx, h, st, a)
+		}
+	}
+}
+
+func (c *Controller) runAnalyzerOnce(ctx context.Context, h *moduleHost, st *moduleRunState, a module.Analyzer) {
+	deadline := c.analysisDeadline
+	if deadline <= 0 {
+		deadline = analysisDefaultDeadline
+	}
+	rctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	evs, err := a.Run(rctx, h.Query(), c.now().UTC())
+	if err == nil && rctx.Err() != nil {
+		err = rctx.Err()
+	}
+	if err == nil {
+		for _, e := range evs {
+			if err = h.Emit(e); err != nil {
+				break
+			}
+		}
+	}
+	if err != nil {
+		why := err.Error()
+		if errors.Is(err, context.DeadlineExceeded) {
+			why = fmt.Sprintf("run exceeded %s", deadline)
+		}
+		c.setAnalysisGap(st, a.Name, module.Gap{What: "analyser " + a.Name, Why: why})
+		return
+	}
+	c.clearAnalysisGap(st, a.Name)
+}
+
+func (c *Controller) setAnalysisGap(st *moduleRunState, name string, gap module.Gap) {
+	st.mu.Lock()
+	if st.aGaps == nil {
+		st.aGaps = map[string]module.Gap{}
+	}
+	st.aGaps[name] = gap
+	st.mu.Unlock()
+}
+
+func (c *Controller) clearAnalysisGap(st *moduleRunState, name string) {
+	st.mu.Lock()
+	delete(st.aGaps, name)
+	st.mu.Unlock()
+}
