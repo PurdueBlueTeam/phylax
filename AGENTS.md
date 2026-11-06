@@ -50,6 +50,12 @@ and its findings are design requirements.
   stronger agent or by David.
 
 ## Rules
+- **Simple over complete.** Reducing complexity is the owner's first priority, and
+  the tool is tested extensively in the lab and at events, so real problems show
+  up there. Build what the plan names, in its smallest form. A review finding gets
+  the smallest fix that closes a real risk; a hypothetical case gets a `shortcut:`
+  comment, not a new mechanism (no extra locks, caches, retries, registries or
+  config knobs "just in case"). Reviewers flag over-engineering as a finding.
 - Go 1.27.2 (mise). `CGO_ENABLED=0`, except the race job, which needs
   `CGO_ENABLED=1` and gcc (`make race` sets both); linux/amd64 and windows/amd64
   must both build (`make build build-windows`) and vet (`make vet`) at every
