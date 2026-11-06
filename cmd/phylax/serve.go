@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -34,11 +36,16 @@ func runServe(ctx context.Context, args []string) error {
 	advertise := fs.String("advertise", "", "controller host:port the agent dials (required with -bundles)")
 	bundleTTL := fs.Duration("bundle-ttl", 8*time.Hour, "enrollment token lifetime for -bundles")
 	bundleSafe := fs.Bool("bundle-safe", false, "start the bundled agents in safe mode")
+	servedDir := fs.String("served-dir", "", "directory the web root serves; phylax and phylax.exe are hashed for the enrollment watch")
+	enrollWindow := fs.Duration("enroll-window", 0, "how long enrollment stays open (default -bundle-ttl)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *bundlesDir != "" && *advertise == "" {
 		return fmt.Errorf("-bundles needs -advertise HOST:PORT (the address the agent dials)")
+	}
+	if *servedDir != "" && *bundlesDir == "" {
+		return fmt.Errorf("-served-dir needs -bundles (it watches the bundles that are served)")
 	}
 	var cfg controller.Config
 	if *cfgPath != "" {
@@ -100,6 +107,22 @@ func runServe(ctx context.Context, args []string) error {
 			return err
 		}
 		log.Info("enrollment bundles written", "dir", *bundlesDir, "hosts", len(m.Hosts), "safe", *bundleSafe)
+		if *servedDir != "" {
+			served, err := servedBinaries(*servedDir)
+			if err != nil {
+				return err
+			}
+			window := *enrollWindow
+			if window <= 0 {
+				window = *bundleTTL
+			}
+			hosts := manifestHosts(m)
+			if err := c.WatchEnrollment(*bundlesDir, hosts, served, window); err != nil {
+				return err
+			}
+			enrollWatchStarted(hosts, window)
+			log.Info("enrollment watch started", "dir", *bundlesDir, "hosts", len(hosts), "window", window)
+		}
 	}
 	if cfg.ManifestPath != "" {
 		// Agent configs are generated from the manifest (and rules) and pushed
@@ -131,12 +154,41 @@ func runServe(ctx context.Context, args []string) error {
 // writeBundles writes one bootstrap bundle per manifest host, named
 // <host>.json, so a person can download it on the console host and enroll.
 func writeBundles(c *controller.Controller, m *manifest.Manifest, dir, advertise string, ttl time.Duration, safe bool) error {
+	return c.WriteBundles(dir, manifestHosts(m), controller.BundleOptions{Controllers: []string{advertise}, TTL: ttl, Safe: safe})
+}
+
+// manifestHosts lists the manifest's host names, sorted.
+func manifestHosts(m *manifest.Manifest) []string {
 	hosts := make([]string, 0, len(m.Hosts))
 	for h := range m.Hosts {
 		hosts = append(hosts, h)
 	}
 	sort.Strings(hosts)
-	return c.WriteBundles(dir, hosts, controller.BundleOptions{Controllers: []string{advertise}, TTL: ttl, Safe: safe})
+	return hosts
+}
+
+// enrollWatchStarted observes a started enrollment watch; tests replace it to
+// see the flags take effect instead of waiting on the alerts themselves.
+var enrollWatchStarted = func(hosts []string, window time.Duration) {}
+
+// servedBinaries lists the agent binaries a web root serves. A missing
+// phylax.exe is normal on a Linux-only kit; a web root with neither binary is
+// an error, because an empty served set would accept every reported hash.
+func servedBinaries(dir string) ([]string, error) {
+	var out []string
+	for _, name := range []string{"phylax", "phylax.exe"} {
+		p := filepath.Join(dir, name)
+		switch _, err := os.Stat(p); {
+		case err == nil:
+			out = append(out, p)
+		case !errors.Is(err, os.ErrNotExist):
+			return nil, fmt.Errorf("served binaries: %w", err)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("served binaries: no phylax or phylax.exe in %s", dir)
+	}
+	return out, nil
 }
 
 // startUI serves the operator UI on its own loopback listener. The first run

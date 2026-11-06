@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -145,5 +146,65 @@ func TestServeBundlesNeedsAdvertise(t *testing.T) {
 	err := commands["serve"].run(context.Background(), []string{"-data-dir", tmp, "-bundles", filepath.Join(tmp, "bundles")})
 	if err == nil || !strings.Contains(err.Error(), "-advertise") {
 		t.Fatalf("err = %v, want an error naming -advertise", err)
+	}
+}
+
+func TestServeEnrollWindowFlags(t *testing.T) {
+	tmp := t.TempDir()
+	err := commands["serve"].run(context.Background(), []string{"-data-dir", filepath.Join(tmp, "data"), "-served-dir", filepath.Join(tmp, "web")})
+	if err == nil || !strings.Contains(err.Error(), "-bundles") {
+		t.Fatalf("err = %v, want an error naming -bundles", err)
+	}
+
+	// With both flags serve starts the watch over the manifest hosts.
+	web := filepath.Join(tmp, "web")
+	if err := os.MkdirAll(web, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(web, "phylax"), []byte("served binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(tmp, "controller.json")
+	cfgJSON := fmt.Sprintf(`{"data_dir": %q, "manifest_path": %q, "ui_listen": "off", "agent_listen": "127.0.0.1:0"}`,
+		filepath.Join(tmp, "ctl"), ref2027)
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type started struct {
+		hosts  []string
+		window time.Duration
+	}
+	got := make(chan started, 1)
+	prev := enrollWatchStarted
+	enrollWatchStarted = func(hosts []string, window time.Duration) { got <- started{hosts, window} }
+	defer func() { enrollWatchStarted = prev }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- commands["serve"].run(ctx, []string{"-config", cfgPath, "-bundles", filepath.Join(tmp, "bundles"),
+			"-advertise", "172.20.240.5:7443", "-served-dir", web, "-enroll-window", "30m"})
+	}()
+	select {
+	case s := <-got:
+		if len(s.hosts) != 8 {
+			t.Errorf("watch hosts = %v, want the 8 manifest hosts", s.hosts)
+		}
+		if s.window != 30*time.Minute {
+			t.Errorf("window = %v, want 30m", s.window)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("enrollment watch did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("serve: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("serve did not stop")
 	}
 }
