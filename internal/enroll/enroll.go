@@ -37,9 +37,10 @@ type Options struct {
 type Enroller struct {
 	opt Options
 
-	mu      sync.Mutex // serialises enrollment decisions and revocation
-	tokens  *Tokens
-	revoked *revokedKeys
+	mu       sync.Mutex // serialises enrollment decisions and revocation
+	tokens   *Tokens
+	revoked  *revokedKeys
+	hostKeys *HostKeys
 
 	relMu    sync.Mutex
 	releases map[string]*releaseFile
@@ -74,7 +75,11 @@ func New(o Options) (*Enroller, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Enroller{opt: o, tokens: tokens, revoked: revoked,
+	hostKeys, err := OpenHostKeys(filepath.Join(o.DataDir, "known_hosts.json"))
+	if err != nil {
+		return nil, err
+	}
+	e := &Enroller{opt: o, tokens: tokens, revoked: revoked, hostKeys: hostKeys,
 		releases: map[string]*releaseFile{}, fails: map[string][]time.Time{},
 		pending: map[string]pendingAnnounce{}}
 	// Hash the release files now; release() refreshes them when they move.
