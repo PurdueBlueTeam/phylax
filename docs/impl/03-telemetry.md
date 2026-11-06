@@ -12,12 +12,12 @@
 
 ## Design gaps and decisions (Task 1 writes each into `phylax_design.md` in the same commit)
 
-1. **The W1 common structs cannot carry what the rules and consumers read.** `rules/linux_exec.yml` reads `argc`, `cgroup`, `env.LD_PRELOAD`; `rules/mw-redteam.yml` reads `gpo`, `sysvol_policy`; `internal/traceback/obs.go` reads `start_ticks`, `writer_start_ticks`, `exe_sha256`, `pid_start`. W1's `Decode` is strict, so `event.New` would drop or reject them. Decision: Task 1 adds exactly those fields as optional members of the W1 structs (list in Task 1) and every other producer field is attached with `WithExtra` (`x_` prefix; `Decode` ignores it, rules may not read it). Rule of thumb for later changes: a field a rule, analyser or consumer reads belongs in the struct; a field only a human reads is `x_`.
+1. **The W1 common structs cannot carry what the rules and consumers read.** `rules/linux_exec.yml` reads `argc`, `cgroup`, `env.LD_PRELOAD`; `rules/mw-redteam.yml` reads `gpo`, `sysvol_policy`; `internal/traceback/obs.go` reads `start_ticks`, `writer_start_ticks`, `exe_sha256`, `pid_start`. W1's `Decode` is strict, so `event.New` would drop or reject them. Decision: W1 owns the fields (W1 Task 4a lists exactly those optional members of its structs) and every other producer field is attached with `WithExtra` (`x_` prefix; `Decode` ignores it, rules may not read it). Rule of thumb for later changes: a field a rule, analyser or consumer reads belongs in the struct; a field only a human reads is `x_`.
 2. **`winevt.sec_event` and `inventory` row payloads are open.** The payload keys depend on `category` (about 60 categories) or on the table. Declared as `map[string]any` types; `shortcut: payload untyped per category, type a category when a consumer needs more than rules do`.
-3. **`Event.WithExtra`** is added to `internal/event` (W1 has no way to attach producer fields). One method, one test.
-4. **`actions.RegisterExtra`** (exported) is added so a module package can register the actions the design says it owns (`audit.rules`, `audit.immutable`, `collect.inventory`, `probe.run`). The built `registerExtra` is unexported and the module packages cannot import `internal/actions` internals. Actions reach the running module through a package-level `Active()` handle: `shortcut: one agent per process, a handle per module instance if that changes`.
+3. **`Event.WithExtra`** is W1's (Task 3a): producers use it, this plan does not build it.
+4. **`actions.Register`** (W1 Task 2a; the exported form of the built `registerExtra`, the one name every workstream uses) lets a module package register the actions the design says it owns (`audit.rules`, `audit.immutable`, `collect.inventory`, `probe.run`). Actions reach the running module through a package-level `Active()` handle: `shortcut: one agent per process, a handle per module instance if that changes`.
 5. **`CommunityID` and the protocol constants move to `internal/sockets`.** `capture`, `traceback` and `chains` import them from `internal/net` today; after the move that would be a sibling import (Known bug 15). The design describes `internal/sockets` as `sock_diag` plus the inode join; Task 1 adds "Community ID v1" to that line.
-6. **Content for `logs` and `inventory` lives inside the package** (`internal/logs/parsers/*.yml`, `internal/inventory/probes/*.yml`, `internal/inventory/software/*.yml`, embedded with `go:embed`). Appendix D has no top-level `logs/` or `inventory/` and the agent needs the content offline and signed with the release. Task 1 corrects the module sections and Appendix D.
+6. **Content for `logs` and `inventory` lives inside the package** (`internal/logs/parsers/*.yml`, `internal/inventory/probes/*.yml`, `internal/inventory/software/*.yml`, embedded with `go:embed`). Appendix D has no top-level `logs/` or `inventory/` and the agent needs the content offline and signed with the release. The consistency pass already corrected the module sections and Appendix D; Task 1 Step 5 verifies it.
 7. **`net` stops feeding `deps` and `deps` is not yet a subscriber.** Task 17 removes `net`'s `deps` import (Known bug 15); `deps.edge` and `deps.peer` stop being produced until W8 makes `deps` subscribe to `conn` and `listener`. W8's plan must start from that fact. Until then `internal/deps` keeps its code and tests.
 8. **Hand-offs, not built here.** (a) `net.shadow_drop` and `net.ingress_denied` are declared here; emitting them (the separate NFLOG group, Known bug 14, the Windows shadow evaluator) is W6, in `internal/net`. `plan.NetSettings` keeps `NFLogGroups` until W6 swaps it for `deny_log_group` and `shadow_log_group`. (b) `sysmon.install`, `sysmon.config`, `eventlog.size` and an action that enables an analytic channel have no owner in the master plan; none is built here. Recommend W5 (hardening) takes them. (c) The controller-side comparison of the heartbeat `rules_hash` (tier-1 alert on a change or a drop to no rules) has no declared kind to emit; this plan only fills `Health.Info`. Recommend W10 (Platform page) or W4 (a rule on `agent.health`) owns it. (d) The `respond` tier-0 Sysmon reinstall recipe is W4.
 9. **`json.Number` on the bus.** `event.New` stores numbers as `json.Number`; `internal/detect/field.go` (`toStr`, `toNum`) does not handle it, so `uid: {gt: 0}` would silently stop matching live events. Task 2 fixes it first; W4 inherits the fix.
@@ -50,7 +50,7 @@
 
 | Path | Responsibility | Task |
 | --- | --- | --- |
-| `internal/event/kinds.go`, `types.go` | extension fields on common structs; `WithExtra` | 1 |
+| `internal/event/kinds.go`, `types.go` | extension fields on common structs; `WithExtra` | W1 Tasks 3a, 4a (not built here) |
 | `internal/e2e/telemetry_test.go` | producer fixtures through the real rules | 39 |
 | `internal/sockets/` | `Sock`, `SockDiag`, `ProcFS`, `Proc`, `CommunityID`, protocol constants; Windows extended-table readers | 1, 15 |
 | `internal/audit/` | `audit` module (moved from `internal/collect/audit`) | 1, 4-10 |
@@ -63,7 +63,7 @@
 | `internal/inventory/` | `inventory`: `tables.go`, `diff.go`, `collect_linux_*.go`, `collect_windows*.go`, `software.go`, `probe.go`, `probes/`, `software/`, `module.go`, `actions.go`, `controller.go`, `ui.go` | 1, 28-37 |
 | `internal/inventory/fold/` | pure fold of snapshot plus row events | 1, 2 |
 | `internal/agent/mods/logs.go`, `inventory.go` | factories | 1, 26, 34 |
-| `internal/actions/registry.go` | `RegisterExtra` | 1 |
+| `internal/actions/registry.go` | `Register` | W1 Task 2a (not built here) |
 | `internal/plan/agentconfig.go` | `LogsSettings`, `InventorySettings`, `WinevtSettings.BackscanHours` | 1 |
 | `internal/detect/field.go` | `json.Number` | 2 |
 | `rules/*.yml`, `rules/pending/needs_producer.yml` | renamed kinds and fields; unparked inventory and logs rules | 3-5, 11, 12, 27, 38 |
@@ -76,36 +76,24 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Moves the three packages, writes the declared kinds, the extension fields, the shared-library skeletons, the stubs of the two new modules, the new settings structs, and every skipped test the later tasks implement. Merges on its own (its own pull request into `v3-redesign`); W6 waits for it (it needs the `net.*` kinds).
+Done by a stronger model. Moves the three packages, writes the declared kinds, the shared-library skeletons, the stubs of the two new modules, the new settings structs, and every skipped test the later tasks implement. Merges on its own (its own pull request into `v3-redesign`); W6 waits for it (it needs the `net.*` kinds).
 
 **Files:**
 - Move (`git mv`, then fix the package clause and every importer in the same commit): `internal/collect/audit` to `internal/audit` (package `audit`); `internal/collect/winevt` to `internal/winevt` (package `winevt`); `internal/collect/net` to `internal/net` (package stays `netmod`). Importers to fix: `internal/agent/mods/{audit_linux,winevt,net}.go`, `internal/traceback/obs.go`, `internal/capture/{decode,engine,events,engine_test}.go`, `internal/chains/chains_test.go`, `internal/depot/gotools/proc_linux.go`.
 - Move into `internal/sockets/` (package `sockets`): `communityid.go` and `communityid_test.go` (`CommunityID`, `CommunityIDICMP`, `CommunityIDNoPorts`, `ProtoICMP`, `ProtoTCP`, `ProtoUDP`, `ProtoICMPv6`, `ProtoSCTP`), `sockdiag.go`, `sockdiag_linux.go` (`Sock`, `SockDiag`, `State*`), `proc_linux.go` as `procfs_linux.go` and its test (`ProcFS`), and the `Proc` struct from `tracker.go` into `proc.go`. `internal/net` then imports `internal/sockets`; `capture`, `traceback`, `chains` tests and `gotools` import it instead of `internal/net`. `Flow.CommunityID()` in `nflog.go` calls `sockets.CommunityID`.
 - Create: `internal/audit/kinds.go`, `internal/winevt/kinds.go`, `internal/net/kinds.go`, `internal/logs/{doc.go,kinds.go,module.go}`, `internal/inventory/{doc.go,kinds.go,tables.go,module.go,controller.go}`, `internal/inventory/fold/fold.go`, `internal/agent/mods/{logs,inventory}.go`
-- Modify: `internal/event/kinds.go`, `internal/event/types.go`, `internal/actions/registry.go`, `internal/plan/agentconfig.go`, `internal/module/all/all.go`, `internal/module/conformance/allowed.go` (`ModulePackages` entries for the five modules; `PreContract` keeps the three retrofits until their conformance task), `phylax_design.md`
+- Modify: `internal/plan/agentconfig.go`, `internal/module/all/all.go`, `internal/module/conformance/allowed.go` (`ModulePackages` entries for the five modules; `PreContract` keeps the three retrofits until their conformance task), `phylax_design.md`
 - Create: every test file named in Tasks 2 to 40, each test body as given in that task's Step 1, first statement `t.Skip("unimplemented: W3 Task N")`; fixture helpers they share.
 
 **Interfaces:**
-- Consumes: W1 Task 1 to 5 names (`event.Declare`, `event.New`, `module.Manifest`, `module.Common`, `module.Health`, `agent.Factory`, `plan.ModuleLimits`).
+- Consumes: W1 names (`event.Declare`, `event.New`, `Event.WithExtra`, the extension fields, `actions.Register`, `module.Manifest`, `module.Common`, `module.Health`, `agent.Factory`, `plan.ModuleLimits`).
 - Produces (exact):
 
 ```go
-// ---- internal/event/types.go ----
-// WithExtra sets Fields["x_"+key] = v (copy of the Fields map) and returns the event.
-func (e Event) WithExtra(key string, v any) Event
-
-// ---- internal/event/kinds.go: optional members added to the W1 structs (all omitempty) ----
-// ProcessParent: PID int `json:"pid"`; StartTicks uint64 `json:"start_ticks"`; Live bool `json:"live"`; Unresolved bool `json:"unresolved"`
-// ProcessStart:  Argc *int `json:"argc"`; CGroup string `json:"cgroup"`; EUID *int `json:"euid"`; AUID *int64 `json:"auid"`;
-//                Env map[string]string `json:"env"`; StartTicks uint64 `json:"start_ticks"`
-// FileChange:    Comm string `json:"comm"`; WriterCmdline string `json:"writer_cmdline"`; WriterStartTicks uint64 `json:"writer_start_ticks"`;
-//                SelfTamper bool `json:"self_tamper"`; WriterKnown *bool `json:"writer_known"`; GPO bool `json:"gpo"`; GPOGUID string `json:"gpo_guid"`;
-//                GPOSection string `json:"gpo_section"`; GPOItem string `json:"gpo_item"`; SysvolPolicy bool `json:"sysvol_policy"`
-// Conn:          ExeDeleted bool `json:"exe_deleted"`; ExeSHA256 string `json:"exe_sha256"`; PIDStart uint64 `json:"pid_start"`
-// Listener:      ExeDeleted bool `json:"exe_deleted"`; ExeSHA256 string `json:"exe_sha256"`; PIDStart uint64 `json:"pid_start"`
-// AuthEvent:     LogonTypeName string `json:"logon_type_name"`; MachineAccount bool `json:"machine_account"`; Status, SubStatus, FailureReason string;
-//                Process string `json:"process"`; Workstation string `json:"workstation"`; SubjectAccount string `json:"subject_account"`
-// Replay bool `json:"replay"` is also added to ProcessStart, FileChange, Conn and AuthEvent (enrollment backscan marker, Task 14)
+// ---- internal/event (W1, not built here) ----
+// Event.WithExtra (W1 Task 3a) and the extension fields of the common structs (W1 Task 4a: ProcessParent.PID/StartTicks/Live/Unresolved,
+// ProcessStart.Argc/CGroup/EUID/AUID/Env/StartTicks, FileChange writer and GPO fields, Conn/Listener.ExeDeleted/ExeSHA256/PIDStart,
+// AuthEvent logon fields, Replay on four kinds) are consumed here as given.
 
 // ---- internal/audit/kinds.go (Declare in init; Priority per the design's Events table; Alert false) ----
 type ModuleLoad struct {
@@ -291,9 +279,6 @@ type Row = map[string]any
 type Event struct{ Op, Key string; Row Row }
 func Fold(snapshot []Row, key []string, evs []Event) []Row // sorted by key; pure
 
-// ---- internal/actions/registry.go ----
-func RegisterExtra(f func() []Action) // exported form of registerExtra
-
 // ---- internal/plan/agentconfig.go ----
 type LogFile struct {
 	Path    string `json:"path"`
@@ -319,9 +304,9 @@ type InventorySettings struct {
 
 - [ ] **Step 1: Do the moves.** `git mv`, fix package clauses (`package audit`, `package winevt`, `package netmod` stays), fix every importer listed, delete `internal/collect/`. Run `make build build-windows vet test` between moves; the tree must be green after each.
 - [ ] **Step 2: Write the shared-library skeletons and stubs.** `sockets` is the moved code and compiles; `inventory/tables.go` and `fold.Fold` signature are written (`Fold` body `panic("unimplemented: W3 Task 2")`); `internal/logs/module.go` and `internal/inventory/module.go` define `type Module struct{}` with `Name()` and a `Start` returning `agent.ErrUnavailable`; the two new factories in `internal/agent/mods` register with `Section` returning `"", false`. Stubs panic `unimplemented: W3 Task N` except where the signature above says otherwise.
-- [ ] **Step 3: Write the declarations.** The three `kinds.go` files declare every kind in `init` (`event.Declare`) with the priorities above; the extension fields on the common structs; `WithExtra`; `RegisterExtra`; the settings structs and `ModuleSettings` fields. The `Manifest` values of the five modules are written in Tasks 5, 12, 19, 25 and 33; here each module package has an unexported `manifest()` returning the design's literal with `Emits` listing the declared kinds (so `TestKindTable` already sees them).
+- [ ] **Step 3: Write the declarations.** The three `kinds.go` files declare every kind in `init` (`event.Declare`) with the priorities above; the settings structs and `ModuleSettings` fields. The `Manifest` values of the five modules are written in Tasks 5, 12, 19, 25 and 33; here each module package has an unexported `manifest()` returning the design's literal with `Emits` listing the declared kinds (so `TestKindTable` already sees them).
 - [ ] **Step 4: Skipped tests.** For each of Tasks 2 to 40 create the test file the task names, bodies as in its Step 1, `t.Skip("unimplemented: W3 Task N")` first.
-- [ ] **Step 5: Edit `phylax_design.md`.** Add the nine decisions above (one bullet each, with the reason) under the telemetry module sections; fix the `internal/sockets` line (Community ID) in "Shared libraries"; correct the content paths in `logs` and `inventory` §3 and Appendix D; add the extension fields to "Canonical fields of the common kinds" (list above).
+- [ ] **Step 5: Edit `phylax_design.md`.** Add the nine decisions above (one bullet each, with the reason) under the telemetry module sections; fix the `internal/sockets` line (Community ID) in "Shared libraries"; correct the content paths in `logs` and `inventory` §3 and Appendix D; (the extension fields in "Canonical fields of the common kinds" are W1 Task 4a's design edit).
 - [ ] **Step 6: Verify.** Run `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W3 Task'`; expected: the number of skipped tests written in Step 4.
 - [ ] **Step 7: Commit** `telemetry: W3 seams (moves, kinds, sockets, extension fields, stubs)`.
 
@@ -420,7 +405,7 @@ func TestDepsIngestsListenerKind(t *testing.T) { /* listener op added lport 8081
 - Test: `internal/audit/canonical_test.go`; existing `module_test.go` and `assemble_test.go` assertions on `image`, `pexe`, `pcomm`
 
 **Interfaces:**
-- Consumes: `event.ProcessStart` (with the Task 1 extension fields), `event.ProcessParent`, `Event.WithExtra`.
+- Consumes: `event.ProcessStart` (with the W1 Task 4a extension fields), `event.ProcessParent`, `Event.WithExtra`.
 - Produces: audit `process_start` is `event.ProcessStart{Source:"audit", Exe, Comm, Cmdline, CWD, PID, PPID, UID, EUID, AUID, Argc, CGroup, Env, StartTicks, Parent:{PID,Exe,Comm,Cmdline,StartTicks,Live,Unresolved}}`; everything else the design lists (`gid`, `egid`, `ses`, `tty`, `argv`, `exec_path`, `proctitle`, `argv_truncated`, `argv_incomplete`, `syscall`, `success`, `exit`, `key`, `audit_serial`, `boot_id`) is `x_<name>`.
 
 - [ ] **Step 1: Remove the skips and write the tests:**
@@ -588,11 +573,11 @@ func TestHealthReportsUnsupportedFS(t *testing.T) { /* module with a statfs hook
 ### Task 9: `audit`: the actions `audit.rules` and `audit.immutable`
 
 **Files:**
-- Create: `internal/audit/actions.go` (init registers through `actions.RegisterExtra`; `Active()`), modify `internal/audit/module.go` (`Active` handle set in `Start`; `UpdateWatches`)
+- Create: `internal/audit/actions.go` (init registers through `actions.Register`; `Active()`), modify `internal/audit/module.go` (`Active` handle set in `Start`; `UpdateWatches`)
 - Test: `internal/audit/actions_test.go`
 
 **Interfaces:**
-- Consumes: `actions.Action`, `actions.Spec`, `actions.Params`, `actions.RegisterExtra` (Task 1).
+- Consumes: `actions.Action`, `actions.Spec`, `actions.Params`, `actions.Register` (W1 Task 2a).
 - Produces: `func Active() *Module` (nil when the module is not running); `func (m *Module) UpdateWatches(add, remove []string) (RulesReport, error)` (edits the declared `extra_watches`, reconciles through the guard and re-baselines, under the guard's mutex so the verify loop never repairs it away); actions `audit.rules` (`Risk: actions.RiskService`; params `add` and `remove` as comma-separated paths, `Locks` `["audit"]`) and `audit.immutable` (`Risk: actions.RiskDestructive`; param `enable` bool; Apply sets `-e 2`; `Capture` returns no rollback and `Plan` notes "reboot is the rollback"; refuses when the module is not the unicast owner of the audit pid).
 
 - [ ] **Step 1: Remove the skips and write the tests:**
@@ -704,7 +689,7 @@ func TestWindowsRulesStillFire(t *testing.T) { /* run rules/windows.yml + mw-red
 - Test: `internal/winevt/auth_test.go`, `internal/traceback/obs_auth_test.go`
 
 **Interfaces:**
-- Consumes: `event.AuthEvent` (extension fields from Task 1).
+- Consumes: `event.AuthEvent` (extension fields from W1 Task 4a).
 - Produces: 4624 gives `auth_event{result:"success"}`, 4625 `result:"fail"` with `account`, `domain`, `source` (cleaned IP, empty for `-`), `source_port`, `service:"windows"`, `method`, `logon_type`, `logon_type_name`, `machine_account`, `status`, `sub_status`, `failure_reason`, `process`, `workstation`, `subject_account`; `x_anonymous_logon`, `x_target_logon_id`, `x_channel`, `x_event_id`, `x_record_id`. Priority High.
 
 - [ ] **Step 1: Remove the skips and write the tests:**
@@ -1526,7 +1511,7 @@ func TestInventoryFixturesDecodeStrictly(t *testing.T) { /* T75: all events of t
 - Modify: `internal/inventory/module.go` (`Active()`; `RunProbe`)
 
 **Interfaces:**
-- Consumes: `actions.Action`, `actions.RegisterExtra`, `TableDef`, `Module.CollectNow`.
+- Consumes: `actions.Action`, `actions.Register`, `TableDef`, `Module.CollectNow`.
 - Produces:
 
 ```go

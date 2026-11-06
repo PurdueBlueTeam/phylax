@@ -4,7 +4,7 @@
 
 **Goal:** Turn the design's module contract into code: typed events, `internal/module`, the agent and controller module registries, the controller `Host`, approval classes and the controller executor, `control: fact`, the lint registry, the UI registrar, the conformance suite and the CI gates, with `health` and `suricata` as the first two modules on the contract.
 
-**Architecture:** `internal/module` is a leaf package of data types and interfaces (it imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui` and the standard library), so `internal/plan`, `internal/link`, `internal/agent` and `internal/controller` can all import it. The agent side extends the built factory registry and supervisor; the controller side gets a module runner, a `Host` implementation, a controller-origin event chain and the plan-starting paths (`auto_readonly`, `standing`, `auto`, proposals). The conformance suite is a test-support package every module's own `conformance_test.go` calls; static checks (imports, kind table, presence) run once over the registry.
+**Architecture:** `internal/module` is a leaf package of data types and interfaces (it imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui`, `internal/manifest` and the standard library), so `internal/plan`, `internal/link`, `internal/agent` and `internal/controller` can all import it. (`internal/manifest` joins that list: it imports no repo package, and `Host.Manifest()` returns its type.) The agent side extends the built factory registry and supervisor; the controller side gets a module runner, a `Host` implementation, a controller-origin event chain and the plan-starting paths (`auto_readonly`, `standing`, `auto`, proposals). The conformance suite is a test-support package every module's own `conformance_test.go` calls; static checks (imports, kind table, presence) run once over the registry.
 
 **Tech Stack:** Go 1.27.2 (mise), standard library, existing deps only (`modernc.org/sqlite`, `gopkg.in/yaml.v3`, `golang.org/x/sys`). No new modules in `go.mod`.
 
@@ -26,6 +26,11 @@
 12. **`RunAuto`'s triggering event** is passed as the reserved parameter `trigger` (`<agent>:<seq>`), recorded in the plan's `Approver` and never substituted into the template.
 13. **Core kind count is 29, not 28**: the design's table has 29 core rows (listed in Task 5) while its summary sentence says 28 (and so 167 kinds in all would be 168); Task 1 fixes the sentence.
 14. **`act_enabled` is per module block, fleet-wide.** The design's tiers flip it "for named hosts"; a per-host form is not designed. `shortcut: act_enabled per module only, upgrade when hosts.yml gets a per-host act entry` in `RunAuto`.
+15. **The seam extras W3, W5, W6, W7 and W11 each assumed are W1's.** One name for exporting action registration: `actions.Register` (the design's name; W3's `RegisterExtra` and W6/W11's `RegisterFamily` are retired), with `actions.RegisterUndo`, `actions.Unsupported`, `Env.Now()` and `Env.Ext` (Task 2a). `Event.WithExtra` (`x_` prefix) and the extension fields of the common structs (Tasks 3a, 4a). `storetest.New` (Task 8a). `Host.Manifest()` and `Host.UpdateOverrides` (Task 17a). `LoadModuleTemplateFor`, `plans.Parse`/`ResolveLabels` and the root `plans` package in `CoreImports` (Task 22b).
+16. **`Env.Now` is a method, so the old field `Env.Now` becomes `Env.Clock`.** A Go type cannot have a field and a method of one name; W6 and W11 call `env.Now()`. The three places that set the field (`actions/helpers_test.go`, `e2e_test.go`, the agent) change in Task 2a.
+17. **`internal/module` may also import `internal/manifest`** (it imports no repo package), because `Host.Manifest()` returns the loaded manifest and `Host.UpdateOverrides` takes `*manifest.Overrides`. `manifest` must never import `module`.
+18. **The two plan options no workstream owned are W1's:** `expires_after` (Task 22a, the dead-man machinery with the confirm turned off) and `gate: auto` (Task 27a, `until:` conditions: time, probe, absence of an event). Templates spell them `expires_after: 30m` and `gate: auto` with `until:`; `ParseTemplate` translates (`translateNodeKeys`). W7 builds `window: scorer_quiet`, `gate: manual` and `txn:` and adds its keys to the same translator; W5 hardening and W10 backup depend on W7 Tasks 2 to 7 for `window:`.
+19. **Modules reach `overrides.yml` and per-device vault keys through `Host`.** `Host.UpdateOverrides` over `manifest.AppendOverrides` (Task 11a, with `Overrides.LearnedListeners`), and `Host.Secrets` accepts prefix grants (`cred/*`, Task 9a) so `devices` and `creds` need no fixed names in their block.
 
 ## Global Constraints
 
@@ -35,8 +40,8 @@
 - No shelling out in the default path (tests may run `go list`).
 - Bounded everything: queues, buffers, decoded sizes, timeouts. Atomic writes through `internal/atomicfile` for state files.
 - No compatibility shims, aliases or dual formats; renamed things are renamed everywhere in the same commit.
-- `internal/module` imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui` and the standard library.
-- A module imports only the core packages (`internal/event`, `internal/module`, `internal/agent`, `internal/link`, `internal/plan`, `internal/actions`, `internal/store`, `internal/manifest`, `internal/manifest/render`, `internal/deadman`, `internal/ui`, `internal/vault`) and the shared libraries (`internal/atomicfile`, `internal/parsers/...`, `internal/checks/probe`, `internal/sockets`, `internal/signing`, `internal/integrity/format`, `internal/inventory/fold`). `internal/enroll` is never importable by a module.
+- `internal/module` imports only `internal/event`, `internal/store`, `internal/vault`, `internal/ui`, `internal/manifest` and the standard library.
+- A module imports only the core packages (`internal/event`, `internal/module`, `internal/agent`, `internal/link`, `internal/plan`, `internal/actions`, `internal/store`, `internal/manifest`, `internal/manifest/render`, `internal/deadman`, `internal/ui`, `internal/vault`, and the root `plans` package) and the shared libraries (`internal/atomicfile`, `internal/parsers/...`, `internal/checks/probe`, `internal/sockets`, `internal/signing`, `internal/integrity/format`, `internal/inventory/fold`). `internal/enroll` is never importable by a module.
 - Times stored in UTC. Secrets never appear in events, logs or config files.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
@@ -56,8 +61,9 @@
 | Path | Responsibility | Task |
 | --- | --- | --- |
 | `internal/event/event.go` | envelope (`Schema`, `Tag`) | 2 |
-| `internal/event/types.go` | `Type`, `Declare`, `Lookup`, `Declared`, `New`, `Decode`, `Validate` | 1, 3 |
-| `internal/event/kinds.go` | common kinds and canonical structs | 1, 4 |
+| `internal/actions/{registry,win_env,env}.go` | `Register`, `RegisterUndo`, `Unsupported`, `Env.Now`/`Clock`, `Env.Ext` | 2a |
+| `internal/event/types.go` | `Type`, `Declare`, `Lookup`, `Declared`, `New`, `Decode`, `Validate`, `WithExtra` | 1, 3, 3a |
+| `internal/event/kinds.go` | common kinds and canonical structs, extension fields | 1, 4, 4a |
 | `internal/event/core.go` | core kinds and payload structs | 1, 5 |
 | `internal/module/module.go` | `Side`, `Budget`, `Manifest`, `Common`, `State`, `Gap`, `Usage`, `Health`, `Effective` | 1, 7 |
 | `internal/module/host.go` | `Host`, `ControlMsg`, `Proposal`, `EventRef`, `ControllerModule`, `Analyzer`, `AnalyzerProvider`, `Configurable`, errors | 1 |
@@ -66,13 +72,17 @@
 | `internal/module/all/all.go` | blank imports of every module package | 1, 38, 39 |
 | `internal/module/conformance/` | the suite (`agent.go`, `controller.go`, `leak.go`, `static_test.go`, `allowed.go`) | 1, 34-37 |
 | `internal/store/reader.go` | `Reader`, `ModuleDB`, `(*Store).ModuleDB` | 1, 8 |
+| `internal/store/storetest/storetest.go` | `New`, seeded store for module tests | 1, 8a |
 | `internal/store/standing.go`, `proposals.go` | core tables for standing approvals and proposals | 24, 25 |
-| `internal/vault/reader.go` | `Reader`, `Source`, `Scoped`, `ErrNotAllowed` | 1, 9 |
+| `internal/vault/reader.go` | `Reader`, `Source`, `Scoped`, `Covers`, `ErrNotAllowed` | 1, 9, 9a |
 | `internal/ui/registrar.go` | `Registrar`, `Cell`, `Discard`, `(*Server).Registrar`, views | 1, 10 |
 | `internal/manifest/modules.go`, `labels.go` | module blocks, host `modules:`/`labels:`, label expressions | 1, 11 |
+| `internal/manifest/overrides_write.go` | `AppendOverrides`, `LearnedListener` | 1, 11a |
 | `internal/plan/agentconfig.go` | `ModuleLimits` embeds `module.Common`; strict parse; `BlockFor` | 12 |
 | `internal/plan/approval.go` | `ApprovalClass`, `StandingApproval` | 1, 22 |
 | `internal/plan/template.go` | `ExpandTemplate` | 1, 22 |
+| `internal/plan/plan.go`, `step.go` | `ExpiresAfterSec`, `GateUntil` | 22a, 27a |
+| `plans/plans.go` | `Template.Module`, `Parse`, `ResolveLabels` | 1, 22b |
 | `internal/plan/fact.go` | `ControlFact`, `FactSender`, limits | 1, 30 |
 | `internal/plan/lint/lint.go`, `ss000.go` | lint registry and `SS000` | 1, 21 |
 | `internal/agent/registry.go`, `module.go` | `Factory.Manifest`, `HealthReporter`, `Supervisor.Health`, `Subscribe` kinds | 13 |
@@ -80,7 +90,8 @@
 | `internal/agent/facts.go`, `window.go` | facts and the `work_window` effect | 31, 32 |
 | `internal/link/message.go` | heartbeat `Health` | 14 |
 | `internal/controller/chain.go` | controller-origin event chain | 16 |
-| `internal/controller/host.go`, `modules.go`, `analysis.go` | `Host` implementation, module runner, analysis worker | 1, 17-20 |
+| `internal/controller/host.go`, `modules.go`, `analysis.go` | `Host` implementation (`Manifest`, `UpdateOverrides`, prefix secrets), module runner, analysis worker | 1, 17, 17a, 18-20 |
+| `internal/controller/plantemplates.go` | `LoadModuleTemplateFor`, `translateNodeKeys` (`expires_after`, `gate:`) | 22, 22a, 22b, 27a |
 | `internal/controller/approvals.go`, `auto.go`, `proposals.go`, `exec.go`, `facts.go` | approval classes, auto conditions, breaker, proposals, executor, facts | 23-30 |
 | `internal/suricata/` | `suricata` moved from `internal/integrations/suricata` | 39 |
 | `cmd/phylax/modules.go` | `phylax modules` | 40 |
@@ -102,9 +113,10 @@ Done by a stronger model. Writes every exported type, interface and function sig
 - Create: `internal/plan/approval.go`, `internal/plan/template.go`, `internal/plan/fact.go`, `internal/plan/lint/lint.go`
 - Create: `internal/agent/harness.go`
 - Create: `internal/controller/host.go`, `internal/controller/modules.go`
-- Create: every test file named in Tasks 2 to 40 except Task 12's, each test body as given in that task's Step 1, with `t.Skip("unimplemented: W1 Task N")` as its first line (Task 2's `internal/event/envelope_test.go` unskipped), and the test helpers listed in Step 2
-- Modify (zero-value-safe field additions only): `internal/event/event.go`, `internal/store/query.go`, `internal/manifest/types.go`, `internal/agent/registry.go`, `internal/link/message.go`, `internal/plan/plan.go`, `internal/plan/step.go`, `internal/actions/env.go`, `internal/controller/controller.go`
-- Modify: `phylax_design.md` (the sketches in "The module contract" and "Lint registration" to the signatures below; the 14 deviations above; "28 core kinds" to 29)
+- Create: `internal/store/storetest/storetest.go`, `internal/manifest/overrides_write.go` (stubs; Tasks 8a and 11a)
+- Create: every test file named in Tasks 2 to 42 (lettered tasks included: 3a, 4a, 8a, 9a, 11a, 17a, 22a, 22b, 27a) except Task 12's, each test body as given in that task's Step 1, with `t.Skip("unimplemented: W1 Task N")` as its first line (Task 2's `internal/event/envelope_test.go` and Task 2a's `internal/actions/register_test.go` unskipped: those two are real from the start), and the test helpers listed in Step 2
+- Modify (zero-value-safe field additions only): `internal/manifest/types.go` (`Overrides.LearnedListeners`, `LearnedListener`), `plans/plans.go` (`Template.Module`), `internal/event/event.go`, `internal/store/query.go`, `internal/manifest/types.go`, `internal/agent/registry.go`, `internal/link/message.go`, `internal/plan/plan.go`, `internal/plan/step.go`, `internal/actions/env.go`, `internal/controller/controller.go`
+- Modify: `phylax_design.md` (the sketches in "The module contract" and "Lint registration" to the signatures below; the 19 deviations above; "28 core kinds" to 29)
 
 **Interfaces:**
 - Consumes: the built `internal/event.Event`, `internal/store.Store`/`Query`, `internal/vault.Vault`/`Secret`, `internal/ui.Server`, `internal/manifest.Manifest`/`Host`, `internal/plan.Plan`/`Node`/`AgentConfig`, `internal/agent.Factory`/`Env`/`ModuleSpec`/`Supervisor`, `internal/actions.Registry`/`Spec`/`Env`.
@@ -345,6 +357,8 @@ type Host interface {
 	Config(v any) error                                                    // strict decode of modules/<name>.yml; ErrNoConfig when absent
 	Query() store.Reader                                                   // read-only event queries
 	Tables() (store.ModuleDB, error)                                       // the module's own tables; error unless Manifest.Tables is non-empty
+	Manifest() *manifest.Manifest                                          // the loaded manifest (hosts, labels, services, overrides); read-only by convention
+	UpdateOverrides(fn func(*manifest.Overrides) error) error              // atomic read-modify-write of overrides.yml; the manifest reloads
 	Emit(e event.Event) error                                              // stored under agent "controller"; kind must be in Manifest.Emits
 	Subscribe(kinds []string, buf int) (<-chan event.Event, func())        // committed events; kinds must be in Manifest.Consumes
 	Propose(p Proposal) error                                              // a one-click suggestion; never applies
@@ -352,7 +366,7 @@ type Host interface {
 	RunStanding(approvalID, template string, params map[string]string) (planID string, err error) // ErrProposed when out of scope
 	RunAuto(template string, params map[string]string) (planID string, err error)                 // ErrProposed when an auto condition fails
 	Control(m ControlMsg) error                                            // a signed control: fact to agents
-	Secrets(names ...string) (vault.Reader, error)                         // names must appear in the module's config block
+	Secrets(names ...string) (vault.Reader, error)                         // names must be covered by a string in the module's config block; "cred/*" grants a prefix
 	UI() ui.Registrar
 	Logger() *slog.Logger
 }
@@ -613,12 +627,68 @@ var AllowedLibraries []string        // the closed list of shared stateless libr
 var CoreImports []string             // the core packages a module may import
 var ModulePackages map[string]string // module name -> package path (34 catalogue modules plus health)
 var LinkLoss = 60 * time.Second      // check 7 duration; 2 s under testing.Short()
+
+// ---- seam extras that W3, W5, W6, W7 and W11 assumed (each implemented by the task named) ----
+
+// internal/actions (Task 2a; a rename, not a stub). ONE name for exporting action registration: Register.
+func Register(f func() []Action) // was registerExtra; the retired variants RegisterExtra and RegisterFamily do not exist
+func RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) // was registerUndo; panics on a duplicate kind
+func Unsupported(what string) error // was unsupported; wraps ErrUnsupported
+func (e *Env) Now() time.Time       // the field Env.Now is renamed Env.Clock
+// Env gains: Ext map[string]any // module-owned backends keyed by module name; nil reads as absent
+
+// internal/event (Tasks 3a, 4a)
+func (e Event) WithExtra(key string, v any) Event // Fields["x_"+key] = v on a copy; Decode and Validate ignore x_ keys
+// Optional (omitempty) members added to the common structs, the exact list in Task 4a:
+//   ProcessParent: PID, StartTicks, Live, Unresolved
+//   ProcessStart:  Argc *int, CGroup, EUID *int, AUID *int64, Env map[string]string, StartTicks
+//   FileChange:    Comm, WriterCmdline, WriterStartTicks, SelfTamper, WriterKnown *bool, GPO, GPOGUID, GPOSection, GPOItem, SysvolPolicy
+//   Conn, Listener: ExeDeleted, ExeSHA256, PIDStart
+//   AuthEvent:     LogonTypeName, MachineAccount, Status, SubStatus, FailureReason, Process, Workstation, SubjectAccount
+//   Replay bool on ProcessStart, FileChange, Conn and AuthEvent (the enrollment backscan marker)
+
+// internal/store/storetest (Task 8a)
+func New(t *testing.T, evs ...event.Event) *store.Store // temp store; events grouped by Agent, Seq 1..n, sealed, ingested
+
+// internal/vault (Task 9a)
+func Covers(grants []string, name string) bool // an entry ending "/*" grants every name with that prefix; Scoped uses it
+
+// internal/manifest (Task 11a)
+func AppendOverrides(dir string, fn func(*Overrides) error) error // atomic, validated, mode 0600 kept
+type LearnedListener struct {
+	Host, Proto string // tcp | udp
+	Port        uint16
+	Reason      string
+	Observed    string // RFC 3339, UTC
+}
+// Overrides gains: LearnedListeners []LearnedListener `yaml:"learned_listeners,omitempty" json:"learned_listeners,omitempty"`
+
+// internal/plan (Tasks 22a, 27a): the two core plan options no workstream owned
+// Node gains: ExpiresAfterSec int `json:"expires_after_sec,omitempty"`; Until *GateUntil `json:"until,omitempty"` (a gate with Until is gate: auto)
+// StepBody gains: ExpiresAfterSec int `json:"expires_after_sec,omitempty"` (covered by the signature)
+type GateUntil struct {
+	AfterSec int      `json:"after_sec,omitempty"` // seconds after the gate's last dependency finished
+	Probe    string   `json:"probe,omitempty"`     // scored service name, or "*" for every scored service on the plan's targets
+	NoEvent  *NoEvent `json:"no_event,omitempty"`
+}
+type NoEvent struct {
+	Kind   string            `json:"kind"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+// controller.Options gains: GatePoll time.Duration (default 1s)
+
+// plans (root package, Task 22b) and internal/controller
+func Parse(raw []byte) (*Template, error) // plans.Parse; strict, 256 KiB cap
+func ResolveLabels(t *Template, hosts func(expr string) ([]string, error)) (map[string]any, error) // plans.ResolveLabels: {labels: expr} vars
+// plans.Template gains: Module string `yaml:"module"`
+func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error)
+// LoadModuleTemplate(plansRoot, mod, name) is LoadModuleTemplateFor with a nil resolver. CoreImports gains the root plans package path.
 ```
 
 - [ ] **Step 1: Write the stubs.** Types, constants and interfaces exactly as above. Function bodies: `panic("unimplemented: W1 Task N")` naming the implementing task (`Declare` → 3, common `Declare` calls → 4, ...), except `Effective`, which is one line and written now, and `agent.Registered()` (the sorted process-wide factory list, one line over the existing `registered(nil)`). Add the new fields to existing structs now, all zero-value safe (`omitempty` where JSON-encoded): `event.Event.Schema` and `Tag` (in the order of Task 2), `store.Query.Fields`, `manifest.Manifest.Modules`, `manifest.Host.Modules` and `Labels`, `agent.Factory.Manifest`, `link.Heartbeat.Health`, `plan.Plan.Class`, `Module`, `Template`, `Approver`, `plan.StepBody.Class`, `actions.Env.Probe`, `controller.Options.Probe`. Do not change `plan.ModuleLimits` (Task 12 does, with its callers). `Env.Subscribe` becomes variadic in kinds (the filter itself is Task 13). `var _ Reader = (*Store)(nil)` compiles against the built `Store` methods. `PreContract` lists every factory registered today: `audit`, `capture`, `deception`, `detect`, `health`, `integrity`, `net`, `winevt`. `AllowedLibraries` and `CoreImports` hold the module paths of the two lists in Global Constraints. `internal/module/all/all.go` blank-imports `internal/agent/mods`.
-- [ ] **Step 2: Write the skipped tests and their helpers.** For each of Tasks 3 to 40 except Task 12 (which writes its own, because its tests need the `ModuleLimits` change), create the test file the task names with the test functions of its Step 1, the first statement of each being `t.Skip("unimplemented: W1 Task N")`. Prose comments inside a test body become the code they describe. Write, for real, the helpers those tests call: in `internal/controller` (`modtest_helpers_test.go`): `newTestController`, `newTestControllerAt`, `newTestControllerWithManifest(t, files map[string]string)` (manifest dir with a minimal topology naming controller host `ctl`, hosts `h1` (labels `linux`, `server`, scored service `web`) and `db1`, plus `files`), `newTestControllerWithPlans`, `newTestControllerWithRegistry`, `newStandingController`, `newAutoController`, `setHeartbeat`, `mustNew`, `testMod`, `ctlMod`, `ctx`; in `internal/module/conformance` (`helpers_test.go`): the fixture factories and modules each test names, `cfgWith`, `cfgWith2`, `someLoad`, `looseSettings`; in `internal/agent`: `harnessFactory`, `subscriberFactory`, `emitterFactory`, `emitOnce`. A helper that needs behaviour a later task builds may call the stub (the test is skipped until then).
+- [ ] **Step 2: Write the skipped tests and their helpers.** For each of Tasks 3 to 42, lettered tasks included, except Task 12 (which writes its own, because its tests need the `ModuleLimits` change), create the test file the task names with the test functions of its Step 1, the first statement of each being `t.Skip("unimplemented: W1 Task N")`. Prose comments inside a test body become the code they describe. Write, for real, the helpers those tests call: in `internal/controller` (`modtest_helpers_test.go`): `newTestController`, `newTestControllerAt`, `newTestControllerWithManifest(t, files map[string]string)` (manifest dir with a minimal topology naming controller host `ctl`, hosts `h1` (labels `linux`, `server`, scored service `web`) and `db1`, plus `files`), `newTestControllerWithPlans`, `newTestControllerWithRegistry`, `newStandingController`, `newAutoController`, `setHeartbeat`, `mustNew`, `testMod`, `ctlMod`, `ctx`; in `internal/module/conformance` (`helpers_test.go`): the fixture factories and modules each test names, `cfgWith`, `cfgWith2`, `someLoad`, `looseSettings`; in `internal/agent`: `harnessFactory`, `subscriberFactory`, `emitterFactory`, `emitOnce`. A helper that needs behaviour a later task builds may call the stub (the test is skipped until then).
 - [ ] **Step 2b: Envelope tests, not skipped.** The four `internal/event/envelope_test.go` tests of Task 2 pass as soon as the fields exist; commit them unskipped here (Step 0 of Task 2 records the old hash before the fields are added: do that first).
-- [ ] **Step 3: Apply the deviations to `phylax_design.md`.** Edit the Go sketches under "The capability manifest", "Agent modules", "Controller modules and analysers", "Health and budgets", "Configuration", "UI shell: Module registration" and "Lint registration" to the signatures above, and add the 14 deviations as one bullet each under "The module contract" with their reasons.
+- [ ] **Step 3: Apply the deviations to `phylax_design.md`.** Edit the Go sketches under "The capability manifest", "Agent modules", "Controller modules and analysers", "Health and budgets", "Configuration", "UI shell: Module registration" and "Lint registration" to the signatures above, and add the 19 deviations as one bullet each under "The module contract" with their reasons. Already in the design from the consistency pass (verify, do not re-add): the `Host` plan methods taking a template, `Tables`, `Manifest`, `UpdateOverrides` and prefix `Secrets` in the `Host` sketch, the root `plans` package in the core package list, `registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in the `ad` Emits, the sshsig namespace `phylax-release`, and the embedded content paths of `logs` and `inventory`.
 - [ ] **Step 4: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W1 Task'`. Expected: a count equal to the number of skipped tests written in Step 2 (no stub panics, only skips).
 - [ ] **Step 5: Commit.**
 
@@ -697,6 +767,83 @@ func TestStoreRoundTripsSchemaAndTag(t *testing.T) {
 - [ ] **Step 3: Implement.** Append migration `ALTER TABLE events ADD COLUMN schema INTEGER NOT NULL DEFAULT 0; ALTER TABLE events ADD COLUMN tag TEXT NOT NULL DEFAULT '';` and read/write both columns. Set `ProtoMinor = 2` with a comment that minor 2 added `schema` and `tag` to the envelope.
 - [ ] **Step 4: Run, expect PASS.** Run: `make test race`. Expected: PASS (all packages; no fixture hash changed because both fields are omitted when zero).
 - [ ] **Step 5: Commit.** `git commit -am "store: persist envelope schema and tag; protocol minor 2"`
+
+---
+
+### Task 2a: Exported action registration hooks (`actions.Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext`)
+
+Haiku-sized. A rename plus two small additions; no module imports yet. W3, W5, W6, W7 and W11 register their actions through these names and no others (the design's name is `actions.Register`; the earlier `RegisterExtra` and `RegisterFamily` variants are gone).
+
+**Files:**
+- Modify: `internal/actions/registry.go` (`registerExtra` to `Register`), `internal/actions/win_env.go` (`registerUndo` to `RegisterUndo`, `unsupported` to `Unsupported`), `internal/actions/env.go` (field `Now` renamed `Clock`; method `Now()`; field `Ext`), every caller in `internal/actions` (`mssql_register.go`, `registry_win.go`, `win_defender.go`, `ad_accounts.go`, `splunk_actions.go`, `win_audit.go`, `win_service.go`, the `unsupported(` call sites), `internal/actions/helpers_test.go` and `internal/e2e/e2e_test.go` (`Now:` to `Clock:`)
+- Test: `internal/actions/register_test.go`
+
+**Interfaces:**
+- Consumes: the built `Registry`, `Core()`, `Action`, `ErrUnsupported`, `deadman.Entry`.
+- Produces (exact):
+
+```go
+func Register(f func() []Action) // was registerExtra; Core() appends every registered set
+func RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) // was registerUndo; panics on a duplicate kind
+func Unsupported(what string) error // was unsupported: fmt.Errorf("%s: %w", what, ErrUnsupported)
+func (e *Env) Now() time.Time       // e.Clock() when set, else time.Now(); replaces the unexported now()
+// Env: the field `Now func() time.Time` is renamed `Clock` (a Go type cannot have a field and a method of one name);
+// Env gains Ext map[string]any // backends owned by modules, keyed by module name ("firewall", "devices", "wazuh"); a nil map reads as absent
+```
+
+Rules: no alias for a retired name. `Env.Ext` has no accessor: a module reads `env.Ext[ExtKey]` and type-asserts.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+// internal/actions/register_test.go
+func TestRegisterAddsToCore(t *testing.T) {
+	Register(func() []Action { return []Action{namedAction("regtest.hello")} }) // namedAction: the minimal fake of helpers_test.go (write one if absent)
+	if _, err := Core().Get("regtest.hello"); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestRegisterUndoDuplicatePanics(t *testing.T) {
+	RegisterUndo("regtest.undo", func(context.Context, *Env, deadman.Entry) error { return nil })
+	defer func() {
+		if recover() == nil {
+			t.Fatal("duplicate undo kind accepted")
+		}
+	}()
+	RegisterUndo("regtest.undo", func(context.Context, *Env, deadman.Entry) error { return nil })
+}
+func TestUnsupportedWrapsSentinel(t *testing.T) {
+	err := Unsupported("network devices")
+	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "network devices") {
+		t.Fatalf("%v", err)
+	}
+}
+func TestEnvNowUsesClock(t *testing.T) {
+	fixed := time.Date(2027, 2, 6, 9, 0, 0, 0, time.UTC)
+	e := &Env{Clock: func() time.Time { return fixed }}
+	if !e.Now().Equal(fixed) {
+		t.Fatal(e.Now())
+	}
+	if d := time.Since((&Env{}).Now()); d < 0 || d > time.Second {
+		t.Fatal(d)
+	}
+}
+func TestEnvExtNilReadsAbsent(t *testing.T) {
+	e := &Env{}
+	if v, ok := e.Ext["firewall"]; ok || v != nil {
+		t.Fatal("nil Ext must read as absent")
+	}
+	e.Ext = map[string]any{"firewall": 1}
+	if e.Ext["firewall"] != 1 {
+		t.Fatal("Ext lost a value")
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'Register|Unsupported|EnvNow|EnvExt' -v`. Expected: FAIL (compile error: the names do not exist).
+- [ ] **Step 3: Implement** the renames and additions, fix every caller, run `make build build-windows vet` between the rename and the test run.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "actions: export Register, RegisterUndo, Unsupported; Env.Now and Env.Ext"`
 
 ---
 
@@ -822,6 +969,61 @@ func TestNewMatchesStoreRoundTrip(t *testing.T) {
 
 ---
 
+### Task 3a: `Event.WithExtra`
+
+Haiku-sized.
+
+**Files:**
+- Modify: `internal/event/types.go`
+- Test: `internal/event/extra_test.go`
+
+**Interfaces:**
+- Consumes: `New`, `Decode`, `Validate` (Task 3).
+- Produces: `func (e Event) WithExtra(key string, v any) Event`.
+
+Rules: returns a copy of `e` whose `Fields` map is a copy with `Fields["x_"+key] = v` added (the receiver's map is never modified, so a shared event is safe). A `key` that does not match `^[a-z][a-z0-9_]{0,31}$` panics (a programming error, as `Declare` does). `Decode` and `Validate` already ignore `x_` keys (Task 3); a rule may not read an `x_` field (a lint in the detect loader, W4). A field a rule, analyser or consumer reads belongs in the declared struct; `x_` carries what only a human reads.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestWithExtraCopiesAndPrefixes(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x"})
+	f := e.WithExtra("raw_line", "su: failed")
+	if f.Fields["x_raw_line"] != "su: failed" {
+		t.Fatalf("%v", f.Fields)
+	}
+	if _, ok := e.Fields["x_raw_line"]; ok {
+		t.Fatal("receiver modified")
+	}
+	if err := Validate(f); err != nil {
+		t.Fatalf("x_ field must not fail strict validation: %v", err)
+	}
+	got, err := Decode[tPayload](f, "ttest.one")
+	if err != nil || got.A != "x" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+func TestWithExtraBadKeyPanics(t *testing.T) {
+	e, _ := New("ttest.one", tPayload{A: "x"})
+	defer func() {
+		if recover() == nil {
+			t.Fatal("bad key accepted")
+		}
+	}()
+	e.WithExtra("Bad Key", 1)
+}
+func TestWithExtraSurvivesJSONRoundTrip(t *testing.T) {
+	// e.WithExtra("n", 3) -> json.Marshal -> Unmarshal into Event -> Fields["x_n"] present; Validate still nil
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run WithExtra -v`. Expected: FAIL (`unimplemented: W1 Task 3a`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: WithExtra for producer-only fields"`
+
+---
+
 ### Task 4: Common kinds
 
 **Files:**
@@ -881,6 +1083,70 @@ func TestProcessStartParentObject(t *testing.T) {
 - [ ] **Step 3: Implement** the `init` in `kinds.go` with the priorities above.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "event: declare the eight common kinds with canonical fields"`
+
+---
+
+### Task 4a: Extension fields on the common structs
+
+Haiku-sized. The structs of Task 1 already carry the fields (data written in Task 1); this task proves them and the strictness that must not loosen. W3 producers and the rules read these names: `rules/linux_exec.yml` (`argc`, `cgroup`, `env.LD_PRELOAD`), `rules/mw-redteam.yml` (`gpo`, `sysvol_policy`), `internal/traceback/obs.go` (`start_ticks`, `writer_start_ticks`, `exe_sha256`, `pid_start`). Rule of thumb for later changes: a field a rule, analyser or consumer reads belongs in the struct; a field only a human reads is `x_`.
+
+**Files:**
+- Modify: `internal/event/kinds.go` (confirm every field of the Interfaces block below, add the missing ones)
+- Test: `internal/event/kinds_ext_test.go`
+
+**Interfaces:**
+- Consumes: `New`, `Decode`, `Validate` (Task 3), the common kinds (Task 4).
+- Produces: optional members (all `omitempty`) of the Task 1 structs:
+  - `ProcessParent`: `PID int "pid"`, `StartTicks uint64 "start_ticks"`, `Live bool "live"`, `Unresolved bool "unresolved"`
+  - `ProcessStart`: `Argc *int "argc"`, `CGroup string "cgroup"`, `EUID *int "euid"`, `AUID *int64 "auid"`, `Env map[string]string "env"`, `StartTicks uint64 "start_ticks"`
+  - `FileChange`: `Comm string "comm"`, `WriterCmdline string "writer_cmdline"`, `WriterStartTicks uint64 "writer_start_ticks"`, `SelfTamper bool "self_tamper"`, `WriterKnown *bool "writer_known"`, `GPO bool "gpo"`, `GPOGUID string "gpo_guid"`, `GPOSection string "gpo_section"`, `GPOItem string "gpo_item"`, `SysvolPolicy bool "sysvol_policy"`
+  - `Conn` and `Listener`: `ExeDeleted bool "exe_deleted"`, `ExeSHA256 string "exe_sha256"`, `PIDStart uint64 "pid_start"`
+  - `AuthEvent`: `LogonTypeName`, `Status`, `SubStatus`, `FailureReason`, `Process`, `Workstation`, `SubjectAccount string` (snake_case JSON names), `MachineAccount bool "machine_account"`
+  - `Replay bool "replay"` on `ProcessStart`, `FileChange`, `Conn` and `AuthEvent` (the enrollment backscan marker; `detect` never fires on a replayed event)
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestExtensionFieldsRoundTrip(t *testing.T) {
+	argc := 0
+	in := ProcessStart{PID: 7, Exe: "/usr/bin/su", Source: "audit", Argc: &argc, CGroup: "/system.slice/x", StartTicks: 99,
+		Env: map[string]string{"LD_PRELOAD": "/tmp/x.so"}, Parent: &ProcessParent{Exe: "/bin/bash", PID: 3, Live: true}}
+	e, err := New(KindProcessStart, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Decode[ProcessStart](e, KindProcessStart)
+	if err != nil || out.Argc == nil || *out.Argc != 0 || out.Env["LD_PRELOAD"] != "/tmp/x.so" || out.Parent.PID != 3 {
+		t.Fatalf("%+v %v", out, err)
+	}
+}
+func TestZeroArgcSurvives(t *testing.T) { // *int: argc 0 is present, absent is nil
+	zero := 0
+	e, _ := New(KindProcessStart, ProcessStart{PID: 1, Exe: "/x", Source: "audit", Argc: &zero})
+	if _, ok := e.Fields["argc"]; !ok {
+		t.Fatal("argc 0 dropped by omitempty")
+	}
+}
+func TestUnknownFieldStillRejected(t *testing.T) {
+	e, _ := New(KindConn, Conn{Op: "opened", Dir: "outbound", Proto: "tcp", Source: "net"})
+	e.Fields["srcip"] = "10.0.0.1" // a retired name
+	if Validate(e) == nil {
+		t.Fatal("unknown field accepted")
+	}
+	e2, _ := New(KindConn, Conn{Op: "opened", Dir: "outbound", Proto: "tcp", Source: "net", ExeSHA256: "ab", PIDStart: 5, Replay: true})
+	if err := Validate(e2); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestReplayOnFourKinds(t *testing.T) {
+	// for ProcessStart, FileChange, Conn, AuthEvent: New(kind, struct{...Replay: true}) -> Fields["replay"] == true
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/event/ -run 'ExtensionFields|ZeroArgc|UnknownFieldStill|ReplayOnFour' -v`. Expected: FAIL (`unimplemented: W1 Task 4a`, or a missing field).
+- [ ] **Step 3: Implement:** add any member of the list above that Task 1 or Task 4 left out; the tests drive the rest.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/event/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "event: extension fields on the common structs"`
 
 ---
 
@@ -1143,6 +1409,60 @@ func TestModuleDBExecOwnTables(t *testing.T) {
 
 ---
 
+### Task 8a: `storetest.New`, a seeded store for module tests
+
+Haiku-sized. Every analyser and controller module test (W6 `firewall`, `egress`, W8 `traceback`, `chains`, `deps`) needs a real store with a readable, correctly sealed chain; this is the one helper.
+
+**Files:**
+- Create: `internal/store/storetest/storetest.go`
+- Test: `internal/store/storetest/storetest_test.go`
+
+**Interfaces:**
+- Consumes: `store.Open`, `(*Store).Ingest`, the event package's sealing helper (Task 2: the same one the agent uses), `store.Reader` (Task 8).
+- Produces:
+
+```go
+// New opens a temporary store, groups evs by Agent, assigns Seq 1..n in the order given (per agent),
+// seals each agent's chain with the event package's sealing helper, ingests them and returns the store
+// (closed by t.Cleanup). *store.Store satisfies store.Reader.
+func New(t *testing.T, evs ...event.Event) *store.Store
+```
+
+Rules: an event with a zero `Time` gets `time.Date(2027, 2, 6, 9, 0, 0, 0, time.UTC)` plus one second per position; an undeclared kind fails the test (`t.Fatal`); the helper never bypasses the store's own replay and hash checks.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestNewSeedsReadableChain(t *testing.T) {
+	a, _ := event.New("ttest.seed", struct{ N int `json:"n"` }{1})
+	a.Agent = "h1"
+	b := a
+	b.Agent = "h1"
+	c := a
+	c.Agent = "db1"
+	st := New(t, a, b, c)
+	got, err := st.Events(context.Background(), store.Query{Agent: "h1"})
+	if err != nil || len(got) != 2 || got[0].Seq != 1 || got[1].Seq != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if e, err := st.Latest(context.Background(), "db1", "ttest.seed"); err != nil || e.Seq != 1 {
+		t.Fatalf("%+v %v", e, err)
+	}
+}
+func TestNewKeepsGivenTimes(t *testing.T) {
+	// an event with Time set keeps it; one without gets a strictly increasing default; Events returns them in that order
+}
+```
+
+(`ttest.seed` is declared by an `init` in the test file, as `ttest.one` is in Task 3.)
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/store/storetest/ -v`. Expected: FAIL (`unimplemented: W1 Task 8a`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/store/...`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "store: storetest.New seeded store for module tests"`
+
+---
+
 ### Task 9: Scoped vault reader
 
 **Files:**
@@ -1173,6 +1493,43 @@ func TestScoped(t *testing.T) {
 - [ ] **Step 3: Implement** `Scoped` as a small struct holding the source and a name set.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vault/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "vault: scoped reader for modules"`
+
+---
+
+### Task 9a: Prefix grants in the scoped vault reader (per-device vault keys)
+
+Haiku-sized. `devices` needs one vault key per device and account (`cred/<device>/<account>`, built by `creds.VaultKey`), `creds` needs `cred/*` and `pcr/*`; a module block cannot list names it does not know in advance. A granted name ending in `/*` is a prefix grant.
+
+**Files:**
+- Modify: `internal/vault/reader.go`
+- Test: `internal/vault/reader_test.go` (extend)
+
+**Interfaces:**
+- Consumes: `Scoped`, `ErrNotAllowed` (Task 9).
+- Produces: `Scoped(src, names)` treats an entry ending in `/*` as a grant of every secret whose name starts with the part before the `*` (so `cred/*` grants `cred/palo1/phylax`, not `credx/a` and not `cred` itself); every other entry stays an exact name. `func Covers(grants []string, name string) bool` (exported: `Host.Secrets` in Task 17a uses it to validate a request).
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestScopedPrefixGrant(t *testing.T) {
+	// vault with "cred/palo1/phylax", "cred/vyos/phylax", "credx/a", "pcr/h1"; r := Scoped(v, []string{"cred/*"})
+	// r.Get("cred/palo1/phylax") ok; r.Get("cred/vyos/phylax") ok
+	// r.Get("credx/a") and r.Get("pcr/h1") -> errors.Is(err, ErrNotAllowed)
+}
+func TestCovers(t *testing.T) {
+	g := []string{"cred/*", "notify.webhook"}
+	for name, want := range map[string]bool{"cred/h1/admin": true, "cred/": true, "cred": false, "credx/a": false, "notify.webhook": true, "notify.webhook2": false, "cred/*": true} {
+		if Covers(g, name) != want {
+			t.Errorf("%q: want %v", name, want)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/vault/ -run 'Prefix|Covers' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** in `reader.go`: `Covers` is the whole rule; `Scoped` calls it.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/vault/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "vault: prefix grants (name/*) in the scoped reader"`
 
 ---
 
@@ -1332,6 +1689,78 @@ func TestParseLabels(t *testing.T) {
 - [ ] **Step 3: Implement** as specified (a small recursive-descent parser for labels). Add `modules` (object of booleans) and `labels` (array of strings) to `hosts.yml.schema.json`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/...`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "manifest: module blocks, host modules and labels, label expressions"`
+
+---
+
+### Task 11a: `manifest.AppendOverrides` and `Overrides.LearnedListeners`
+
+Haiku-sized. `Host` has no way to write `overrides.yml` (the design: "event-specific values are entered in the UI and written to `overrides.yml`"). This is the one writer; Task 17a hands it to modules as `Host.UpdateOverrides`. W4 (`rule_modes`, `exceptions`), W6 (`learned_listeners`, `egress.allow`) and the UI add their own `Overrides` fields and call it.
+
+**Files:**
+- Create: `internal/manifest/overrides_write.go`
+- Modify: `internal/manifest/types.go` (`Overrides.LearnedListeners`, `LearnedListener`), `internal/manifest/validate.go` (validate the new entries)
+- Test: `internal/manifest/overrides_write_test.go`
+
+**Interfaces:**
+- Consumes: the built `Overrides`, `LoadDir`, `internal/atomicfile`.
+- Produces:
+
+```go
+// reads dir/overrides.yml (absent: empty), applies fn, validates (the same rules LoadDir applies), writes atomically,
+// mode 0600 kept (0600 for a new file). On any error the file is unchanged.
+func AppendOverrides(dir string, fn func(*Overrides) error) error
+
+type LearnedListener struct { // a port on which scorer traffic was seen arriving: rendered into the `learned` group (any source)
+	Host     string `yaml:"host" json:"host"`
+	Proto    string `yaml:"proto" json:"proto"` // tcp | udp
+	Port     uint16 `yaml:"port" json:"port"`
+	Reason   string `yaml:"reason" json:"reason"`
+	Observed string `yaml:"observed" json:"observed"` // RFC 3339, UTC
+}
+// Overrides gains: LearnedListeners []LearnedListener `yaml:"learned_listeners,omitempty" json:"learned_listeners,omitempty"`
+```
+
+Rules: a `LearnedListener` needs `host`, `proto` (`tcp` or `udp`), `port` 1 to 65535, `reason` and a parseable `observed`; a second entry with the same host, proto and port is a validation error (the caller checks first). `shortcut: AppendOverrides rewrites the file from the struct, so comments in overrides.yml are lost; upgrade to a yaml.Node round trip if operators hand-edit it`. A process-wide mutex serialises writers in one controller.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+func TestAppendOverridesAtomicAndValidated(t *testing.T) {
+	dir := t.TempDir()
+	ll := LearnedListener{Host: "h1", Proto: "tcp", Port: 8081, Reason: "scorer traffic seen", Observed: "2027-02-06T15:04:05Z"}
+	if err := AppendOverrides(dir, func(o *Overrides) error { o.LearnedListeners = append(o.LearnedListeners, ll); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	m, err := LoadDir(dir, Options{}) // or the overrides-only loader of load.go
+	if err != nil || len(m.Overrides.LearnedListeners) != 1 || m.Overrides.LearnedListeners[0] != ll {
+		t.Fatalf("%+v %v", m.Overrides, err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, "overrides.yml"))
+	bad := ll
+	bad.Reason = ""
+	if err := AppendOverrides(dir, func(o *Overrides) error { o.LearnedListeners = append(o.LearnedListeners, bad); return nil }); err == nil {
+		t.Fatal("entry without a reason accepted")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "overrides.yml"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("a rejected write changed the file")
+	}
+}
+func TestAppendOverridesFnErrorLeavesFile(t *testing.T) {
+	// fn returns errors.New("no"): AppendOverrides returns it (errors.Is) and no file is created in an empty dir
+}
+func TestAppendOverridesKeepsMode(t *testing.T) {
+	// existing overrides.yml mode 0600 stays 0600; a new file is 0600
+}
+func TestAppendOverridesConcurrent(t *testing.T) {
+	// 20 goroutines each append one distinct LearnedListener port; afterwards the file holds 20 entries (race-clean)
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/manifest/ -run AppendOverrides -v`. Expected: FAIL (`unimplemented: W1 Task 11a`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "manifest: AppendOverrides and learned listeners"`
 
 ---
 
@@ -1629,7 +2058,7 @@ func TestDeclaredAlertBecomesEvent(t *testing.T) {
 
 **Interfaces:**
 - Consumes: `manifest.ModuleBlock` (Task 11), `store.Reader`/`ModuleDB` (Task 8), `vault.Scoped` (Task 9), `(*ui.Server).Registrar`/`ui.Discard` (Task 10), `EmitController` (Task 16).
-- Produces: `type moduleHost struct` implementing every `module.Host` method except `Subscribe`, `Propose`, `RunReadOnly`, `RunStanding`, `RunAuto`, `Control` (later tasks); `func (c *Controller) hostFor(m module.ControllerModule) *moduleHost`; `var _ module.Host = (*moduleHost)(nil)`.
+- Produces: `type moduleHost struct` implementing every `module.Host` method except `Subscribe`, `Propose`, `RunReadOnly`, `RunStanding`, `RunAuto`, `Control` (later tasks) and `Manifest`, `UpdateOverrides` and prefix `Secrets` (Task 17a); `func (c *Controller) hostFor(m module.ControllerModule) *moduleHost`; `var _ module.Host = (*moduleHost)(nil)`.
 
 Rules: `Config` returns `module.ErrNoConfig` without a block, else `block.Decode(v)`. `Tables` errors unless `Manifest().Tables` is non-empty, else `c.st.ModuleDB(name)`. `Emit` refuses (`module.ErrNotInScope`) a kind not in `Manifest().Emits`, forces `Agent = "controller"`, then `EmitController`. `Secrets(names...)` refuses (`vault.ErrNotAllowed`) a name that is not a string value somewhere in the block's YAML, else `vault.Scoped(source, names)` over the controller's vault (`vault.ErrLocked` when none or locked). `UI` is the server's registrar for the module (enabled = the module is running) or `ui.Discard` when the UI is off. `Logger` is the controller logger with `module=<name>`.
 
@@ -1717,6 +2146,62 @@ func TestHostTablesNeedDeclaration(t *testing.T) {
 - [ ] **Step 3: Implement** as specified; the unimplemented methods keep their Task 1 stubs.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "controller: module Host (config, query, tables, emit, secrets, ui)"`
+
+---
+
+### Task 17a: `Host.Manifest`, `Host.UpdateOverrides` and prefix secrets
+
+Haiku-sized. Three things modules need from `Host` that Task 17 left out: the loaded manifest (W6's shadow verdict, egress allow table, device inventory and W11's `Stage` all read it), a write path to `overrides.yml` (W6 `learned_listeners`), and per-device vault keys through `Host.Secrets` (Task 9a prefix grants).
+
+**Files:**
+- Modify: `internal/controller/host.go`, `internal/module/host.go` (the two methods are already on the interface from Task 1)
+- Test: `internal/controller/host_ext_test.go`
+
+**Interfaces:**
+- Consumes: Task 11a `manifest.AppendOverrides`, Task 9a `vault.Covers`, Task 17 `moduleHost`, the controller's loaded `*manifest.Manifest` and manifest directory.
+- Produces: `moduleHost.Manifest() *manifest.Manifest` (the controller's current manifest; never nil on a running controller; callers must not mutate it); `moduleHost.UpdateOverrides(fn func(*manifest.Overrides) error) error` (`manifest.AppendOverrides(manifestDir, fn)`, then the controller reloads its manifest so every `Manifest().Overrides` shows the change; a failed write or validation leaves manifest and file unchanged); `Secrets(names...)` accepts a requested name when `vault.Covers(grants, name)` holds, where `grants` are the string values anywhere in the module's block (a value ending `/*` is a prefix grant), and returns `vault.Scoped(source, names)`; a request equal to a prefix grant (`cred/*`) serves the whole prefix.
+
+Rules: `UpdateOverrides` returns `module.ErrNoConfig` for a module without a config block; the write holds the manifest reload lock; the module emits its own event for the change. `shortcut: any module with a config block may write overrides, upgrade to a manifest field (overrides: [learned_listeners]) when a module that must not write appears`.
+
+- [ ] **Step 1: Write the failing tests** (helpers of Task 17):
+
+```go
+func TestHostManifestNotNil(t *testing.T) {
+	c := newTestControllerWithManifest(t, nil)
+	m := c.hostFor(testMod()).Manifest()
+	if m == nil || len(m.Hosts) == 0 {
+		t.Fatalf("%+v", m)
+	}
+}
+func TestHostUpdateOverridesReloads(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	h := c.hostFor(testMod())
+	err := h.UpdateOverrides(func(o *manifest.Overrides) error {
+		o.LearnedListeners = append(o.LearnedListeners, manifest.LearnedListener{Host: "h1", Proto: "tcp", Port: 8081, Reason: "scorer seen", Observed: "2027-02-06T15:04:05Z"})
+		return nil
+	})
+	if err != nil || len(h.Manifest().Overrides.LearnedListeners) != 1 {
+		t.Fatalf("%v %+v", err, h.Manifest().Overrides)
+	}
+	if h2 := c.hostFor(testMod()); len(h2.Manifest().Overrides.LearnedListeners) != 1 {
+		t.Fatal("a second host handle does not see the change")
+	}
+	bad := h.UpdateOverrides(func(o *manifest.Overrides) error { o.LearnedListeners = append(o.LearnedListeners, manifest.LearnedListener{Host: "h1"}); return nil })
+	if bad == nil || len(h.Manifest().Overrides.LearnedListeners) != 1 {
+		t.Fatal("invalid entry accepted or manifest changed")
+	}
+}
+func TestHostSecretsPrefixGrant(t *testing.T) {
+	// block "enabled: true\nsecrets: [cred/*]\n"; unlocked test vault holds "cred/palo1/phylax", "cred/vyos/phylax", "other"
+	// h.Secrets("cred/*") -> reader; Get("cred/palo1/phylax") and Get("cred/vyos/phylax") ok; Get("other") -> vault.ErrNotAllowed
+	// h.Secrets("cred/palo1/phylax") -> ok (covered by the grant); h.Secrets("other") -> vault.ErrNotAllowed
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run 'HostManifest|HostUpdateOverrides|HostSecretsPrefix' -v`. Expected: FAIL (`unimplemented: W1 Task 17a`).
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "controller: Host.Manifest, Host.UpdateOverrides, prefix secrets"`
 
 ---
 
@@ -2027,6 +2512,141 @@ func TestLoadModuleTemplateChecksModule(t *testing.T) {
 
 ---
 
+### Task 22a: Plan option `expires_after`
+
+Haiku-sized, but touches the agent exec path: read `internal/agent/exec.go` and `internal/deadman` first. The design (Execution engine: Expiry) resolves the primitive as the dead-man's machinery with the confirm turned off, so it fires with the controller gone. W6 `egress` (`patch_window`), W4 `respond` source blocks and W11 depot misses use it.
+
+**Files:**
+- Modify: `internal/plan/plan.go` (`Node.ExpiresAfterSec`, validation), `internal/plan/step.go` (`StepBody.ExpiresAfterSec`, copied by `Signer.Issue`), `internal/controller/plantemplates.go` (`ParseTemplate`: key `expires_after: 30m` becomes `expires_after_sec`), `internal/controller/plans.go` (no `deadman_confirm` for such a node; refuse on a controller-side action), `internal/agent/exec.go` (apply path)
+- Test: `internal/plan/expiry_test.go`, `internal/controller/expiry_test.go`, `internal/agent/expiry_test.go`
+
+**Interfaces:**
+- Consumes: built `Node`, `StepBody`, `Signer.Issue`, `deadman.Manager.Arm`/`Fire`, `actions.Request.Deadman`, `x.fresh` in the agent's apply path, `ParseTemplate`.
+- Produces: `Node.ExpiresAfterSec int "expires_after_sec,omitempty"` and `StepBody.ExpiresAfterSec` (covered by the signature); `func translateNodeKeys(generic any) error` in `plantemplates.go` (the one place YAML sugar becomes JSON keys; Task 27a and W7 add their keys to it).
+
+Rules: `ExpiresAfterSec` is 0 (off) or 60 to 86400; not allowed on a gate node; not allowed on a node whose action is `Runs: RunsController` (device nodes use the device protocol's own timers; the controller refuses at plan creation with `expires_after: controller-side action`). In a template `expires_after` is a Go duration string (`30m`). On the agent, an apply step with `ExpiresAfterSec > 0` sets `req.Deadman = ExpiresAfter`, skips the fresh-connection check, and the controller sends no `deadman_confirm` for the node; when the action produced no rollback data (`out.DeadmanID == ""`) the step fails with `expires_after: action has no undo` and nothing remains applied. When the entry fires (timer or `phylax agent rollback <id>`), the agent reports an `agent.step_result` with phase `expire` and the node and plan ids from the entry. A new apply of the same node replaces the armed record (extend); a `step_status` cancellation removes it. Safe mode never prevents an expiry (same as rollback).
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+// internal/plan/expiry_test.go
+func TestNodeExpiresAfterValidates(t *testing.T) {
+	ok := Node{ID: "a", Action: "file.write", Target: "h1", ExpiresAfterSec: 1800}
+	if err := validateNode(ok); err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range []Node{
+		{ID: "a", Action: "file.write", Target: "h1", ExpiresAfterSec: 30},
+		{ID: "a", Action: "file.write", Target: "h1", ExpiresAfterSec: 90000},
+		{ID: "g", Gate: true, ExpiresAfterSec: 600},
+		{ID: "a", Action: "file.write", Target: "h1", ExpiresAfterSec: -1},
+	} {
+		if validateNode(n) == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+}
+func TestStepSignatureCoversExpiry(t *testing.T) {
+	// issue a step for a node with ExpiresAfterSec 1800: step.ExpiresAfterSec == 1800 and Verify ok; set it to 60: Verify -> error
+}
+// internal/controller/expiry_test.go
+func TestTemplateExpiresAfterDuration(t *testing.T) {
+	p, err := ParseTemplate([]byte("id: t\nnodes:\n- {id: a, action: file.write, target: h1, params: {path: /tmp/x, content: y}, expires_after: 30m}\n"))
+	if err != nil || p.Nodes[0].ExpiresAfterSec != 1800 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if _, err := ParseTemplate([]byte("id: t\nnodes:\n- {id: a, action: file.write, target: h1, params: {}, expires_after: soon}\n")); err == nil {
+		t.Fatal("bad duration accepted")
+	}
+}
+func TestExpiresAfterRefusedOnControllerAction(t *testing.T) {
+	// plan with node {action: ctltest.local (Runs: RunsController), ExpiresAfterSec: 600}: Create -> error containing "controller-side action"
+}
+// internal/agent/expiry_test.go
+func TestExpiryRollsBackWithoutConfirm(t *testing.T) {
+	// agent test env with a manifest-free file.write undo (the dead-man test helper of exec_test.go); expireUnit = 10 ms so 60 "seconds" is 600 ms
+	// apply step with ExpiresAfterSec 60, no deadman_confirm sent: after 1 s the file has its old content
+	// and the harness saw an agent.step_result with Phase "expire" for the node; the armed record is gone
+}
+func TestExpiryActionWithoutUndoFails(t *testing.T) {
+	// a read-only action with ExpiresAfterSec 60: the step result is failed, error contains "has no undo"
+}
+func TestExpiryExtendReplacesRecord(t *testing.T) {
+	// apply the node twice 300 ms apart: exactly one armed record exists, its deadline is the second's
+}
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/ ./internal/controller/ ./internal/agent/ -run 'Expir' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified. The agent keeps `expireUnit time.Duration` (default `time.Second`) as a package variable for tests. `shortcut: one armed record per node id, no per-target records for a multi-host node, upgrade if a node ever targets a label set`.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/ ./internal/controller/ ./internal/agent/ ./internal/deadman/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plan: expires_after time-boxed nodes on the dead-man machinery"`
+
+---
+
+### Task 22b: `LoadModuleTemplateFor`, the `plans` seam and `plans` in `CoreImports`
+
+Haiku-sized. Pack templates (`plans/<module>/*.yaml` in the `plans.Template` format: `vars`, `each`, `scoring_note`) and controller file templates are one directory per module. W5's hardening packs and any module that targets a role (`{labels: "dc"}`) need the label resolver; modules and the module-import check need the `plans` package on the allow list.
+
+**Files:**
+- Modify: `plans/plans.go` (`Template.Module string "yaml:\"module\""`; `Parse(raw []byte) (*Template, error)`; `ResolveLabels`), `internal/controller/plantemplates.go` (`LoadModuleTemplateFor`; `LoadModuleTemplate` becomes the nil-resolver call), `internal/module/conformance/allowed.go` (`CoreImports` gains `github.com/PurdueBlueTeam/phylax/plans`)
+- Test: `plans/parse_test.go`, `internal/controller/plantemplates_labels_test.go`
+
+**Interfaces:**
+- Consumes: Task 22 `LoadModuleTemplate`, `ExpandTemplate`; Task 11 `manifest.ParseLabels`, `(*Manifest).HostsMatching`; the built `plans.Load`, `Template.Expand`, `plans.NewCatalog`.
+- Produces:
+
+```go
+// plans
+func Parse(raw []byte) (*Template, error) // strict (unknown field is an error), 256 KiB cap; Load(path) calls it. A missing module: is not an error here (W5 Task 37 makes it one)
+func ResolveLabels(t *Template, hosts func(expr string) ([]string, error)) (map[string]any, error) // overrides for every var shaped {labels: expr}
+// controller
+func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error)
+// A file with a top-level `vars:` or a node with `each:` is a pack: plans.Parse, ResolveLabels(hosts), Template.Expand over plans.NewCatalog(), Module set from the template (must equal mod).
+// Any other file is the controller file format (ParseTemplate). LoadModuleTemplate(plansRoot, mod, name) calls this with a nil resolver (a label var then errors).
+```
+
+The three W1 call sites that load a template (`RunReadOnly`, `RunStanding`/`CreateStanding` expansion, `RunAuto`, `AcceptProposal`; Tasks 23 to 26) pass `c.hostsMatching`, which resolves a label expression against the loaded manifest (`ParseLabels` then `HostsMatching`).
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+// plans/parse_test.go
+func TestResolveLabelsExpandsEach(t *testing.T) {
+	tpl, err := Parse([]byte("id: x\nmodule: hardening\nvars:\n  dcs: {labels: dc}\nnodes:\n- {id: a, each: dcs, action: ad.zerologon_check, target: ${host}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov, err := ResolveLabels(tpl, func(e string) ([]string, error) { return []string{"ad", "ad2"}, nil })
+	cat, _ := NewCatalog()
+	pl, err2 := tpl.Expand(cat, ov)
+	if err != nil || err2 != nil || len(pl.Nodes) != 2 || pl.Nodes[1].Target != "ad2" {
+		t.Fatalf("%v %v %+v", err, err2, pl)
+	}
+	if tpl.Module != "hardening" {
+		t.Fatal(tpl.Module)
+	}
+}
+func TestUnresolvedLabelVarIsAnError(t *testing.T) { /* Expand without ResolveLabels -> error mentioning "is not a list" */ }
+func TestParseRejectsUnknownField(t *testing.T) { /* "bogus: 1" at top level -> error */ }
+// internal/controller/plantemplates_labels_test.go
+func TestLoadModuleTemplateForResolvesLabels(t *testing.T) {
+	// plansRoot/demo/pack.yaml: a pack with `vars: {servers: {labels: server}}` and an `each: servers` node, module: demo
+	// manifest (newTestControllerWithManifest): h1 has label server, db1 does not
+	// LoadModuleTemplateFor(root, "demo", "pack", c.hostsMatching) -> one node with Target "h1"
+	// LoadModuleTemplate(root, "demo", "pack") (nil resolver) -> error
+	// a pack whose module: is "other" -> error
+}
+func TestLoadModuleTemplateForPlainFile(t *testing.T) { /* the Task 22 ok.yml loads unchanged through LoadModuleTemplateFor with a nil resolver */ }
+func TestCoreImportsHasPlans(t *testing.T) { /* conformance.CoreImports contains the plans path */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./plans/ ./internal/controller/ ./internal/module/conformance/ -run 'ResolveLabels|Unresolved|ParseRejects|LoadModuleTemplateFor|CoreImportsHasPlans' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified; `plans.Load` keeps its signature and calls `Parse`.
+- [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plans: Parse and ResolveLabels; controller: LoadModuleTemplateFor; plans on the module allow list"`
+
+---
+
 ### Task 23: `RunReadOnly`
 
 **Files:**
@@ -2317,6 +2937,98 @@ func TestAutoBeforeProbeStops(t *testing.T) {
 - [ ] **Step 3: Implement** as specified, touching only the `ClassAuto` branch.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "controller: scorer-mimic probe around scored nodes of auto plans"`
+
+---
+
+### Task 27a: `gate: auto`
+
+Haiku-sized. The design's `gate: auto` (A-AUTO) passes by itself when its `until:` conditions hold and fails the plan otherwise, with the reason on the node. A plain `gate: approval` keeps waiting for a click; `gate: manual` is W7's.
+
+**Files:**
+- Modify: `internal/plan/plan.go` (`Node.Until`, `GateUntil`, validation, `RequiresOwnApproval`), `internal/controller/plantemplates.go` (`translateNodeKeys`: `gate:` strings), `internal/controller/plans.go` (evaluate a ready auto gate instead of waiting for approval), `internal/controller/auto.go`
+- Test: `internal/plan/autogate_test.go`, `internal/controller/autogate_test.go`
+
+**Interfaces:**
+- Consumes: Task 22a `translateNodeKeys`; Task 27 `Options.Probe`, `c.probeRetry`; `store.Reader.Events`; the plan engine's ready-node dispatch.
+- Produces:
+
+```go
+// Node gains: Until *GateUntil `json:"until,omitempty"` (a gate node with Until set is a gate: auto)
+type GateUntil struct {
+	AfterSec int      `json:"after_sec,omitempty"` // wait until this long after the gate's last dependency finished (the minimum shadow time)
+	Probe    string   `json:"probe,omitempty"`     // a scored service name, or "*" for every scored service on the plan's targets; "" none
+	NoEvent  *NoEvent `json:"no_event,omitempty"`
+}
+type NoEvent struct {
+	Kind   string            `json:"kind"`             // a declared kind
+	Fields map[string]string `json:"fields,omitempty"` // top-level field equality (store.Query.Fields)
+}
+// RequiresOwnApproval: a gate node with Until set returns false (it needs no approval record); every other gate still true.
+// Options gains: GatePoll time.Duration (default 1s; tests set 10ms)
+```
+
+Rules: `Until` only on a gate node; it needs at least one condition; `AfterSec` 0 to 86400; `NoEvent.Kind` must be declared (`event.Lookup`). In a template, `gate: approval` (and the old `gate: true`) means a plain gate, `gate: auto` means a gate with `until:` (required), `gate: manual` means a gate (W7 Task 4 adds `ask:` and `reply:` and requires them); any other string is an error. `until:` keys in a template: `after` (a Go duration, becomes `after_sec`), `probe`, `no_event`. Evaluation, when the gate's dependencies are all verified: (1) `AfterSec` not yet elapsed: the gate stays pending, note `waiting: <n>s of shadow time left`, re-evaluated every `GatePoll`; (2) `Probe` through `Options.Probe` with the Task 27 retry rule: red fails the gate; (3) `NoEvent`: any event of the kind (and the fields) committed since the gate's last dependency finished fails the gate; (4) all hold: the gate passes with approval `By: "auto"`, `Note: "gate: auto"`. A failed gate fails the plan under the plan's `on_failure` policy and records the reason on the node (`gate: auto failed: <condition>`). A missing `Options.Probe` with a `Probe` condition fails the gate with `no probe configured` (never a silent pass). Works in every approval class; in a `click` plan the plan approval still comes first. `shortcut: conditions are time, probe and absence of an event; a nested summary condition (the firewall's would-drop table) is evaluated by the owning module before it calls RunAuto, upgrade when a second module needs one`.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```go
+// internal/plan/autogate_test.go
+func TestAutoGateValidates(t *testing.T) {
+	ok := Node{ID: "g", Gate: true, Needs: []string{"a"}, Until: &GateUntil{AfterSec: 600, Probe: "*"}}
+	if err := validateNode(ok); err != nil {
+		t.Fatal(err)
+	}
+	for i, n := range []Node{
+		{ID: "a", Action: "file.hash", Target: "h1", Until: &GateUntil{AfterSec: 5}},    // Until on a non-gate
+		{ID: "g", Gate: true, Until: &GateUntil{}},                                      // no condition
+		{ID: "g", Gate: true, Until: &GateUntil{AfterSec: 90000}},
+		{ID: "g", Gate: true, Until: &GateUntil{NoEvent: &NoEvent{Kind: "no.such.kind"}}},
+	} {
+		if validateNode(n) == nil {
+			t.Errorf("case %d accepted", i)
+		}
+	}
+	if RequiresOwnApproval(ok, RiskNone) {
+		t.Fatal("an auto gate needs no approval record")
+	}
+	if !RequiresOwnApproval(Node{ID: "g", Gate: true}, RiskNone) {
+		t.Fatal("a plain gate lost its approval")
+	}
+}
+// internal/controller/autogate_test.go
+func TestTemplateGateStrings(t *testing.T) {
+	p, err := ParseTemplate([]byte("id: t\nnodes:\n- {id: a, action: file.hash, target: h1, params: {path: /etc/hostname}}\n- {id: g, gate: auto, needs: [a], until: {after: 10m, probe: '*', no_event: {kind: agent.resumed}}}\n- {id: p, gate: approval, needs: [g]}\n"))
+	if err != nil || p.Nodes[1].Until == nil || p.Nodes[1].Until.AfterSec != 600 || p.Nodes[2].Until != nil || !p.Nodes[2].Gate {
+		t.Fatalf("%+v %v", p, err)
+	}
+	for _, bad := range []string{"gate: auto", "gate: sometimes"} { // auto without until; unknown string
+		if _, err := ParseTemplate([]byte("id: t\nnodes:\n- {id: g, " + bad + "}\n")); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+func TestAutoGatePassesWhenConditionsHold(t *testing.T) {
+	// e2e helpers; plan: a (file.hash on h1) -> g (gate auto, AfterSec 1, Probe "web") -> b (file.hash); GatePoll 10ms; Probe nil-error
+	// approve the plan (no gate approval call); within 3 s b is verified and g's approval is By "auto"
+}
+func TestAutoGateWaitsForShadowTime(t *testing.T) {
+	// AfterSec 2: after 500 ms the gate is pending with a note containing "left"; b not dispatched
+}
+func TestAutoGateFailsOnRedProbe(t *testing.T) {
+	// Probe returns an error: the gate state is failed, reason contains "gate: auto failed", b is never dispatched
+}
+func TestAutoGateFailsOnEvent(t *testing.T) {
+	// NoEvent{Kind: "agent.resumed"}: emit one agent.resumed through EmitController after a verifies; the gate fails with the kind in the reason;
+	// an event committed before a finished does not fail it
+}
+func TestAutoGateNoProbeConfiguredFails(t *testing.T) { /* Options.Probe nil and Probe "web": failed, reason contains "no probe configured" */ }
+func TestPlainGateStillWaitsForClick(t *testing.T) { /* gate: approval in an auto-class plan stays pending until ApproveNode */ }
+```
+
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/plan/ ./internal/controller/ -run 'AutoGate|TemplateGate|PlainGate' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement** as specified.
+- [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/plan/ ./internal/controller/`. Expected: PASS.
+- [ ] **Step 5: Commit.** `git commit -am "plan: gate: auto with time, probe and event-absence conditions"`
 
 ---
 
@@ -3016,6 +3728,10 @@ Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom
 | Isolation: no sibling imports, shared libraries closed list | 37 |
 | Conformance checks 1-12 | 34 (1-3), 35 (4-7, 12), 36 (8, 9, 11), 41 (10: `-race` job) |
 | Controller executor, approval classes, auto conditions, breaker (T73, T79 core half) | 22-29 |
+| `actions.Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext` (one registration name) | 2a |
+| `Event.WithExtra`, extension fields on the common structs | 3a, 4a |
+| `storetest.New`; `Host.Manifest`, `Host.UpdateOverrides`, prefix secrets; `AppendOverrides` | 8a, 9a, 11a, 17a |
+| Plan options `expires_after` and `gate: auto`; `LoadModuleTemplateFor`; `plans` in `CoreImports` | 22a, 22b, 27a |
 | Lint registration and `SS000` | 21 |
 | `control: fact`, `controller.fact`, subtypes, `work_window` effect (T74 core half) | 30, 31, 32 |
 | UI registrar, Platform module health | 10, 40 |
@@ -3023,7 +3739,7 @@ Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom
 | Known bug 11 guard | 41 |
 | Retrofit order: contract, conformance, Host and registrar, then modules; "pre-contract" listing | task order; 37, 40 |
 
-Not in W1, by design: per-module content (`rules/<module>/`, `plans/<module>/`) and every module retrofit other than `health` and `suricata` (README workstreams); the agent's last-line re-lint of `auto` plans beyond the existing guard (`shortcut` noted in Task 21's rule; W5 extends the guard data); label-expression targets inside templates (W5).
+Not in W1, by design: per-module content (`rules/<module>/`, `plans/<module>/`) and every module retrofit other than `health` and `suricata` (README workstreams); the agent's last-line re-lint of `auto` plans beyond the existing guard (`shortcut` noted in Task 21's rule; W5 extends the guard data); label-expression targets inside templates beyond `LoadModuleTemplateFor`'s `{labels: expr}` variables (W5); the plan options `window: scorer_quiet`, `gate: manual` and `txn:` (W7 Tasks 3 and 4; W5 and W10 depend on W7 Tasks 2 to 7).
 
 **Step scan:** every test step carries test names and assertions; prose-only test bodies (Tasks 6, 14, 27, 30, 31, 42 and the store/vault helpers) name the exact setup helper, the action and the assertion, because they drive existing e2e harnesses whose helper names the implementer reads from the package's own `_test.go` files. No step says "handle edge cases" or "add validation" without the rule.
 

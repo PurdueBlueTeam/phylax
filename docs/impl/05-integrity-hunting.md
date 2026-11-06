@@ -14,9 +14,9 @@
 
 1. **Registry action names follow the code.** The core table says `reg.set`, `reg.delete`, `reg.snapshot`; the code registers `registry.set` and `registry.delete`, and the design says the code's name is final. The table is edited to `registry.set`, `registry.delete`, `registry.snapshot` (new).
 2. **`ad.recycle_restored` is in the event-kind table but not in the `ad` manifest's Emits.** Added to Emits.
-3. **`plans` (the root embed package) is not on the module import allow list**, but `hardening`'s health is the template validator. `github.com/PurdueBlueTeam/phylax/plans` is added to `conformance.CoreImports` and to the design's core package list.
-4. **No exported action registration hook.** The design says a module "registers it from its package (`actions.Register`)"; the code has the unexported `registerExtra`. Task 1 renames it `actions.Register(f func() []Action)` and exports the dead-man undo registration as `actions.RegisterUndo`.
-5. **Pack templates and controller templates are one format.** `plans.Template` (vars, `each`, `scoring_note`) is a strict superset of the controller's file template. Packs stay in that form; `vars` values may be `{labels: "<expr>"}`, resolved to host lists from the manifest (Task 37). `controller.LoadModuleTemplate` (W1) gets a sibling that takes the label resolver.
+3. **`plans` (the root embed package) is not on the module import allow list**, but `hardening`'s health is the template validator. Added to `conformance.CoreImports` and the design's core package list by W1 Task 22b (applied to the design in the consistency pass).
+4. **Exported action registration is W1's.** `actions.Register(f func() []Action)` and `actions.RegisterUndo` (the exported `registerExtra` and `registerUndo`) are built by W1 Task 2a, the one name every workstream uses; this plan consumes them.
+5. **Pack templates and controller templates are one format.** `plans.Template` (vars, `each`, `scoring_note`) is a strict superset of the controller's file template. Packs stay in that form; `vars` values may be `{labels: "<expr>"}`, resolved to host lists from the manifest. `plans.Parse`, `plans.ResolveLabels`, `Template.Module` and `controller.LoadModuleTemplateFor` (the sibling of `LoadModuleTemplate` that takes the label resolver) are W1 Task 22b's; Task 37 here moves the pack files and requires `module:`.
 6. **`ledger_accept` and `hunt_finding` are written from UI decisions, not only from events.** The design says "from its own events" but defines no accept or decision kind. The UI handler passes the decision to the module's one writer goroutine over a bounded channel; the writer is still the only writer. Recommend adding `integrity.accepted` and `hunt.decision` kinds later.
 7. **Per-host ledger composition needs the agent `fetch` handler (bug 4, W11).** Until then the ledger ships with the release and the controller side holds only the tables and the accept path (`shortcut` in Task 18).
 8. **The sshsig namespace is `phylax-release`.** The design does not name one. Verify with `ssh-keygen -Y verify -f allowed_signers -I release -n phylax-release -s <file>.sig < <file>`.
@@ -80,11 +80,11 @@ Done by a stronger model. Writes every exported type, interface and signature na
 **Files:**
 - Create: `internal/integrity/events.go`, `internal/hunt/{events.go,doc.go,module.go}`, `internal/ad/{events.go,doc.go,module.go}`, `internal/hardening/module.go`, `internal/agent/mods/{hunt.go,ad.go}`
 - Create: every test file named in Tasks 4 to 47 with its Step 1 test functions, each starting `t.Skip("unimplemented: W5 Task N")`
-- Modify: `internal/plan/agentconfig.go` (`ModuleSettings.Hunt *HuntSettings`, `ModuleSettings.AD *ADSettings`, `IntegritySettings` new fields), `internal/actions/registry.go` (`registerExtra` → `Register`, all callers), `internal/actions/win_env.go` (`registerUndo` → `RegisterUndo`), `plans/plans.go` (`Template.Module string \`yaml:"module"\``), `internal/module/conformance/allowed.go` (`CoreImports` gains `plans`; `ModulePackages` entries for the four modules), `internal/module/all/all.go`, `phylax_design.md` (decisions 1 to 4 and 6 to 8 above)
+- Modify: `internal/plan/agentconfig.go` (`ModuleSettings.Hunt *HuntSettings`, `ModuleSettings.AD *ADSettings`, `IntegritySettings` new fields), `internal/module/conformance/allowed.go` (`ModulePackages` entries for the four modules), `internal/module/all/all.go`, `phylax_design.md` (decisions 6 and 7: the accept and decision write path; decisions 1 to 4 and 8 were applied in the consistency pass)
 - Modify (zero-value-safe): nothing else
 
 **Interfaces:**
-- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Register`, `module.ControllerModule`, `module.Common`, `agent.Factory`, `plan.ModuleLimits`.
+- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Register`, `module.ControllerModule`, `module.Common`, `agent.Factory`, `plan.ModuleLimits`, `actions.Register`, `actions.RegisterUndo` (W1 Task 2a), `plans.Template.Module` and `CoreImports` with `plans` (W1 Tasks 1 and 22b).
 - Produces (exact; later tasks use these):
 
 ```go
@@ -240,14 +240,12 @@ type PackTarget struct{ Pack, Target string }
 func Manifest() module.Manifest // Name "hardening", Sides controller, Privilege none, Default true,
 	// Consumes winevt.sensor_state, no Emits, no Actions, Content plans/hardening, Pages /plans
 
-// ---- internal/actions ----
-func Register(f func() []Action)                                                   // was registerExtra
-func RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) // was registerUndo
+// ---- internal/actions: Register and RegisterUndo are W1 Task 2a's; nothing to write here ----
 ```
 
 - [ ] **Step 1: Write the stubs.** Types and constants exactly as above (the full `VerdictEvent` from the emitter's keys). `Declare` calls in each package `init` with schema 1 and the priorities in the design's Events tables (`integrity.verdict` high, `integrity.yara` critical, `integrity.crosscheck` high, `integrity.ledger_unavailable` high, `integrity.pin`, `integrity.sweep_done`, `integrity.claims` normal; `hunt.finding` high, `hunt.run` normal; `ad.finding` high, `ad.gpo_finding` high, `ad.gpo_baseline` normal, `ad.recycle_restored` high). Register the three controller modules with `module.Register` (stub `Start` waits for ctx and reports `unavailable` with gap `{"module", "not built (W5)"}`), the two new agent factories (`hunt`, `ad`) with `Manifest` set, and add `integrity.Manifest()` to the existing `integrity` factory. Add all four names to `ModulePackages`; do not remove anything from `PreContract` yet (each module's conformance task does). Function bodies: `panic("unimplemented: W5 Task N")` naming the implementing task.
 - [ ] **Step 2: Write the skipped tests.** For each of Tasks 4 to 47, create the test file the task names with the Step 1 test functions, each starting `t.Skip("unimplemented: W5 Task N")`. Write for real the helpers they call: `internal/integrity/testhelpers_test.go` (`fakeProc(t, tree map[string]string) string` builds a fake `/proc` or `/sys` tree), `internal/hunt/testhelpers_test.go` (`fixtureCollection`), `internal/ad/fake_test.go` (the fake `ADBackend` copied from `ad_accounts_test.go`, extended in Task 41).
-- [ ] **Step 3: Apply the design edits** for decisions 1 to 4 and 6 to 8 (action names in the Registry row; `ad.recycle_restored` in the manifest; `plans` in the core package list; `actions.Register`; the accept and decision write path under `integrity` and `hunt` Tables; the sshsig namespace under Shared libraries).
+- [ ] **Step 3: Apply the remaining design edits** (decisions 6 and 7: the accept and decision write path under `integrity` and `hunt` Tables; the `shortcut` for the ledger composition). Decisions 1 to 4 and 8 (`registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in Emits, `plans` and `actions.Register` in the core package list, the sshsig namespace) are already in the design.
 - [ ] **Step 4: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... ./plans/ 2>&1 | grep -c 'unimplemented: W5 Task'`. Expected: a count equal to the number of skipped tests written in Step 2 (no stub panics).
 - [ ] **Step 5: Commit.**
 
@@ -325,7 +323,7 @@ func TestEd25519RoundTripAndReject(t *testing.T) {
 
 **Files:**
 - Move (`git mv`): `internal/actions/{ad_accounts.go,ad_accounts_test.go,ad_netlogon.go,ad_netlogon_test.go,ad_adsi_windows.go,deception_ad.go,deception_ad_windows.go}` → `internal/ad/`; `ad_backend.go` keeps `ADBackend`, `ADObject`, `ResolveMembers` in `internal/actions` (it is a seam interface like `RegistryStore`, and `actions.WinEnv.AD` uses it); the fake directory moves into `internal/ad/fake_test.go`
-- Modify: `internal/actions/registry_deception.go` (drop `adHoneyAccount{}`), export the helpers the moved files used (`Unsupported`, `PathTouch`, `RegisterUndo`, `JSONUndo`, ...; list from the compiler), `internal/ad/module.go` (`init` calls `actions.Register(func() []actions.Action { ... })` with the existing ten `ad.*` actions plus `ad.honey_account`)
+- Modify: `internal/actions/registry_deception.go` (drop `adHoneyAccount{}`), export the helpers the moved files used (`PathTouch`, `JSONUndo`, ...; list from the compiler), `internal/ad/module.go` (`init` calls `actions.Register(func() []actions.Action { ... })` with the existing ten `ad.*` actions plus `ad.honey_account`)
 - Test: the moved tests pass in `internal/ad`
 
 **Interfaces:**
@@ -1158,7 +1156,7 @@ func TestCleanupActionsRefuseScoredUnit(t *testing.T) { /* guard with sshd as a 
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run 'UnitMask|NeverDeletes|LDPreload|CapsClear|PkgUnhold|RefuseScored' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** and register with `registerExtra`/`Register` in `registry_linux.go`.
+- [ ] **Step 3: Implement** and register with `actions.Register` in `registry_linux.go`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "actions: unit.disable, unit.mask, ld_preload.clear, caps.clear, pkg.unhold"`
 
@@ -1834,26 +1832,16 @@ func TestVerifyHardeningNoInlineSecrets(t *testing.T) { /* no param value matche
 
 ---
 
-### Task 37: Pack format: `module:`, label variables, move to `plans/hardening/`, controller bridge, Known bug 9
+### Task 37: Pack format: `module:` required, label variables in the packs, move to `plans/hardening/`, Known bug 9
 
 **Files:**
 - Move (`git mv`): `plans/first-hour/*.yaml` → `plans/hardening/`
-- Modify: `plans/plans.go` (`//go:embed *.yaml */*.yaml`; `Parse(raw []byte) (*Template, error)`; `ResolveLabels(t *Template, hosts func(expr string) ([]string, error)) (map[string]any, error)`; `Paths()` skips `actions.yaml` only), `plans/actions.yaml` (header), `plans/hardening/*.yaml` (add `module: hardening`; ids keep the `fh.` prefix; replace host-name `vars` with `{labels: ...}` where the host set is a role: `dcs: {labels: "dc"}`, `linux_hosts: {labels: "linux && !workstation"}`), `internal/controller/plantemplates.go` (`LoadModuleTemplateFor`), the W1 call sites in `approvals.go`, `auto.go`, `proposals.go` (pass `c.hostsMatching`)
+- Modify: `plans/plans.go` (`//go:embed *.yaml */*.yaml`; `Parse` errors `plan template has no module:` when `Module` is empty; `Paths()` skips `actions.yaml` only; `Parse`, `ResolveLabels` and `Template.Module` themselves are W1 Task 22b's), `plans/actions.yaml` (header), `plans/hardening/*.yaml` (add `module: hardening`; ids keep the `fh.` prefix; replace host-name `vars` with `{labels: ...}` where the host set is a role: `dcs: {labels: "dc"}`, `linux_hosts: {labels: "linux && !workstation"}`), (`controller.LoadModuleTemplateFor` and the W1 call sites passing `c.hostsMatching` are W1 Task 22b's)
 - Test: `plans/plans_test.go` (extend), `internal/controller/pack_template_test.go`
 
 **Interfaces:**
-- Consumes: `manifest.ParseLabels`, `(*Manifest).HostsMatching` (W1), `plan.ExpandTemplate`, the W1 `LoadModuleTemplate`.
-- Produces:
-
-```go
-// plans
-func Parse(raw []byte) (*Template, error) // strict, 256 KiB cap; Load(path) calls it
-func ResolveLabels(t *Template, hosts func(expr string) ([]string, error)) (map[string]any, error) // overrides for every var shaped {labels: expr}
-// Template.Module must be non-empty: Parse errors "plan template has no module:" otherwise (design: a file without module: fails CI)
-// controller
-func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error)
-// LoadModuleTemplate(plansRoot, mod, name) calls LoadModuleTemplateFor with a nil resolver (a label var then errors).
-```
+- Consumes: W1 Task 22b `plans.Parse`, `plans.ResolveLabels`, `Template.Module`, `controller.LoadModuleTemplateFor`; W1 `manifest.ParseLabels`, `(*Manifest).HostsMatching`.
+- Produces: `plans.Parse` refuses a template without `module:` (error `plan template has no module:`; design: a file without `module:` fails CI); every pack file lives under `plans/hardening/` with `module: hardening`.
 
 `plans/actions.yaml` header: replace the "Each is a TODO" text by "Action specs the plan templates use that the agent catalog does not register yet. The file is empty when every template action is implemented; a name listed here must not be registered (the catalog loader refuses it)." (Known bug 9, T65.)
 
@@ -1868,28 +1856,20 @@ func TestEveryTemplateHasModule(t *testing.T) {
 		}
 	}
 }
-func TestResolveLabelsExpandsEach(t *testing.T) {
-	tpl, _ := Parse([]byte("id: x\nmodule: hardening\nvars:\n  dcs: {labels: dc}\nnodes:\n- {id: a, each: dcs, action: ad.zerologon_check, target: ${host}}\n"))
-	ov, err := ResolveLabels(tpl, func(e string) ([]string, error) { return []string{"ad", "ad2"}, nil })
-	pl, err2 := tpl.Expand(cat(t), ov)
-	if err != nil || err2 != nil || len(pl.Nodes) != 2 || pl.Nodes[1].Target != "ad2" {
-		t.Fatalf("%v %v %+v", err, err2, pl)
-	}
-}
-func TestUnresolvedLabelVarIsAnError(t *testing.T) { /* Expand without ResolveLabels -> "each ... is not a list" */ }
 func TestActionsYamlHeaderNoTodo(t *testing.T) { // Known bug 9
 	b, _ := FS.ReadFile("actions.yaml")
 	if bytes.Contains(b, []byte("TODO")) {
 		t.Fatal("header still says TODO")
 	}
 }
-func TestRunAutoLoadsPackWithLabels(t *testing.T) { /* internal/controller: a pack with a labels var loads through LoadModuleTemplateFor against the test manifest (hosts h1 db1) and yields per-host nodes */ }
+func TestRunAutoLoadsPackWithLabels(t *testing.T) { /* internal/controller: the real plans/hardening dc pack loads through LoadModuleTemplateFor(c.hostsMatching) against a test manifest with a host labelled dc and yields per-host nodes */ }
+func TestParseRequiresModule(t *testing.T) { /* Parse of a pack without module: -> error containing "no module" */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./plans/ ./internal/controller/ -run 'EveryTemplateHasModule|ResolveLabels|Unresolved|ActionsYaml|PackWithLabels' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./plans/ ./internal/controller/ -run 'EveryTemplateHasModule|ParseRequiresModule|ActionsYaml|PackWithLabels' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Other modules' templates in `plans/` (wazuh, splunk, deception) move to `plans/<module>/` with their own workstreams; until then `TestEveryTemplateHasModule` skips the three root-level files that name W9/W11 in a table at the top of the test (`shortcut: root-level templates belong to W9 and W11, delete the skip entries when they move`).
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "plans: module header, label variables, plans/hardening (Known bug 9)"`
+- [ ] **Step 5: Commit.** `git commit -am "plans: module header required, plans/hardening (Known bug 9)"`
 
 ---
 

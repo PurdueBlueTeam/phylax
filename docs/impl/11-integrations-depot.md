@@ -4,15 +4,15 @@
 
 **Goal:** Put `depot`, `wazuh`, `splunk` and `suricata` on the module contract and finish them: the one signed cache index with priority-ordered sync and package installs from staged closures, the Wazuh controller module, the Splunk forwarder module with its dashboards pack, the Suricata/Zeek runner and `suricata.analyze_pcap`, the agent `fetch` handler with chunked transfers (Known bug 4), the split of the Splunk half out of the controller's device `Directory`, and the fixes for Known bugs 4, 15 (depot part), 17 (wazuh part) and 21.
 
-**Architecture:** Each module is one package (`internal/depot`, `internal/wazuh`, `internal/splunk`, `internal/suricata`). Chunked transfers are core: `internal/link/bulk.go` (sender and receiver with resume), `internal/agent/fetch.go` (serve `fetch`, stage pushed blobs), `internal/controller/fetch.go` (request an object, push a blob). The depot's controller side owns the store, the sync client and the cache plan; its agent side verifies and deploys the tool depot from a bounded staging area. Action families (`pkg.*`, `windows.hotfix`, `wazuh.*`, `splunk.*`, `suricata.analyze_pcap`) leave `internal/actions` and register with `actions.RegisterFamily`; module backends reach actions through `Env.Ext`. The Splunk management client moves out of `controller.Directory` into `internal/splunk`.
+**Architecture:** Each module is one package (`internal/depot`, `internal/wazuh`, `internal/splunk`, `internal/suricata`). Chunked transfers are core: `internal/link/bulk.go` (sender and receiver with resume), `internal/agent/fetch.go` (serve `fetch`, stage pushed blobs), `internal/controller/fetch.go` (request an object, push a blob). The depot's controller side owns the store, the sync client and the cache plan; its agent side verifies and deploys the tool depot from a bounded staging area. Action families (`pkg.*`, `windows.hotfix`, `wazuh.*`, `splunk.*`, `suricata.analyze_pcap`) leave `internal/actions` and register with `actions.Register`; module backends reach actions through `Env.Ext`. The Splunk management client moves out of `controller.Directory` into `internal/splunk`.
 
 **Tech Stack:** Go 1.27.2 (mise), standard library, existing deps only (`modernc.org/sqlite`, `gopkg.in/yaml.v3`, `github.com/klauspost/compress`, `golang.org/x/sys`). No new modules in `go.mod`.
 
-**Spec:** `phylax_design.md` (v4): Integrations and depot (`depot`, `wazuh`, `splunk`, `suricata`, all 12 parts each), "The module contract", "Wire protocol and spool" (messages, chunked transfers, the `fetch` paragraph), "Execution engine" (action families Packages and Integrations, controller executor, approval classes, scoring-safety lint), "Manifest" (Files table: `packages`, `scored_indexes`), Known bugs 3, 4, 15, 17, 21, Testing and lab (T40, T41, T46, T63, T65, T76). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1). Names consumed from W3 (`internal/sockets`), W5 (`internal/signing`, `internal/integrity/format`) and W6 (`actions.RegisterFamily`, `RegisterUndo`, `Unsupported`, `Env.Ext`, `controller.Options.Backends`, `Host.Manifest()`).
+**Spec:** `phylax_design.md` (v4): Integrations and depot (`depot`, `wazuh`, `splunk`, `suricata`, all 12 parts each), "The module contract", "Wire protocol and spool" (messages, chunked transfers, the `fetch` paragraph), "Execution engine" (action families Packages and Integrations, controller executor, approval classes, scoring-safety lint), "Manifest" (Files table: `packages`, `scored_indexes`), Known bugs 3, 4, 15, 17, 21, Testing and lab (T40, T41, T46, T63, T65, T76). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1). Names consumed from W3 (`internal/sockets`), W5 (`internal/signing`, `internal/integrity/format`) and W6 (`actions.Register`, `RegisterUndo`, `Unsupported`, `Env.Ext`, `controller.Options.Backends`, `Host.Manifest()`).
 
 ## Deviations and additions (applied by Task 1 to `phylax_design.md` in the same commit, each with its reason)
 
-1. **Action registration helper name.** W3 calls it `RegisterExtra`, W5 `Register`, W6 `RegisterFamily`. W11 uses W6's `actions.RegisterFamily(f func() []Action)`, `actions.RegisterUndo`, `actions.Unsupported`, `(*Env).Now()` and `Env.Ext map[string]any`, exactly as W6 Task 1 defines them. **A later pass must unify the three names** (open item for the integrator). If W6's seams are not merged when this seams task runs, Task 1 adds exactly W6's definitions and W6 rebases.
+1. **Action registration helper name.** One name, owned by W1 Task 2a: `actions.Register(f func() []Action)`, with `actions.RegisterUndo`, `actions.Unsupported`, `(*Env).Now()` and `Env.Ext map[string]any`. (Earlier drafts of this plan said `RegisterFamily`.) Nothing here defines them.
 2. **`Fetch` stays controller to agent; blobs are pushed.** The design's wire table says `fetch` requests "a depot blob", but a `fetch` can only travel controller to agent, so an agent cannot request a blob. `Fetch.Kind` stays `pcap | file | telemetry` (agent uploads). A depot blob reaches an agent by the controller pushing chunks to it (`Controller.PushBlob`); the agent stages it only when its digest verifies. No new message type, so `link.ProtoMinor` does not change.
 3. **A new core kind `agent.fetch_result`** (`{id, ok, sha256, size, error}`, priority high) is the completion signal of both directions. There is no error reply in the wire for `fetch`, and a push needs confirmation that the blob is staged and verified. The core kind table gains a row (30 rows); the same commit updates the table and the count sentence.
 4. **The signed index is the trust root on the agent.** The controller pushes the signed index (`depot.json`) like any blob; the agent verifies it against `DepotSettings.ReleaseKey` (a hex Ed25519 public key carried in the signed config, which is how the design says the deployed manifest is checked), and `pkg.install{source: "depot:<name>/<version>"}` resolves the expected sha256 from that verified index. A blob without an index entry (cache-through, operator pin) is installable only when the plan names its `sha256`. This keeps plans readable and keeps the sha256 out of every template.
@@ -89,7 +89,7 @@ Done by a stronger model. Moves `wazuh` and `splunk`, declares every kind with i
 - Modify: `internal/event/core.go` (`AgentFetchResult`), `internal/plan/agentconfig.go` (`ModuleSettings.Depot *DepotSettings`), `internal/manifest/types.go` (`Service.Packages`, `Service.ScoredIndexes`), `internal/agent/agent.go` and `handlers.go` (route `Chunk` and `ChunkHave`), `internal/controller/controller.go` (`Options.Stage`), `internal/module/all/all.go` (blank-import `depot`, `wazuh`, `splunk`; `suricata` already), `internal/module/conformance/allowed.go` (`ModulePackages` for the four; `PreContract` adds `depot`, `wazuh`, `splunk`, each removed by its module task), `phylax_design.md`.
 
 **Interfaces:**
-- Consumes: W1 `event.Declare`, `event.Type`, `module.Manifest`, `module.Common`, `module.ControllerModule`, `module.Host`, `module.Register`, `agent.Factory`, `plan.ModuleLimits`, `plan.BlockFor`; W6 `actions.RegisterFamily`, `Env.Ext`; W5 `signing.Signer`, `signing.Verifier`.
+- Consumes: W1 `event.Declare`, `event.Type`, `module.Manifest`, `module.Common`, `module.ControllerModule`, `module.Host`, `module.Register`, `agent.Factory`, `plan.ModuleLimits`, `plan.BlockFor`; W1 `actions.Register`, `Env.Ext`, `Host.Manifest`; W5 `signing.Signer`, `signing.Verifier`.
 - Produces (exact; every later task uses these):
 
 ```go
@@ -980,8 +980,8 @@ func TestPinActionRecordsOperatorRow(t *testing.T) {}
 - Test: `internal/depot/pkg_test.go`
 
 **Interfaces:**
-- Consumes: Task 4 `ExtractClosure`; W6 `actions.RegisterFamily`; the `CommandRunner` fake in the moved tests.
-- Produces: `pkg.install{name, version, source, sha256}`, `pkg.upgrade{...}`, `pkg.remove{name}` registered by `internal/depot` (`init` calls `actions.RegisterFamily`), `Runs: RunsAgent`, `Risk: RiskService`, `Locks: [LockPackages]`.
+- Consumes: Task 4 `ExtractClosure`; W6 `actions.Register`; the `CommandRunner` fake in the moved tests.
+- Produces: `pkg.install{name, version, source, sha256}`, `pkg.upgrade{...}`, `pkg.remove{name}` registered by `internal/depot` (`init` calls `actions.Register`), `Runs: RunsAgent`, `Risk: RiskService`, `Locks: [LockPackages]`.
 
 Rules. Resolution of the package closure: (1) `sha256` given: the staged blob `StageDir/blobs/<sha256>` (a cache-through or operator-pinned closure); (2) else `source: "depot:<name>/<version>"` (or `depot:<name>` with the `version` param): `DepotLookup` returns the sha256 from the verified staged index. Either way the blob is re-hashed with `Store.Verify` semantics immediately before use, extracted with `ExtractClosure` (limits 4096 files, 2 GiB) into `StageDir/closures/<sha256>/` if absent, and every `*.deb` (apt) or `*.rpm` (dnf) in it is passed to one transaction: `apt-get -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts=/dev/null install -y --no-install-recommends <files>` (dry run `-s`), `dnf --disablerepo=* install -y <files>` (dry run `--assumeno`). A `check` with nothing staged fails `blob not staged: <source>`. No patch window, no proxy, no network. A missing `version` and `source` and `sha256` is an error (`a package is never installed without a pinned version or a depot source`). `pkg.remove` is unchanged except it uses `PackageServices` (Task 19). The note "package changes are not rolled back automatically; reinstall the previous version" stays.
 
@@ -1108,7 +1108,7 @@ func TestHotfixNotStaged(t *testing.T) { /* error "blob not staged" */ }
 - Test: `internal/wazuh/actions_test.go`
 
 **Interfaces:**
-- Consumes: W6 `RegisterFamily`, `Env.Ext`; Task 1 `Config`.
+- Consumes: W1 `Register`, `Env.Ext`; Task 1 `Config`.
 - Produces:
 
 ```go
@@ -1133,7 +1133,7 @@ func TestActionsImportsNoWazuh(t *testing.T) { /* go list -deps ./internal/actio
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/wazuh/ ./internal/actions/ -v -run 'Wazuh|Health|Capture|TestAlert|Backend|ActionsImports'`. Expected: FAIL.
-- [ ] **Step 3: Move and rewire.** `init` in `internal/wazuh` calls `actions.RegisterFamily`; the controller executor builds `Ext["wazuh"] = Default` through `Options.Backends` (wired in Task 22).
+- [ ] **Step 3: Move and rewire.** `init` in `internal/wazuh` calls `actions.Register`; the controller executor builds `Ext["wazuh"] = Default` through `Options.Backends` (wired in Task 22).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/wazuh/ ./internal/actions/ ./internal/controller/ && make build-windows`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "wazuh: own the wazuh actions; actions imports no module"`
 
@@ -1182,7 +1182,7 @@ func TestPlatformTileShowsAgents(t *testing.T) {}
 - Test: `internal/splunk/actions_test.go`, `internal/splunk/directory_test.go`, `internal/controller/exec_redact_test.go`
 
 **Interfaces:**
-- Consumes: W6 Task 3 (**gate: merged**; `Env.Ext`, `Options.Backends`, the device `Directory` in its post-W6 shape), Task 1 `Config`.
+- Consumes: W6 Task 3 (**gate: merged**; `Env.Ext` from W1 Task 2a, `Options.Backends`, the device `Directory` in its post-W6 shape), Task 1 `Config`.
 - Produces:
 
 ```go
@@ -1226,7 +1226,7 @@ func TestExecutorLockSerialisesSplunkHost(t *testing.T) { /* two nodes on debian
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/splunk/ ./internal/controller/ -run 'Splunk|HEC|Directory|Redact|Lock' -v`. Expected: FAIL.
-- [ ] **Step 3: Move and rewire.** `init` in `internal/splunk` calls `actions.RegisterFamily` and `RegisterUndo` for the HEC rollback; `serve.go` sets `Options.Backends["splunk"] = splunk.Default`. Delete `SplunkDirectory` users and update `docs/integrations.md`.
+- [ ] **Step 3: Move and rewire.** `init` in `internal/splunk` calls `actions.Register` and `RegisterUndo` for the HEC rollback; `serve.go` sets `Options.Backends["splunk"] = splunk.Default`. Delete `SplunkDirectory` users and update `docs/integrations.md`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/splunk/ ./internal/actions/ ./internal/controller/ && make build-windows`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "splunk: own the Splunk client and actions; device directory is devices only"`
 
@@ -1378,7 +1378,7 @@ func (m *Module) Analyze(ctx context.Context, req AnalyzeRequest) (RunEvent, err
 func (m *Module) Backend() // Default implements the interface the action reads from Env.Ext["suricata"]
 const ExtKey = "suricata"
 ```
-`suricata.analyze_pcap{pcap, tools, context}` is registered with `actions.RegisterFamily`: `Runs: RunsController`, `Risk: RiskNone`, `ReadOnly: true`, no `Touches`, Doc says "runs a host binary on the controller". Rules. `pcap` is resolved with `filepath.EvalSymlinks` and must be a regular file under `EvidenceDir`; larger than `max_pcap_mb` is refused; the file is copied to the run directory (mode 0600, through `EvidenceOpen`, a package variable defaulting to `os.Open`), its sha256 recorded. A previous `suricata.run` with the same `pcap_sha256` and `rules_version` and no `error` makes `Analyze` return that record without running (look up with `Query().Events(Query{Kinds: ["suricata.run"], Fields: {"pcap_sha256": sum, "rules_version": v}})`). `rules_version` is the ruleset id from `Sensor.Rules` plus the file's sha256 prefix (8 hex). Events: alerts get priority high for severity 1, normal for 2, bulk for 3 (set per event; the kind itself is not alert-class), context and Zeek events bulk, each with `Time` the packet time and `community_id` (read, or computed by `sockets.CommunityID` through the W3 helper the readers already use); at most `MaxEventsPerRun = 20000` events are emitted, the rest counted in `skipped["over_cap"]` (`shortcut: per-run event cap protects the Host budget, raise with the measured budget`). Then `suricata.run` is emitted with `flags`, `tools`, `alerts`, `events`, `skipped`, `duration_ms`, `error`. The run directory is removed in a `defer`. A tool failure sets `error` and still emits what the other tool produced. UI: `Registrar.Action("analyze", h)` (POST `pcap`, `source`) calls `Host.RunReadOnly("analyze", params)` with the template `plans/suricata/analyze.yaml` (Task 28) and redirects to the page `GET /m/suricata/run?pcap_sha256=...` showing alerts by severity, DNS and HTTP context, the Zeek connection summary and the `Join` view by community id; the Platform page lists the state and the last run.
+`suricata.analyze_pcap{pcap, tools, context}` is registered with `actions.Register`: `Runs: RunsController`, `Risk: RiskNone`, `ReadOnly: true`, no `Touches`, Doc says "runs a host binary on the controller". Rules. `pcap` is resolved with `filepath.EvalSymlinks` and must be a regular file under `EvidenceDir`; larger than `max_pcap_mb` is refused; the file is copied to the run directory (mode 0600, through `EvidenceOpen`, a package variable defaulting to `os.Open`), its sha256 recorded. A previous `suricata.run` with the same `pcap_sha256` and `rules_version` and no `error` makes `Analyze` return that record without running (look up with `Query().Events(Query{Kinds: ["suricata.run"], Fields: {"pcap_sha256": sum, "rules_version": v}})`). `rules_version` is the ruleset id from `Sensor.Rules` plus the file's sha256 prefix (8 hex). Events: alerts get priority high for severity 1, normal for 2, bulk for 3 (set per event; the kind itself is not alert-class), context and Zeek events bulk, each with `Time` the packet time and `community_id` (read, or computed by `sockets.CommunityID` through the W3 helper the readers already use); at most `MaxEventsPerRun = 20000` events are emitted, the rest counted in `skipped["over_cap"]` (`shortcut: per-run event cap protects the Host budget, raise with the measured budget`). Then `suricata.run` is emitted with `flags`, `tools`, `alerts`, `events`, `skipped`, `duration_ms`, `error`. The run directory is removed in a `defer`. A tool failure sets `error` and still emits what the other tool produced. UI: `Registrar.Action("analyze", h)` (POST `pcap`, `source`) calls `Host.RunReadOnly("analyze", params)` with the template `plans/suricata/analyze.yaml` (Task 28) and redirects to the page `GET /m/suricata/run?pcap_sha256=...` showing alerts by severity, DNS and HTTP context, the Zeek connection summary and the `Join` view by community id; the Platform page lists the state and the last run.
 
 Health. `disabled`; `ok` (tools present with matching pins, ruleset cached); `degraded` (a tool or ruleset missing: Gap `ET Open rules not cached`, `zeek not installed`); `unavailable` (neither tool installed). A failed run is reported in `suricata.run.error`, not as a platform failure. Ruleset presence is the file `<work_dir>/rules/<Sensor.Rules>.rules`. `shortcut: the ruleset file is placed in work_dir/rules by hand or by the lab step, because a module cannot read depot blobs; upgrade when Host gets a depot reader`.
 
@@ -1419,7 +1419,7 @@ func TestUIActionStartsReadOnlyPlan(t *testing.T) { /* POST analyze -> Host.RunR
 - Test: `plans/integration_plans_test.go`
 
 **Interfaces:**
-- Consumes: **gate: W5 Task 37 merged** (`plans/plans.go` embeds `*.yaml */*.yaml`, `Template.Module`, `Parse`); Task 8 `depot/index.d`; Tasks 17, 21, 23, 25 action names.
+- Consumes: **gate: W5 Task 37 merged** (`plans/plans.go` embeds `*.yaml */*.yaml`; `Template.Module` and `Parse` are W1 Task 22b's); Task 8 `depot/index.d`; Tasks 17, 21, 23, 25 action names.
 - Produces: templates (each with `module:`, `scoring_note`, `probe` where it touches a scored host):
   - `wazuh/deploy.yaml`: the existing DAG (approve-placement gate; manager `pkg.install`, `firewall.allow`, `xml.set` active response off and authd password, three agent groups, restart, `wazuh.health`; agents `pkg.install` per OS, manager address, remote commands off (`file.write` on Linux, `agentopt.set` on Windows), `service.state`; second `wazuh.health`; authd disabled and the manager restarted), `source` values `depot:<name>/${version}`, plus a node `mgr-memcap` (`systemd.dropin` on `${manager}`, `needs: [mgr-install]`, drop-in `MemoryMax=${manager_memory_max}` with the default `infinity`; the approval gate's note tells the operator to set `4G` when the manager is placed on the Splunk host).
   - `wazuh/uninstall.yaml`: on each agent host `service.state` stopped then `pkg.remove`; then the same two nodes on the manager (`needs` every agent node); `on_failure: continue`; the firewall allow of the deploy plan is left in place and the plan's note says so.
@@ -1593,7 +1593,7 @@ Gaps: the design's "tab on the incident page" (Deviation 14), "forward kinds bey
 
 ## Notes for the integrator (flags, not decisions made here)
 
-1. **Action registration helper**: W3 `RegisterExtra`, W5 `Register`, W6 `RegisterFamily`; this plan uses `RegisterFamily` throughout. A later pass must unify the three.
+1. **Action registration helper**: unified as `actions.Register` (W1 Task 2a); this plan uses it throughout.
 2. **Design changes this plan makes** (Task 1 edits them in): `fetch` is controller to agent only and blobs are pushed; a new core kind `agent.fetch_result` (kind table 29 to 30 rows); `DepotSettings.ReleaseKey` and `Packages`; `modules/depot.yml` `release_key`; `modules/suricata.yml` `evidence_dir`; closure archives; pins in the `depot_entry` table; `splunk.rest`, `splunk.sidecar_off`, `splunk.password` registered by `internal/splunk`.
 3. **Ordering dependencies beyond the README row**: Task 1 needs W3 Task 1 (`sockets`, the `gotools` import) and W5 Task 2; Task 23 needs W6 Task 3; Task 28 needs W5 Task 37; Task 29 touches `internal/manifest/load.go` with W1 and W9. Task 31 Step 6 needs W6's `pcap` fetch provider (`agent.RegisterFetch("pcap", ...)`), which W6 must add.
 4. **Ownership**: `phylax init` calls `depot.Refresh` and `phylax cache sync` (W12); the first-hour `splunk.sidecar_off` node and `splunk.password` callers (W5, W7) keep working through the action names.

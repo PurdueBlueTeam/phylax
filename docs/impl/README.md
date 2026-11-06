@@ -82,6 +82,8 @@ Edges are on seams where the table says so: W6 waits for W3's seams, W7 for W6's
 - Wave 4: W9 (after W4's seams), W12 (after W7's seams), W8 (after the four seams it needs).
 - Wave 5: W10. W13 whenever the W6 lab record exists.
 
+Cross-workstream dependency to note: W7 builds the plan options `window: scorer_quiet`, `gate: manual` and `txn:` (W7 Tasks 2 to 7); W5 hardening packs that use `window:` and W10 `backup` nodes depend on those W7 tasks, so W5 and W10 tasks that use `window:` wait for W7 Tasks 2 to 7 to merge. W1 owns the other two core plan options (`expires_after`, `gate: auto`).
+
 Conflict hot spots to watch when two workstreams run together: `internal/plan/agentconfig.go` (every agent module adds or edits its settings struct), `internal/agent/mods/`, `internal/controller/genconfig.go`, `manifest/2027/modules/`, `rules/`. Each workstream touches only its own modules' entries; the seams tasks add struct fields, later tasks fill them.
 
 ## Exported names the other plans use
@@ -90,19 +92,20 @@ These come from W1's Interfaces blocks (`01-module-contract.md`), which hold the
 
 | Package | Names |
 | --- | --- |
-| `internal/event` | `Event` (adds `Schema int`, `Tag string`), `Type{Kind, Schema, Priority, Alert, Fields}`, `Declare`, `Lookup`, `Declared`, `New[T]`, `Decode[T]`, `Validate`, `ErrUndeclared`, `ErrKindMismatch`, `ErrSchema`; common kinds `KindProcessStart` ... `KindTelemetryGap` with structs `ProcessStart`, `ProcessExit`, `FileChange`, `Conn`, `Listener`, `AuthEvent`, `DNSQuery`, `TelemetryGap`; core kind structs incl. `ControllerFact` |
-| `internal/module` | `Side`, `SideAgent`, `SideController`, `Budget`, `Manifest` (+ `Validate`), `Common{Enabled, ActEnabled, Auto}`, `State` and its constants, `Gap`, `Usage`, `Health`, `Host`, `ControlMsg`, `Proposal`, `EventRef`, `ControllerModule`, `Analyzer` (`Run(ctx, store.Reader, now)`), `AnalyzerProvider`, `Configurable`, `Register`, `Registered`, `Lookup`, `Effective`, `Schema`, `ErrNoConfig`, `ErrNotInScope`, `ErrProposed` |
+| `internal/event` | `Event` (adds `Schema int`, `Tag string`), `Type{Kind, Schema, Priority, Alert, Fields}`, `Declare`, `Lookup`, `Declared`, `New[T]`, `Decode[T]`, `Validate`, `ErrUndeclared`, `ErrKindMismatch`, `ErrSchema`; common kinds `KindProcessStart` ... `KindTelemetryGap` with structs `ProcessStart`, `ProcessExit`, `FileChange`, `Conn`, `Listener`, `AuthEvent`, `DNSQuery`, `TelemetryGap`; core kind structs incl. `ControllerFact`; `Event.WithExtra(key, v)` (`x_` prefix; Decode and Validate ignore it); optional extension fields on the common structs (W3's list, W1 Task 4a), `Replay` |
+| `internal/module` | `Side`, `SideAgent`, `SideController`, `Budget`, `Manifest` (+ `Validate`), `Common{Enabled, ActEnabled, Auto}`, `State` and its constants, `Gap`, `Usage`, `Health`, `Host`, `ControlMsg`, `Proposal`, `EventRef`, `ControllerModule`, `Analyzer` (`Run(ctx, store.Reader, now)`), `AnalyzerProvider`, `Configurable`, `Register`, `Registered`, `Lookup`, `Effective`, `Schema`, `ErrNoConfig`, `ErrNotInScope`, `ErrProposed`; `Host` also has `Tables()`, `Manifest() *manifest.Manifest`, `UpdateOverrides(fn)`, and `Secrets` accepts prefix grants (`cred/*`) |
 | `internal/module/conformance` | `AgentCase`, `Agent(t, AgentCase)`, `ControllerCase`, `Controller(t, ControllerCase)`, `PreContract` (the shrinking list: a retrofit deletes its entry), `AllowedLibraries`, `CoreImports`, `ModulePackages` |
 | `internal/module/all` | blank imports of every module package (the binary and the conformance run import it) |
 | `internal/agent` | `Factory{Name, Manifest, Section, Build}`, `Registered()`, `ModuleSpec`, `Env` (`Subscribe(buf int, kinds ...string)`, `Keep`, `Kept`, `Fact`), `HealthReporter`, `Harness`, `NewHarness`, `HarnessOptions` |
-| `internal/plan` | `ModuleLimits{module.Common; RatePerSec float64; Burst int}`, `ApprovalClass` (`ClassClick`, `ClassAutoReadOnly`, `ClassStanding`, `ClassAuto`), `StandingApproval`, `ControlFact`, `FactSender`, `ExpandTemplate`, `BlockFor` |
+| `internal/plan` | `ModuleLimits{module.Common; RatePerSec float64; Burst int}`, `ApprovalClass` (`ClassClick`, `ClassAutoReadOnly`, `ClassStanding`, `ClassAuto`), `StandingApproval`, `ControlFact`, `FactSender`, `ExpandTemplate`, `BlockFor`; `Node.ExpiresAfterSec`, `Node.Until` (`GateUntil`, `NoEvent`: `gate: auto`), `StepBody.ExpiresAfterSec` |
 | `internal/plan/lint` | `Rule{ID, Doc, Check}`, `Finding`, `Ctx{Manifest, Query, Class}`, `Register`, `Rules`, `Run` |
-| `internal/store` | `Reader` (the design's read-only "store.Query"), `Query` (the existing filter struct, gains `Fields`), `ModuleDB` (`Migrate`, `Exec`, `Query`), `(*Store).ModuleDB` |
-| `internal/vault` | `Reader`, `Scoped` |
+| `internal/store` | `Reader` (the design's read-only "store.Query"), `Query` (the existing filter struct, gains `Fields`), `ModuleDB` (`Migrate`, `Exec`, `Query`), `(*Store).ModuleDB`; `storetest.New(t, evs...)` (seeded store for module tests, W1 Task 8a) |
+| `internal/vault` | `Reader`, `Scoped` (an entry `name/*` is a prefix grant), `Covers` |
 | `internal/ui` | `Registrar`, `Cell`, `(*Server).Registrar` |
-| `internal/manifest` | `ModuleBlock`, `Manifest.Modules`, `Host.Modules`, `Host.Labels`, `(*Manifest).ModuleEnabled`, `ParseLabels`, `LabelExpr` |
-| `internal/controller` | `(*Controller).EmitController`, `RunModules`, `ModuleHealth`, `AgentHealth`, `RunReadOnly`, `RunStanding`, `RunAuto`, `ReenableAuto`, `CreateStanding`, `RevokeStanding`, `Propose`, `AcceptProposal`, `DismissProposal`, `SendFact`, `LoadModuleTemplate`; `Options.Probe` |
-| `internal/actions` | `Env.Probe func(ctx context.Context, service string) error` |
+| `internal/manifest` | `ModuleBlock`, `Manifest.Modules`, `Host.Modules`, `Host.Labels`, `(*Manifest).ModuleEnabled`, `ParseLabels`, `LabelExpr`, `AppendOverrides`, `LearnedListener`, `Overrides.LearnedListeners` |
+| `internal/controller` | `(*Controller).EmitController`, `RunModules`, `ModuleHealth`, `AgentHealth`, `RunReadOnly`, `RunStanding`, `RunAuto`, `ReenableAuto`, `CreateStanding`, `RevokeStanding`, `Propose`, `AcceptProposal`, `DismissProposal`, `SendFact`, `LoadModuleTemplate`; `Options.Probe`, `LoadModuleTemplateFor(plansRoot, mod, name, hosts)`, `Options.GatePoll` |
+| `internal/actions` | `Register(f func() []Action)` (the one name for exporting action registration; no `RegisterExtra` or `RegisterFamily`), `RegisterUndo`, `Unsupported`, `(*Env).Now()` (the field is `Env.Clock`), `Env.Ext map[string]any`, `Env.Probe func(ctx context.Context, service string) error` |
+| `plans` (root package) | `Template.Module`, `Parse`, `ResolveLabels`; on `conformance.CoreImports` (W1 Task 22b) |
 
 ## Module to workstream map
 

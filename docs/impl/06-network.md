@@ -4,7 +4,7 @@
 
 **Goal:** Put the four network modules (`firewall`, `egress`, `capture`, `devices`) on the module contract, break the `internal/actions` imports of `devices` and `firewall`, build what the design adds (inbound auto-enforce with allow-back, conntrack flush, quarantine, source blocks, shadow summarizer, egress ranking and suggestions, `freeze_capture`, TFTP and NTP parsers, device pollers and `D14`, backups, rotation, licence gating) and fix Known bugs 7, 12, 13, 14, 19 and 20.
 
-**Architecture:** Each module is one package (`internal/firewall`, `internal/egress`, `internal/capture`, `internal/devices`) with an agent registration in `internal/agent/mods/<name>.go` where it has an agent side and a `module.ControllerModule` where it has a controller side. A module that owns an action family registers it from its package (`actions.RegisterFamily`), so `internal/actions` imports no module. Module backends reach actions through `actions.Env.Ext`, set by the code that builds the `Env` (the agent binary, the controller executor). Policy comes from the manifest renderer (`internal/manifest/render`, core) into the signed `AgentConfig`; the agent applies it only through plan nodes or, for the allow-back, under `act_enabled`.
+**Architecture:** Each module is one package (`internal/firewall`, `internal/egress`, `internal/capture`, `internal/devices`) with an agent registration in `internal/agent/mods/<name>.go` where it has an agent side and a `module.ControllerModule` where it has a controller side. A module that owns an action family registers it from its package (`actions.Register`), so `internal/actions` imports no module. Module backends reach actions through `actions.Env.Ext`, set by the code that builds the `Env` (the agent binary, the controller executor). Policy comes from the manifest renderer (`internal/manifest/render`, core) into the signed `AgentConfig`; the agent applies it only through plan nodes or, for the allow-back, under `act_enabled`.
 
 **Tech Stack:** Go 1.27.2 (mise), standard library, existing deps only (`github.com/google/nftables`, `github.com/mdlayher/netlink` (already in `go.mod`, becomes direct), `modernc.org/sqlite`, `gopkg.in/yaml.v3`, `golang.org/x/{net,sys,crypto}`). No new modules in `go.mod`.
 
@@ -13,18 +13,18 @@
 ## Deviations and additions (applied by Task 1 to `phylax_design.md` in the same commit, each with its reason)
 
 1. **`internal/devices` root becomes the module; the adapter types move to `internal/devices/adapter`.** `palo` and `vyos` import the `Adapter`, `Tx`, `SafeChange` types that live in the root today; the module imports `palo` and `vyos`, so the root cannot hold both. Appendix D gains `devices/adapter/`.
-2. **Actions leave `internal/actions`.** New exported hooks in `actions` (Task 1): `RegisterFamily(f func() []Action)` (the exported `registerExtra`), `RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error)` (the exported `registerUndo`), `Unsupported(what string) error`, `(*Env).Now() time.Time`, and `Env.Ext map[string]any` (backends owned by modules, keyed by module name). `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`, `DeviceDirectory` and `FirewallBackend` are deleted from `actions`. W11 uses the same hooks for `wazuh` (whichever seams lands first adds them; the definitions are fixed here).
-3. **The inbound `gate: auto` is evaluated by the `firewall` controller module before it calls `RunAuto`**, not by a new plan gate kind. The plan template `plans/firewall/enforce-inbound.yaml` holds only the enforce node and the probe; the module checks the shadow summary (no `coverage: scored` group), that safe mode is off and `act_enabled`, and then `RunAuto`; otherwise it `Propose`s. Reason: no core owner builds a `gate: auto` node kind, and `RunAuto` already enforces the probe, rollback and breaker conditions.
-4. **`module.Host` gains `Manifest() *manifest.Manifest`** (`internal/module` may import `internal/manifest`: it imports only `event` and `atomicfile`). The shadow verdict (`declared`, `undeclared`, `scored`), the egress allow table and the device inventory all read the manifest and `Host` had no way to it.
+2. **Actions leave `internal/actions`.** The exported hooks are W1 Task 2a's, under the one registration name: `actions.Register(f func() []Action)`, `actions.RegisterUndo(kind, fn)`, `actions.Unsupported(what string) error`, `(*Env).Now() time.Time` (the old field `Env.Now` is renamed `Env.Clock`) and `Env.Ext map[string]any` (backends owned by modules, keyed by module name). `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`, `DeviceDirectory` and `FirewallBackend` are deleted from `actions` here (Tasks 2 and 3). W11 uses the same hooks for `wazuh`. (This plan formerly called the registration hook `Register`; it is `Register` everywhere now.)
+3. **The inbound `gate: auto` is evaluated by the `firewall` controller module before it calls `RunAuto`**, because its condition reads the nested would-drop summary (groups by coverage), which the core's generic `gate: auto` (W1 Task 27a: time, probe, absence of an event) cannot express. The plan template `plans/firewall/enforce-inbound.yaml` holds only the enforce node and the probe; the module checks the shadow summary (no `coverage: scored` group), that safe mode is off and `act_enabled`, and then `RunAuto`; otherwise it `Propose`s. A template may still add a core `gate: auto` with `until: {after: ..., probe: '*'}` for the minimum shadow time.
+4. **`module.Host.Manifest() *manifest.Manifest`** is W1 Task 17a's (`internal/module` may import `internal/manifest`: it imports no repo package). The shadow verdict (`declared`, `undeclared`, `scored`), the egress allow table and the device inventory all read the manifest.
 5. **`Host.Control` accepts `Type: "freeze_capture"`** from module `capture` only (`Data`: `rule`, `alert_time`, `addrs`; no `Fact`, `ID` or `TTL`). The design says a module may send only facts, but Known bug 7 needs the controller side of `capture` to send `freeze_capture`, and the core cannot know which agents saw a flow. `plan.ControlFreezeCapture = "freeze_capture"`; `link.ProtoMinor` rises by 1.
 6. **`fw.apply` takes `destinations`** (outbound destination blocks) beside `sources` (inbound). The design says "block the destination for this host (`fw.apply` with a drop in the `egress` group)" but names only `sources`. Exactly one of the two is given.
 7. **`firewall.allow_back` gains `probe`** (`ok`, `failed`, `unavailable`): the agent-side probe may not exist (no `Env.Probe` on the agent until W7), and the event must say so.
 8. **Prefix and group constants are core.** `render.PrefixShadowInput = "phylax-shadow-input: "`, `PrefixShadowOutput`, `PrefixInputDeny = "phylax-input-deny: "`, `PrefixEgressDeny = "phylax-egress-deny: "`, `DefaultDenyLogGroup = 100`, `DefaultShadowLogGroup = 101`. `net` (W3) reads them from `render`; it cannot import `firewall`.
-9. **`learned_listeners` has no writer.** `Host` cannot edit `overrides.yml`. The module setting is accepted and ignored with `shortcut: learned scorer listeners are not written to overrides.yml; the allow-back event carries the manifest fix as a proposal, upgrade when Host gets an overrides write path`. T77's "learned flows" clause is tested through the allow-back only.
+9. **`learned_listeners` is written through W1's `Host.UpdateOverrides`** (Task 17a over `manifest.AppendOverrides`, Task 11a) as `manifest.LearnedListener{Host, Proto, Port, Reason, Observed}` entries of `overrides.yml`, rendered like a service listener into the `learned` group (any source). The controller side of `firewall` writes one when `learned_listeners` is true and a consumed `firewall.allow_back` event carries a scored port or scorer-like sender (Task 14).
 10. **Controller-scope rule evaluation is `detect`'s (W4).** `internal/controller/capture_ingest.go` is that evaluator; W6 only deletes the `net.flow` translation from it (capture emits `conn` itself) and moves rule content `D13e` and `D18b` to `rules/capture/` once W4 has moved `rules/network.yml` (Task 28 is ordered after W4's move).
-11. **`plans/egress/patch_window.yaml` is deferred.** It needs the `expires_after` node option (design: Expiry), which no workstream owns. Task 19 writes the template and its test with `t.Skip("needs expires_after (core, unowned)")`.
+11. **`plans/egress/patch_window.yaml` uses W1's `expires_after` node option** (Task 22a: `expires_after: 30m` in a template; the dead-man machinery with the confirm turned off), so Task 19 writes the template and a real test.
 12. **`D4c`, the `D13c` jitter operator and the retirement of the learned `egress.exes` profile are W4's** (the design assigns `rules/detect/egress.yml` to `detect`). W6 renders the seeded profile `egress.allow` (Task 17) and ships `rules/egress/beacon.yml` only when W4 has the operator (Task 18 note).
-13. **Per-device vault names cannot be listed in a module block**, so `Host.Secrets` cannot serve `devices`. `devices.Module` receives its directory through `Attach(dir Directory)`, called from `cmd/phylax/serve.go` with the same `*controller.Directory` the executor uses (`controller.Options.Backends["devices"]`). `shortcut: the device Directory stays in internal/controller until W11 splits the Splunk half out of it, then it moves into internal/devices`.
+13. **Per-device vault keys are served by W1's prefix grants** (Task 9a, 17a: a module block that names `cred/*` lets `Host.Secrets("cred/*")` read `cred/<device>/<account>`). `devices.Module` still receives its directory through `Attach(dir Directory)`, called from `cmd/phylax/serve.go` with the same `*controller.Directory` the executor uses (`controller.Options.Backends["devices"]`), because the pooled adapters are shared with the executor. `shortcut: the device Directory stays in internal/controller until W11 splits the Splunk half out of it, then it moves into internal/devices`.
 14. **`Directory.ScoredServices(ctx, device)`** supplies the probe list for a device commit: every scored service name in the manifest (a Palo is on every scored path).
 
 ## Global Constraints
@@ -53,7 +53,7 @@
 
 | Path | Responsibility | Task |
 | --- | --- | --- |
-| `internal/actions/{registry,env,win_env}.go` | `RegisterFamily`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext`; no module imports | 1, 2, 3 |
+| `internal/actions/{registry,env,win_env}.go` | `Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext` (W1 Task 2a); no module imports | W1 2a, 2, 3 |
 | `internal/firewall/events.go`, `manifest.go`, `config.go`, `module.go` | event payloads, manifest, config block, agent module | 1, 12 |
 | `internal/firewall/actions.go`, `actions_apply.go`, `actions_win.go` | `fw.*`, `firewall.allow`, `win.firewall` | 2, 9, 10 |
 | `internal/firewall/{verdict,conntrack_linux}.go` | verdict function, conntrack flush | 8 |
@@ -79,26 +79,20 @@ Done by a stronger model. Writes the package moves, exported hooks, kind declara
 
 **Files:**
 - Move (`git mv`, delete old paths, update every import): `internal/devices/{devices,runner,diff}.go` and `runner_test.go` → `internal/devices/adapter/` (package `adapter`); `palo` and `vyos` import `internal/devices/adapter`.
-- Create: `internal/firewall/{events,manifest,config,module,controller}.go`, `internal/egress/{events,manifest,config,module}.go`, `internal/capture/{kinds,manifest,config,controller}.go`, `internal/devices/{events,manifest,config,module}.go`, `internal/store/storetest/storetest.go`, skipped test files named in later tasks.
-- Modify: `internal/actions/{registry.go,win_env.go,env.go,linux_env.go}` (exports above; the `registerExtra` and `registerUndo` callers keep working through the new names), `internal/module/host.go` (`Manifest()`, `freeze_capture`), `internal/plan/agentconfig.go` (`Modules.Firewall`, `Modules.Capture`), `internal/plan/control.go`, `internal/link/message.go` (`ProtoMinor`), `internal/module/all/all.go` (blank imports `firewall`, `egress`, `capture`, `devices`), `internal/module/conformance/allowed.go` (`ModulePackages`: the four; `PreContract`: add the four names, each deleted by its retrofit task), `phylax_design.md`.
+- Create: `internal/firewall/{events,manifest,config,module,controller}.go`, `internal/egress/{events,manifest,config,module}.go`, `internal/capture/{kinds,manifest,config,controller}.go`, `internal/devices/{events,manifest,config,module}.go`, skipped test files named in later tasks (`storetest.New` is W1 Task 8a).
+- Modify: `internal/actions/{win_env.go,linux_env.go}` (delete `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`), `internal/module/host.go` (`freeze_capture`; `Manifest()` is W1's), `internal/plan/agentconfig.go` (`Modules.Firewall`, `Modules.Capture`), `internal/plan/control.go`, `internal/link/message.go` (`ProtoMinor`), `internal/module/all/all.go` (blank imports `firewall`, `egress`, `capture`, `devices`), `internal/module/conformance/allowed.go` (`ModulePackages`: the four; `PreContract`: add the four names, each deleted by its retrofit task), `phylax_design.md`.
 - Test: `internal/actions/imports_test.go` (written in Task 3).
 
 **Interfaces:**
-- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Common`, `module.ControllerModule`, `module.Register`, `agent.Factory`, `plan.ModuleLimits`, `plan.BlockFor`.
+- Consumes: W1's `event.Declare`, `event.Type`, `module.Manifest`, `module.Common`, `module.ControllerModule`, `module.Register`, `module.Host.Manifest`, `agent.Factory`, `plan.ModuleLimits`, `plan.BlockFor`, `actions.Register`, `actions.RegisterUndo`, `actions.Unsupported`, `Env.Now`, `Env.Ext`, `storetest.New`.
 - Produces (exact):
 
 ```go
-// ---- internal/actions (core) ----
-func RegisterFamily(f func() []Action)
-func RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) // panics on a duplicate kind
-func Unsupported(what string) error                                                           // wraps ErrUnsupported
-func (e *Env) Now() time.Time
-// Env gains: Ext map[string]any // module backends keyed by module name ("firewall", "devices"); nil map reads as absent
+// ---- internal/actions (core): W1 Task 2a's, consumed here ----
+// Register(f func() []Action), RegisterUndo(kind, fn) (panics on a duplicate kind), Unsupported(what) error, (*Env).Now() time.Time, Env.Ext map[string]any
 
 // ---- internal/module/host.go ----
-// Host gains:
-//   Manifest() *manifest.Manifest // the loaded manifest; never nil on a running controller
-// Control accepts ControlMsg{Type: "freeze_capture", Hosts: [...], Data: {"rule": string, "alert_time": RFC 3339, "addrs": []string}}
+// Host.Manifest() is W1 Task 17a's. Control accepts ControlMsg{Type: "freeze_capture", Hosts: [...], Data: {"rule": string, "alert_time": RFC 3339, "addrs": []string}}
 // from module "capture" only; any other Type besides "fact" is ErrNotInScope.
 
 // ---- internal/plan ----
@@ -149,10 +143,7 @@ const (
 	DefaultDenyLogGroup uint16 = 100; DefaultShadowLogGroup uint16 = 101
 )
 
-// ---- internal/store/storetest ----
-// New opens a temporary store, groups evs by Agent, assigns seq 1..n, seals each chain with the event package's
-// sealing helper, ingests them and returns the store (closed by t.Cleanup). A *store.Store satisfies store.Reader.
-func New(t *testing.T, evs ...event.Event) *store.Store
+// ---- internal/store/storetest: storetest.New(t, evs...) is W1 Task 8a's, consumed here ----
 
 // ---- kinds (Declare in init; Schema 1; priority and alert per the design's kind table) ----
 // firewall: firewall.applied (high), firewall.drift (high), firewall.restored (high), firewall.allow_back (critical, Alert true),
@@ -210,9 +201,9 @@ type SuggestBlockEvent struct {
 Manifests are the design's part 3 of each module, verbatim (Budget numbers, `Default`, `Tables`, `Content`, `Actions`, `Pages`, `Evidence`), with `Emits` the kinds above and `Consumes` as the design lists. Config structs are the design's part 4 (`firewall.Config` and `devices.Config` as written; `egress.Config` as written; `capture.Config` with the YAML keys of part 4), each embedding `module.Common` inline. Module types: `firewall.Controller` (controller side, `module.Register` in `init`; agent side is the factory of Task 12), `egress.Module`, `capture.Controller`, `devices.Module` with `Attach(dir Directory)`; all with stub bodies returning an `unavailable` health with the gap `{"module", "not built (W6 Task N)"}`.
 
 - [ ] **Step 1: Move `internal/devices` types** to `internal/devices/adapter`; run `go build ./... && GOOS=windows go build ./...`. Expected: builds.
-- [ ] **Step 2: Add the `actions` hooks, `Host.Manifest`, `freeze_capture`, the settings structs and constants** exactly as above. `Unsupported` and `RegisterUndo` replace the unexported helpers everywhere (rename, no alias). `ProtoMinor` rises by 1 (write the new value in `plan/control.go`'s comment).
+- [ ] **Step 2: Add `freeze_capture`, the settings structs and constants** exactly as above (the `actions` hooks and `Host.Manifest` already exist from W1). `ProtoMinor` rises by 1 (write the new value in `plan/control.go`'s comment).
 - [ ] **Step 3: Declare the kinds, write payloads, manifests, config structs and stub modules;** add the four names to `PreContract` and `ModulePackages`; blank-import the four packages in `module/all`.
-- [ ] **Step 4: Write `storetest.New`** and its own test (`TestNewSeedsReadableChain`: two events for agent `h1` come back from `Events(ctx, store.Query{Agent: "h1"})` with `Seq` 1 and 2).
+- [ ] **Step 4: Confirm `storetest.New`** (W1 Task 8a) seeds a chain the module tests below can read: write one smoke test in `internal/firewall` that seeds two `net.shadow_drop` events and reads them back.
 - [ ] **Step 5: Write every skipped test file named in Tasks 2 to 35** with the tests of each task's Step 1, first statement `t.Skip("unimplemented: W6 Task N")`.
 - [ ] **Step 6: Apply the 14 deviations to `phylax_design.md`** (module sections, Appendix D, the control table, Known bug text unchanged).
 - [ ] **Step 7: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W6 Task'` equals the number of skipped tests written in Step 5.
@@ -235,7 +226,7 @@ Open as its own pull request into `v3-redesign`; merge after review.
 - Test: `internal/firewall/actions_test.go`
 
 **Interfaces:**
-- Consumes: Task 1 hooks (`actions.RegisterFamily`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext`), `actions.LockFirewall`, the existing `firewall.LinuxManager`, `WinManager`, `WinBackend`.
+- Consumes: W1 Task 2a hooks (`actions.Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext`), `actions.LockFirewall`, the existing `firewall.LinuxManager`, `WinManager`, `WinBackend`.
 - Produces:
 
 ```go
@@ -269,7 +260,7 @@ func TestRegisteredFromPackage(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Allow|WinFirewall|Registered' -v`. Expected: FAIL (compile errors, then the registration missing).
-- [ ] **Step 3: Move the files and fix the references** with the Task 1 hooks (`registerUndo` → `actions.RegisterUndo`, `env.now()` → `env.Now()`, `unsupported(...)` → `actions.Unsupported(...)`, `pkgNameRe` → a local `regexp` of the same pattern, `env.lx().Firewall` and `env.Win.Firewall` → `BackendFor(env)` / `env.Ext["firewall.win"]`). `init` calls `actions.RegisterFamily(familyActions)`.
+- [ ] **Step 3: Move the files and fix the references** with the W1 Task 2a hooks (`registerUndo` → `actions.RegisterUndo`, `env.now()` → `env.Now()`, `unsupported(...)` → `actions.Unsupported(...)`, `pkgNameRe` → a local `regexp` of the same pattern, `env.lx().Firewall` and `env.Win.Firewall` → `BackendFor(env)` / `env.Ext["firewall.win"]`). `init` calls `actions.Register(familyActions)`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/ ./internal/actions/ && GOOS=windows go vet ./internal/firewall/ ./internal/actions/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "firewall: own firewall.allow and win.firewall; actions no longer import firewall"`
 
@@ -325,7 +316,7 @@ func TestActionsImportNoModule(t *testing.T) {
 W11 appends `internal/wazuh` to the list. The moved tests keep their assertions (`palo.permitted_ips` refuses a permit-all entry, `palo.apply` needs console ack, `vyos.apply` rolls back on a failed health check).
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ -run ImportNoModule -v && go test ./internal/devices/ -run 'Palo|Vyos|Dev' -v`. Expected: FAIL (the import still exists; compile errors in the moved tests).
-- [ ] **Step 3: Move and rewire.** `devParam`, `devBase`, `txOpts` etc. go with the file. The controller executor builds `Ext` once per node Env. `init` in `internal/devices` calls `actions.RegisterFamily`.
+- [ ] **Step 3: Move and rewire.** `devParam`, `devBase`, `txOpts` etc. go with the file. The controller executor builds `Ext` once per node Env. `init` in `internal/devices` calls `actions.Register`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/ ./internal/devices/... ./internal/controller/ && GOOS=windows go vet ./...`. Expected: PASS (the existing `devexec_test.go` passes unchanged except its Env assertions).
 - [ ] **Step 5: Commit.** `git commit -am "devices: own the device actions; actions imports no module"`
 
@@ -1014,14 +1005,15 @@ func TestOutboundUndeclaredProposesEdge(t *testing.T) { /* module run with a fak
 func TestNoSourceRestrictionOnScoredPort(t *testing.T) { /* no proposal whose params restrict a scored port */ }
 func TestInboundUndeclaredNoProposalWithoutListener(t *testing.T) {}
 func TestShadowSummaryTableIsProjection(t *testing.T) { /* delete the table rows, replay the module's events through the writer -> same rows */ }
+func TestLearnedListenerWrittenToOverrides(t *testing.T) { /* config learned_listeners true; a consumed firewall.allow_back (reason scored_port, host h1, port 8081/tcp) calls Host.UpdateOverrides once: Manifest().Overrides.LearnedListeners holds {h1, tcp, 8081}; the same event replayed adds no second entry; learned_listeners false writes nothing */ }
 func TestAllowBackEventProposesManifestFix(t *testing.T) { /* a firewall.allow_back event consumed by the controller side yields one Proposal with the Proposal text as Reason */ }
 func TestFirewallControllerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Seed: shadowFixture(), Now: fixtureNow})
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/firewall/ -run 'Summarize|Coverage|Proposes|NoSource|Projection|ControllerConformance' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `Consumes` also lists the module's own `firewall.allow_back` and `firewall.shadow_summary` (declared table kinds; the writer reads them).
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/firewall/ -run 'Summarize|Coverage|Proposes|NoSource|Projection|LearnedListener|ControllerConformance' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `Consumes` also lists the module's own `firewall.allow_back` and `firewall.shadow_summary` (declared table kinds; the writer reads them). When `Config.LearnedListeners` is true, an `allow_back` event with a rule added appends a `manifest.LearnedListener{Host, Proto, Port, Reason, Observed}` through `Host.UpdateOverrides` (skipped when an entry with the same host, proto and port exists; W1 Tasks 11a and 17a).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "firewall: controller side with would-drop summarizer and proposals"`
 
@@ -1284,7 +1276,7 @@ func (m *Module) suggest(ctx context.Context, h module.Host, alert event.Event) 
 func destinationBlockable(man *manifest.Manifest, host, addr string, port uint16) error // refuses a destination that is a declared dependency of a scored service on host
 // plans/egress/block_destination.yaml: fw.apply op block destinations ${addr} reason ${reason} owner ${owner} (click class)
 // plans/egress/kill_executable.yaml: proc.kill_tree then file.quarantine (tier 2, click class)
-// plans/egress/patch_window.yaml: written, tested with t.Skip("needs expires_after (core, unowned)")
+// plans/egress/patch_window.yaml: one fw.apply node (op: allow, the depot-miss destination) with `expires_after: 30m`; class click
 ```
 
 - [ ] **Step 1: Write the failing tests.**
@@ -1310,7 +1302,7 @@ func TestDestinationBlockRefusedForDependency(t *testing.T) {
 }
 func TestSuggestEmitsEvents(t *testing.T) { /* two egress.suggest_block events: What destination and kill_process, ProposalID set, Evidence refs the alert */ }
 func TestEgressPlanTemplates(t *testing.T) { /* block_destination parses, module: egress, node fw.apply with op block; kill_executable nodes proc.kill_tree and file.quarantine, risk destructive so click-only */ }
-func TestPatchWindowTemplate(t *testing.T) { t.Skip("needs expires_after (core, unowned)") }
+func TestPatchWindowTemplate(t *testing.T) { /* LoadModuleTemplate(plansRoot, "egress", "patch_window") with params {host, destination}: the fw.apply node has ExpiresAfterSec 1800 and module "egress"; plan.Validate passes against the core catalog */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/egress/ ./plans/egress/ -v`. Expected: FAIL.

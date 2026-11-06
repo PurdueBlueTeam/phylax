@@ -17,7 +17,7 @@
 3. **Two rules want the id `D10.audit-rules-changed`.** The corpus rule on the `audit.rules_changed` event (tier 0, no recipe: the `audit` module repairs its own rules) is renamed `D10.audit-rules-event`; the id `D10.audit-rules-changed` goes to the controller-scope rule on `agent.health` the design names.
 4. **An alert needs an id before it is sealed.** `evidence.blob` references the alert, the spool assigns `seq` later. `detect.alert` gains `id` (16 hex characters, `sha256(agent|rule|time_ns)`), set by the engine.
 5. **`evidence.blob` (W1 Task 5) lacks `collector`, `truncated`, `error`.** Task 1 adds them. Chunk upload of the blob (Wire protocol: file-chunk transfer) is W11's `fetch`/chunk work (Known bug 4); until then the item stays under `StateDir/evidence/<alert id>/` and `evidence.blob` announces it with `chunks: 0` (`shortcut: blobs are announced but not uploaded, upgrade when W11's chunk transfer merges`). The two controller-side collectors (`transactions_window_10m`, `trace_back`) and the controller's `freeze_capture` (Known bug 7, W6) are not built here; the loader accepts the names.
-6. **`overrides.yml` has no `rule_modes`, `exceptions` or reset record, and nothing writes it.** Task 9 adds `Overrides.RuleModes`, `Overrides.Exceptions`, `Overrides.RespondResetEpoch` and `manifest.AppendOverrides(dir, fn)` (atomic read-modify-write; comments in the file are not preserved, `shortcut`). The Alerts page's "silence" button (a UI-shell item) calls it; W4 builds no button.
+6. **`overrides.yml` has no `rule_modes`, `exceptions` or reset record, and nothing writes it.** Task 9 adds `Overrides.RuleModes`, `Overrides.Exceptions` and `Overrides.RespondResetEpoch` with their validation; the writer `manifest.AppendOverrides(dir, fn)` (atomic read-modify-write; comments in the file are not preserved, `shortcut`) is W1 Task 11a's, and a controller module reaches it as `Host.UpdateOverrides` (W1 Task 17a). The Alerts page's "silence" button (a UI-shell item) calls it; W4 builds no button.
 7. **`respond.breaker` has no `rule`, and `respond` has no controller consumers for it.** The auto-demotion rule (a promoted rule that opens a breaker twice) needs the rule id. `respond.breaker` gains `rule`; the controller side of `respond` consumes `detect.alert`, `respond.action` and `respond.breaker` (the kind table's consumer column is updated). "Twice" counts breakers for the rule since its promotion record's `added` time (24 h when the mode came from the rule file).
 8. **Re-enabling a breaker needs a signed path to the agent.** The five fact subtypes do not fit. `Overrides.RespondResetEpoch` is folded into `RespondSettings.ResetEpoch`; the agent clears all breaker and loop state when the epoch in the signed config exceeds the one it kept. The UI's "re-enable" button bumps the epoch with `AppendOverrides` and pushes the config.
 9. **The design YAML for `respond` and `content_guard` does not map 1:1 onto the Go settings** (`breaker_window: 2m` against `BreakerWindowSec`; `services: {ecom-http: alert}` against `[]GuardService`). Each module gets a `Config` struct that is the block's YAML (the design YAML, unchanged) and the controller converts it into `plan.RespondSettings` / `plan.ContentGuardSettings`.
@@ -636,12 +636,13 @@ func TestModuleEmitsSuppressedOnTick(t *testing.T) { /* harness: flood a rate:3 
 
 ---
 
-### Task 9: `jitter` and mode promotion (`rule_modes`, `AppendOverrides`)
+### Task 9: `jitter` and mode promotion (`rule_modes`)
 
 **Files:**
-- Create: `internal/detect/jitter.go`, `internal/detect/modes.go`, `internal/manifest/overrides_write.go`
+- Create: `internal/detect/jitter.go`, `internal/detect/modes.go`
 - Modify: `internal/detect/rule.go` (`whenDoc.Jitter`), `internal/detect/engine.go` (`Options.RuleModes`), `internal/detect/module.go` (convert `plan.RuleMode`)
-- Test: `internal/detect/jitter_test.go`, `internal/detect/modes_test.go`, `internal/manifest/overrides_write_test.go`
+- Modify: `internal/manifest/types.go` (`Overrides.RuleModes`, `RuleMode`) and `validate.go` (a `rule_modes` entry needs `reason`, `owner`, `added`; `mode` is `act` or `alert`)
+- Test: `internal/detect/jitter_test.go`, `internal/detect/modes_test.go`, `internal/manifest/rulemodes_test.go`
 
 **Interfaces:**
 - Produces:
@@ -654,11 +655,10 @@ func TestModuleEmitsSuppressedOnTick(t *testing.T) { /* harness: flood a rate:3 
 // Options gains: RuleModes map[string]string // rule id -> "act" | "alert"; applied after AlertOnly: AlertOnly wins
 func (e *Engine) Mode(ruleID string) string // effective mode of a rule ("" for an unknown rule)
 
-// internal/manifest/overrides_write.go
-func AppendOverrides(dir string, fn func(*Overrides) error) error // reads dir/overrides.yml (absent: empty), applies fn, validates, writes atomically (internal/atomicfile), mode 0600 kept
+// manifest.AppendOverrides(dir, fn) is W1 Task 11a's (reads dir/overrides.yml, applies fn, validates, writes atomically, mode 0600 kept)
 ```
 
-Rules for modes: `Alert.Mode` is `Options.RuleModes[rule]` when present, else the rule's `Mode`; then forced to `alert` when `AlertOnly`. A `rule_modes` entry needs `reason`, `owner`, `added` (checked by `AppendOverrides`' validate, not by the engine). `shortcut: AppendOverrides rewrites the file from the struct, so comments in overrides.yml are lost; upgrade to a yaml.Node round trip if operators hand-edit it`.
+Rules for modes: `Alert.Mode` is `Options.RuleModes[rule]` when present, else the rule's `Mode`; then forced to `alert` when `AlertOnly`. A `rule_modes` entry needs `reason`, `owner`, `added` (checked by the manifest validate that `AppendOverrides` runs, not by the engine).
 
 - [ ] **Step 1: Write the tests:**
 
@@ -682,7 +682,7 @@ func TestRuleModesOverride(t *testing.T) {
 	if al[0].Mode != "act" { t.Fatal(al[0].Mode) }
 }
 func TestDemotionTakesEffect(t *testing.T) { /* same rule act in file, RuleModes {R: alert}: alert */ }
-func TestAppendOverridesAtomicAndValidated(t *testing.T) {
+func TestRuleModesValidatedOnAppend(t *testing.T) { // uses W1's AppendOverrides
 	dir := t.TempDir()
 	err := AppendOverrides(dir, func(o *Overrides) error { o.RuleModes = append(o.RuleModes, RuleMode{Rule: "D1.x", Mode: "act", Reason: "lab clean", Owner: "lead", Added: "2027-02-06"}); return nil })
 	if err != nil { t.Fatal(err) }
@@ -691,10 +691,10 @@ func TestAppendOverridesAtomicAndValidated(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/detect/ ./internal/manifest/ -run 'Jitter|RuleModes|Demotion|AppendOverrides' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/detect/ ./internal/manifest/ -run 'Jitter|RuleModes|Demotion' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/detect/ ./internal/manifest/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "detect: jitter, rule mode overrides; manifest: AppendOverrides"`
+- [ ] **Step 5: Commit.** `git commit -am "detect: jitter, rule mode overrides"`
 
 ---
 
@@ -1909,7 +1909,7 @@ func TestReenableActionPostOnly(t *testing.T) { /* GET -> 405; POST -> Reenable 
 - Test: `internal/content_guard/golden_test.go`, `internal/content_guard/actions_test.go`, `internal/manifest/guard_test.go`
 
 **Interfaces:**
-- Consumes: `internal/atomicfile`, `actions.RegisterExtra(func() []actions.Action)` (W3), `actions.TagFrom`, `plan.ContentGuardSettings`.
+- Consumes: `internal/atomicfile`, `actions.Register(func() []actions.Action)` (W1 Task 2a), `actions.TagFrom`, `plan.ContentGuardSettings`.
 - Produces (package `contentguard`):
 
 ```go

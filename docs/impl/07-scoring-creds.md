@@ -8,12 +8,12 @@
 
 **Tech Stack:** Go 1.27.2 (mise), standard library (`crypto/ecdh`, `crypto/hkdf`, `net/http/cookiejar`), `golang.org/x/crypto/ssh`, `gopkg.in/yaml.v3`, `modernc.org/sqlite` (module tables), `filippo.io/age` (vault, already used). No new modules in `go.mod`.
 
-**Spec:** `phylax_design.md` (v4): "The module contract" and "Event kinds"; module sections "Scoring and credentials" (`checks` 5331, `scorer` 5591, `vantage` 5805, `creds` 5987); core "Execution engine" (the scoring-safety lint and its three sanctioned exceptions, lint registration, the scorer-mimic probe, plan and node options `window`, `gate: manual`, `txn`, controller executor, session eviction), "Wire protocol" (fact subtypes `round_clock`, `scorer_probe_result`, `creds_txn`; sealed secrets), "Local accounts"; Appendix F (PCR list rules) and G (fingerprint table); Test matrix T14, T15, T30, T35, T37, T39, T49, T50, T51 (and T16, T48, T66 as consumers); Known bug 20 (probe half). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1) Interfaces blocks; `docs/impl/03-telemetry.md` (W3) for `auth_event`, `net.canary_result`, `inventory.probe_result`, `actions.RegisterExtra`; `docs/impl/05-integrity-hunting.md` (W5) for `hunt.finding`. The `capture.flow` and `capture.txn` kinds come from W6's seams (`internal/capture/kinds.go`); this plan names them only through the README dependency row.
+**Spec:** `phylax_design.md` (v4): "The module contract" and "Event kinds"; module sections "Scoring and credentials" (`checks` 5331, `scorer` 5591, `vantage` 5805, `creds` 5987); core "Execution engine" (the scoring-safety lint and its three sanctioned exceptions, lint registration, the scorer-mimic probe, plan and node options `window`, `gate: manual`, `txn`, controller executor, session eviction), "Wire protocol" (fact subtypes `round_clock`, `scorer_probe_result`, `creds_txn`; sealed secrets), "Local accounts"; Appendix F (PCR list rules) and G (fingerprint table); Test matrix T14, T15, T30, T35, T37, T39, T49, T50, T51 (and T16, T48, T66 as consumers); Known bug 20 (probe half). Master plan: `docs/impl/README.md`. Contract names: `docs/impl/01-module-contract.md` (W1) Interfaces blocks; `docs/impl/03-telemetry.md` (W3) for `auth_event`, `net.canary_result`, `inventory.probe_result`, `actions.Register`; `docs/impl/05-integrity-hunting.md` (W5) for `hunt.finding`. The `capture.flow` and `capture.txn` kinds come from W6's seams (`internal/capture/kinds.go`); this plan names them only through the README dependency row.
 
 ## Design gaps and decisions (Task 1 writes each into `phylax_design.md` in the same commit)
 
 1. **Table names must start with the module name.** W1's `ModuleDB.Migrate` refuses a table that does not start with `<module>_`. Renames: `checks` to `checks_check`, `check_results` to `checks_result`; `credentials` to `creds_account`, `cred_credlist` to `creds_credlist`, `pcr_txn` to `creds_txn`, `pcr_row` to `creds_row`. `scorer_*` and `vantage_*` keep the design's names. The core migrations drop `checks`, `check_results` and `credentials` (Task 30); nothing is deployed, so there is no data migration.
-2. **Plan node options `window: scorer_quiet`, `gate: manual` and `txn:` are specified in the core but built by nobody.** W1 builds approval classes, not these options; the agent never sets `actions.Request.PCR`, so the scoring guard's PCR exception is unreachable. W7 builds them (Tasks 3 and 4). `hardening` (W5) and `backup` (W10) also use `window:`; they depend on Task 2.
+2. **Plan node options `window: scorer_quiet`, `gate: manual` and `txn:` are specified in the core but built by nobody.** W1 builds approval classes, not these options; the agent never sets `actions.Request.PCR`, so the scoring guard's PCR exception is unreachable. W7 builds them (Tasks 3 and 4); W1 builds the two other core plan options (`expires_after` Task 22a, `gate: auto` Task 27a) and the template key translator `translateNodeKeys` in `internal/controller/plantemplates.go` that Tasks 3 and 4 extend (`max_hold: 120s` to `max_hold_sec`, `gate: manual` to a gate node whose `ask`/`reply`/`choices` this plan validates). `hardening` (W5) and `backup` (W10) also use `window:`; they depend on Tasks 2 to 7 here.
 3. **A controller module cannot see an agent-run step's outcome or output.** W1's `agent.step_result` is emitted for controller-side actions only. The doctor needs collected output and `creds` needs to know a host change finished. Task 5 emits `agent.step_result` for every step result and adds optional `output` and `reply` fields to `event.AgentStepResult`.
 4. **No secret write path for modules, and `stepSecrets` serves honeytokens only.** `creds` must store a pending password and ship it to `user.set_password` and `pcr.verify`. Task 6 adds `vault.Writer` and widens `stepSecrets` to plans with `Module == "creds"` and a node `txn`, for the vault prefix `pcr/` only. `shortcut: write access is granted to the module named creds in moduleHost.Secrets, upgrade to a manifest field when a second module writes secrets.`
 5. **"Sealed to the host's enrolled key" has no implementation.** Agents have a P-256 identity (`internal/link/identity.go`) and the controller stores it in `agents.pubkey`. Task 7 adds `link.SealSecret` and `(*link.Identity).OpenSecret` (ECIES: P-256 ECDH, HKDF-SHA256, AES-256-GCM, the agent id as associated data) and `agent.Env.OpenSealed`; the controller seals with the public key it stores in `agents.pubkey`.
@@ -90,7 +90,7 @@ Done by a stronger model. Extracts the probe library, moves the PCR engine, decl
 - Create: every test file named in Tasks 2 to 47 with each test body as given in its Step 1 and `t.Skip("unimplemented: W7 Task N")` as the first statement; helpers they share
 
 **Interfaces:**
-- Consumes: W1 Tasks 1 to 5 names (`event.Declare`, `event.New`, `event.Type`, `module.Manifest`, `module.Common`, `module.Health`, `module.ControllerModule`, `module.Host`, `agent.Factory`, `plan.ModuleLimits`, `conformance.PreContract`); W3 `actions.RegisterExtra`; W6 seams' `capture.flow` and `capture.txn` kind names.
+- Consumes: W1 Tasks 1 to 5 names (`event.Declare`, `event.New`, `event.Type`, `module.Manifest`, `module.Common`, `module.Health`, `module.ControllerModule`, `module.Host`, `agent.Factory`, `plan.ModuleLimits`, `conformance.PreContract`); W3 `actions.Register`; W6 seams' `capture.flow` and `capture.txn` kind names.
 - Produces (exact; later tasks and other workstreams use these):
 
 ```go
@@ -1602,11 +1602,11 @@ func TestDangerousListLoads(t *testing.T) { /* rules/vantage/dangerous_ports.yml
 
 **Files:**
 - Create: `internal/vantage/rdpauth.go`
-- Modify: `internal/vantage/verify.go`, `internal/vantage/module.go` (action registration through `actions.RegisterExtra`)
+- Modify: `internal/vantage/verify.go`, `internal/vantage/module.go` (action registration through `actions.Register`)
 - Test: `internal/vantage/verify_test.go`, `internal/vantage/rdpauth_test.go`
 
 **Interfaces:**
-- Consumes: `actions.RegisterExtra` (W3), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
+- Consumes: `actions.Register` (W1 Task 2a), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
 - Produces:
 
 ```go
@@ -1646,7 +1646,7 @@ func TestRDPAuthPasswordOnStdin(t *testing.T) {
 - Modify: `internal/vantage/module.go` (action `probe.zerologon_check`)
 
 **Interfaces:**
-- Consumes: `actions.RegisterExtra`, `probe.Allowlist`.
+- Consumes: `actions.Register`, `probe.Allowlist`.
 - Produces:
 
 ```go
