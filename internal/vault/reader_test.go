@@ -27,7 +27,6 @@ func TestScoped(t *testing.T) {
 }
 
 func TestScopedPrefixGrant(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 9a")
 	v, _ := newVault(t)
 	for _, n := range []string{"cred/palo1/phylax", "cred/vyos/phylax", "credx/a", "pcr/h1"} {
 		if _, err := v.Put(n, NewSecretString("x"), ""); err != nil {
@@ -49,7 +48,6 @@ func TestScopedPrefixGrant(t *testing.T) {
 }
 
 func TestCovers(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 9a")
 	g := []string{"cred/*", "notify.webhook"}
 	for name, want := range map[string]bool{"cred/h1/admin": true, "cred/": true, "cred": false, "credx/a": false, "notify.webhook": true, "notify.webhook2": false, "cred/*": true} {
 		if Covers(g, name) != want {
