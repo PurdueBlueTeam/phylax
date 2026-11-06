@@ -54,7 +54,7 @@ type Enroller struct {
 	releases map[string]*releaseFile
 
 	failMu sync.Mutex
-	fails  map[string][]time.Time
+	fails  map[string]failEntry
 
 	pending map[string]pendingAnnounce
 }
@@ -64,6 +64,12 @@ type Enroller struct {
 type pendingAnnounce struct {
 	pin link.Pin
 	res Result
+}
+
+// failEntry counts one address's failed token lookups since the window began.
+type failEntry struct {
+	n     int
+	since time.Time
 }
 
 // New opens the token and revocation files under o.DataDir.
@@ -88,7 +94,7 @@ func New(o Options) (*Enroller, error) {
 		return nil, err
 	}
 	e := &Enroller{opt: o, tokens: tokens, revoked: revoked, hostKeys: hostKeys,
-		releases: map[string]*releaseFile{}, fails: map[string][]time.Time{},
+		releases: map[string]*releaseFile{}, fails: map[string]failEntry{},
 		pending: map[string]pendingAnnounce{}}
 	// Hash the release files now; release() refreshes them when they move.
 	_, _, _ = e.release(OSLinux)
