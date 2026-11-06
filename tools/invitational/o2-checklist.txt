@@ -1,0 +1,10 @@
+console latency (keypress to echo)
+session timeout seen (minutes)
+simultaneous consoles per VM
+several viewers on one VM (y/n)
+resolution
+keys that do not map: | ~ \ ' "
+paste inside a VM works (y/n)
+file transfer to a VM (y/n)
+login time (seconds)
+typed line length that worked
