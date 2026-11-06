@@ -304,6 +304,19 @@ func TestEndToEnd(t *testing.T) {
 	agentDone.Add(1)
 	go func() { defer agentDone.Done(); a.run(ctx) }()
 
+	// drained reports whether the controller accepted everything the spool holds.
+	drained := func() bool {
+		head, _ := a.sp.Head()
+		ag, err := x.c.Store().Agent(context.Background(), "h1")
+		return err == nil && head > 0 && ag.LastSeq == head
+	}
+
+	// Phase 1b: wait for the flood to drain before phase 2 streams. The spool
+	// admits bulk events up to half its cap; while the unacked flood still fills
+	// that half, phase 2's bulk events are shed, so the count below depends on
+	// the drain, which is slow when GOMAXPROCS is 1.
+	waitFor(t, 40*time.Second, "the flood to drain", drained)
+
 	// Phase 2: stream mixed-priority events (batches overtake each other),
 	// killing the link several times, restarting the controller once.
 	const n = 6000
@@ -344,11 +357,7 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
-	waitFor(t, 40*time.Second, "store to catch up", func() bool {
-		head, _ := a.sp.Head()
-		ag, err := x.c.Store().Agent(context.Background(), "h1")
-		return err == nil && head > 0 && ag.LastSeq == head
-	})
+	waitFor(t, 40*time.Second, "store to catch up", drained)
 	cancel()
 	agentDone.Wait()
 	if a.conns.Load() < 8 {
