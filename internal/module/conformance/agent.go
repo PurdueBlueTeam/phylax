@@ -2,11 +2,15 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,7 +30,7 @@ type AgentCase struct {
 	Reconfig *plan.AgentConfig // a changed block (check 8)
 	KeepKey  string            // key the module stores with Env.Keep; "" when it keeps nothing
 	Load     []event.Event     // consumed events fed on the bus (checks 6 and 7)
-	Block    any               // pointer to a zero settings struct (check 9); nil: plan.BlockFor(Default, Factory.Name)
+	Block    any               // pointer to a zero settings struct (check 8); nil: plan.BlockFor(Default, Factory.Name)
 }
 
 // Agent runs the agent-side conformance checks.
@@ -61,6 +65,8 @@ func runAgentChecks(c AgentCase) map[string]error {
 		{"health", checkHealth},
 		{"declared_kinds", checkDeclaredKinds},
 		{"link_loss", checkLinkLoss},
+		{"reconfig", checkReconfig},
+		{"config_decode", checkConfigDecode},
 	}
 	errs := make(map[string]error, len(checks))
 	for _, ch := range checks {
@@ -82,9 +88,13 @@ func safeCheck(name string, c AgentCase, fn func(AgentCase) error) (err error) {
 // newHarness builds a real harness for one check, with a fresh state dir. The
 // returned cleanup removes the state dir.
 func newHarness(c AgentCase, emitErr func() error) (*agent.Harness, func(), error) {
+	return newHarnessFor(c.Factory, c.Default, emitErr)
+}
+
+func newHarnessFor(f agent.Factory, def *plan.AgentConfig, emitErr func() error) (*agent.Harness, func(), error) {
 	host := "h1"
-	if c.Default != nil && c.Default.Host != "" {
-		host = c.Default.Host
+	if def != nil && def.Host != "" {
+		host = def.Host
 	}
 	dir, err := os.MkdirTemp("", "phylax-conformance-*")
 	if err != nil {
@@ -93,7 +103,7 @@ func newHarness(c AgentCase, emitErr func() error) (*agent.Harness, func(), erro
 	h, err := agent.NewHarness(agent.HarnessOptions{
 		Host:      host,
 		StateDir:  dir,
-		Factories: []agent.Factory{c.Factory},
+		Factories: []agent.Factory{f},
 		EmitErr:   emitErr,
 	})
 	if err != nil {
@@ -349,4 +359,91 @@ func checkStopsCleanly(c AgentCase) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// checkReconfig is check 7: applying a changed block replaces the module, and
+// state kept with Env.Keep survives the replacement.
+func checkReconfig(c AgentCase) error {
+	if c.Reconfig == nil {
+		return nil
+	}
+	builds := new(atomic.Int32)
+	f := c.Factory
+	build := f.Build
+	f.Build = func(env agent.Env, cfg *plan.AgentConfig) (agent.ModuleSpec, error) {
+		builds.Add(1)
+		return build(env, cfg)
+	}
+	h, cleanup, err := newHarnessFor(f, c.Default, nil)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+	h.Apply(c.Default)
+	waitFor(h, c.Factory.Name, 5*time.Second, running)
+	time.Sleep(agentSettle)
+	h.Apply(c.Reconfig)
+	deadline := time.Now().Add(5 * time.Second)
+	for builds.Load() < 2 {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s: reconfiguration did not replace the module (built %d times)", c.Factory.Name, builds.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := waitFor(h, c.Factory.Name, 5*time.Second, running); !ok {
+		return fmt.Errorf("%s: replaced module did not reach ok", c.Factory.Name)
+	}
+	if c.KeepKey != "" && h.Kept(c.KeepKey) == nil {
+		return fmt.Errorf("%s: Keep(%q) is gone after reconfiguration", c.Factory.Name, c.KeepKey)
+	}
+	return nil
+}
+
+// checkConfigDecode is check 8: the module's agent-side block decodes the
+// generic enablement fields strictly and refuses an unknown key.
+func checkConfigDecode(c AgentCase) error {
+	var block any
+	if c.Block != nil {
+		block = c.Block
+	} else if b, ok := plan.BlockFor(c.Default, c.Factory.Name); ok {
+		block = b
+	}
+	if block == nil {
+		return nil // the module has no agent-side config block to check
+	}
+	t := reflect.TypeOf(block)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return fmt.Errorf("%s: block %T is not a struct", c.Factory.Name, block)
+	}
+	v := reflect.New(t)
+	if err := decodeStrict(v.Interface(), `{"enabled":true,"act_enabled":true}`); err != nil {
+		return fmt.Errorf("%s: block rejects the generic fields: %v", c.Factory.Name, err)
+	}
+	el := v.Elem()
+	enabled, act := el.FieldByName("Enabled"), el.FieldByName("ActEnabled")
+	if !enabled.IsValid() || !act.IsValid() || enabled.Kind() != reflect.Bool || act.Kind() != reflect.Bool {
+		return fmt.Errorf("%s: block %s carries no enabled and act_enabled fields", c.Factory.Name, t)
+	}
+	if !enabled.Bool() || !act.Bool() {
+		return fmt.Errorf("%s: block did not read enabled and act_enabled", c.Factory.Name)
+	}
+	if err := decodeStrict(reflect.New(t).Interface(), `{"x_unknown":1}`); err == nil {
+		return fmt.Errorf("%s: block accepts an unknown field", c.Factory.Name)
+	}
+	return nil
+}
+
+// decodeStrict decodes one JSON object into dst, refusing unknown fields. A
+// type with its own UnmarshalJSON (which DisallowUnknownFields cannot police)
+// is caught by checkConfigDecode's unknown-key probe.
+func decodeStrict(dst any, in string) error {
+	dec := json.NewDecoder(strings.NewReader(in))
+	dec.DisallowUnknownFields()
+	return dec.Decode(dst)
 }

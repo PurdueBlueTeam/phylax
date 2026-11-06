@@ -136,15 +136,38 @@ type anaFixture struct {
 
 func (a anaFixture) Analyzers() []module.Analyzer { return a.as }
 
+// randAnalyserCalls makes the fixture analyser's output change on every run,
+// the way an analyser reading the wall clock instead of its now argument would.
+var randAnalyserCalls int64
+
 func randomAnalyserModule() module.ControllerModule {
 	return anaFixture{ctlFixture{module.Manifest{Name: "rand", Sides: []module.Side{module.SideController}, Privilege: "none"}},
 		[]module.Analyzer{{Name: "rand", Every: time.Second, Run: func(context.Context, store.Reader, time.Time) ([]event.Event, error) {
-			return []event.Event{{Kind: "rand.x", Fields: map[string]any{"n": atomic.AddInt64(new(int64), 1)}}}, nil
+			return []event.Event{{Kind: "rand.x", Fields: map[string]any{"n": atomic.AddInt64(&randAnalyserCalls, 1)}}}, nil
 		}}}}
 }
 
+// strictCtlSettings is a controller block with the generic fields, decoded
+// with unknown keys refused.
+type strictCtlSettings struct {
+	module.Common `yaml:",inline"`
+	N             int `yaml:"n,omitempty" json:"n,omitempty"`
+}
+
+// looseCtlModule is Configurable but ignores the error Host.Config returns for
+// a bad block, so it keeps reporting ok: the fail-closed check must catch it.
+type looseCtlModule struct{ ctlFixture }
+
+func (looseCtlModule) ConfigBlock() any { return strictCtlSettings{} }
+func (looseCtlModule) Start(ctx context.Context, h module.Host) error {
+	var s strictCtlSettings
+	_ = h.Config(&s) // deliberately ignored
+	<-ctx.Done()
+	return nil
+}
+
 func ignoresConfigErrorModule() module.ControllerModule {
-	return ctlFixture{module.Manifest{Name: "loose", Sides: []module.Side{module.SideController}, Privilege: "none"}}
+	return looseCtlModule{ctlFixture{module.Manifest{Name: "loose", Sides: []module.Side{module.SideController}, Privilege: "none"}}}
 }
 
 func goodControllerModule() module.ControllerModule {
