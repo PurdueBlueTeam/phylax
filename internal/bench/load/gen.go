@@ -72,13 +72,13 @@ func (g *Gen) Start(ctx context.Context, emit agent.Emit) error {
 					return nil
 				}
 				seq := g.emitted.Add(1)
-				if err := emit(event.Event{
+				// A shed event is the spool's loss to report, not a generator
+				// crash: the supervisor counts it and the run keeps its rate.
+				_ = emit(event.Event{
 					Kind:     "bench.load",
 					Priority: event.Priority(class),
 					Fields:   map[string]any{"n": seq, "pad": strings.Repeat("x", g.Size)},
-				}); err != nil {
-					return err
-				}
+				})
 			}
 		}
 	}

@@ -11,6 +11,9 @@ import (
 // Proxy forwards TCP connections to one target and can cut every open
 // connection while refusing new ones, which models a network partition
 // without touching agent code.
+//
+// shortcut: no per-connection byte counters, upgrade if wire bytes per agent
+// are needed.
 type Proxy struct {
 	ln     net.Listener
 	target string
