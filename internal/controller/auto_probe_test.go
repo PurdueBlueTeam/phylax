@@ -3,11 +3,13 @@ package controller
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
@@ -143,6 +145,50 @@ func probeGroupCalls(t *testing.T, policy plan.FailurePolicy, deadman bool) int3
 		t.Fatal(err)
 	}
 	return calls.Load()
+}
+
+func TestAutoProbeGroupingFailsClosed(t *testing.T) {
+	for name, breakIt := range map[string]func(*Controller){
+		"manifest": func(c *Controller) { c.cfg.ManifestPath = filepath.Join(t.TempDir(), "missing") },
+		"action":   func(c *Controller) { c.reg = actions.NewRegistry() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var steps atomic.Int32
+			c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+			c.opt.OnStepSent = func(string, *link.Step) { steps.Add(1) }
+			p := plan.Plan{ID: "auto-probe-" + name, OnFailure: plan.RollbackPlan, Class: plan.ClassAuto,
+				Module: "ctltest", Template: "t1", Nodes: []plan.Node{{
+					ID: "a", Action: "file.write", Target: "h1", Risk: plan.RiskService,
+					Params: map[string]any{"path": "/tmp/phylax-probe-fail", "content": "x"},
+				}}}
+			if err := c.CreatePlan(ctx, p, "driver"); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.approveNow(ctx, p.ID, "driver"); err != nil {
+				t.Fatal(err)
+			}
+			breakIt(c)
+			if err := c.Apply(ctx, p.ID); err != nil {
+				t.Fatal(err)
+			}
+			wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if _, err := c.Wait(wctx, p.ID); err != nil {
+				d, _ := c.PlanDetail(p.ID)
+				t.Fatalf("%v %+v", err, d)
+			}
+			d, err := c.PlanDetail(p.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.State != PlanFailed || d.Nodes["a"].State != plan.StateFailed {
+				t.Fatalf("plan %s node %+v", d.State, d.Nodes["a"])
+			}
+			if n := steps.Load(); n != 0 {
+				t.Fatalf("%d steps ran after probe grouping failed", n)
+			}
+		})
+	}
 }
 
 func TestOneProbePerGroupAndPhase(t *testing.T) {

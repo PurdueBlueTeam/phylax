@@ -270,6 +270,25 @@ func (r *Run) PassGate(id string, a Approval) error {
 	return nil
 }
 
+// FailUnstarted fails a node that has not applied anything (a controller-side
+// refusal before dispatch). Unlike Fail it accepts approved and pending nodes.
+func (r *Run) FailUnstarted(id, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.node(id); !ok {
+		return fmt.Errorf("plan: unknown node %q", id)
+	}
+	switch r.state[id] {
+	case StatePending, StateApproved, StateRunning:
+	default:
+		return fmt.Errorf("%w: %s %s -> failed", ErrTransition, id, r.state[id])
+	}
+	r.state[id] = StateFailed
+	r.reason[id] = reason
+	r.applyPolicy(id)
+	return nil
+}
+
 // FailGate fails a gate: auto node without a state transition through running.
 func (r *Run) FailGate(id, reason string) error {
 	r.mu.Lock()

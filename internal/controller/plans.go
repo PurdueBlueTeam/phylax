@@ -1226,6 +1226,11 @@ func (rt *planRT) initProbesLocked() {
 	rt.probes = &probePlan{of: map[string]int{}}
 	man, err := rt.c.currentManifest()
 	if err != nil || man == nil {
+		why := "no manifest"
+		if err != nil {
+			why = err.Error()
+		}
+		rt.probeGroupingFailedLocked("probe grouping: " + why)
 		return
 	}
 	scored := map[string][]string{}
@@ -1236,11 +1241,13 @@ func (rt *planRT) initProbesLocked() {
 		}
 		a, err := rt.c.reg.Get(n.Action)
 		if err != nil {
-			continue
+			rt.probeGroupingFailedLocked("probe grouping: node " + n.ID + ": " + err.Error())
+			return
 		}
 		params, err := a.Spec().Validate(n.Params)
 		if err != nil {
-			continue
+			rt.probeGroupingFailedLocked("probe grouping: node " + n.ID + ": " + err.Error())
+			return
 		}
 		if svc := plan.ScoredTouch(man, n, a.Touches(params)); len(svc) > 0 {
 			scored[n.ID] = svc
@@ -1258,6 +1265,44 @@ func (rt *planRT) initProbesLocked() {
 			rt.probes.of[id] = i
 		}
 	}
+}
+
+// probeGroupingFailedLocked fails an auto plan closed when its probe groups
+// cannot be built. Other classes keep the old behaviour (no probes) and log.
+func (rt *planRT) probeGroupingFailedLocked(reason string) {
+	if rt.p.Class != plan.ClassAuto {
+		rt.c.log.Warn("probe grouping: running without probes", "plan", rt.p.ID, "reason", reason)
+		return
+	}
+	rt.c.log.Error("probe grouping: failing the auto plan closed", "plan", rt.p.ID, "reason", reason)
+	applied := rt.anyAppliedLocked()
+	for _, n := range rt.p.Nodes {
+		switch rt.run.State(n.ID) {
+		case plan.StatePending, plan.StateApproved, plan.StateRunning:
+			if err := rt.run.FailUnstarted(n.ID, reason); err != nil {
+				rt.c.log.Error("probe grouping: cannot fail node", "plan", rt.p.ID, "node", n.ID, "err", err)
+				continue
+			}
+			rt.nodes[n.ID].reason = reason
+			break
+		}
+	}
+	rt.failed = true
+	if rt.policy() == plan.RollbackPlan && applied {
+		rt.draining = true
+	}
+	_ = rt.persistLocked(context.Background())
+}
+
+// anyAppliedLocked reports whether any node has a change that needs undoing.
+func (rt *planRT) anyAppliedLocked() bool {
+	for _, n := range rt.p.Nodes {
+		switch rt.run.State(n.ID) {
+		case plan.StateApplied, plan.StateVerified, plan.StateFailed:
+			return true
+		}
+	}
+	return false
 }
 
 // startProbeLocked runs one group's before or after probe off the plan lock.
