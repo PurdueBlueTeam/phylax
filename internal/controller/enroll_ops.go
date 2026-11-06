@@ -89,6 +89,11 @@ func (o *WebOps) EnrollLine(ctx context.Context, host, osName, by string) (strin
 
 // EnrollPush installs the agent on host with the method that matches its OS
 // (SSH on Linux, WinRM on Windows) and the manifest's default credential.
+//
+// shortcut: the push runs inside the request (30 s SSH, 120 s WinRM per host),
+// so a slow WinRM host can outlast the UI server's 60 s write timeout; the push
+// itself finishes and is audited. Upgrade to a background job with a status row
+// if pushes from the page must always answer.
 func (o *WebOps) EnrollPush(ctx context.Context, host, by string) error {
 	c := o.c
 	m, err := c.currentManifest()

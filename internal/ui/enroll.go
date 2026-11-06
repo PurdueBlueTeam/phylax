@@ -19,8 +19,8 @@ func (s *Server) enrollRoutes() {
 	s.Handle("POST /enroll/reenroll-all", http.HandlerFunc(s.postReenrollAll))
 }
 
-// enrollPage builds the page data from the backend's host list.
-func (s *Server) enrollPage(r *http.Request, o Ops) (enrollPage, error) {
+// enrollData builds the page data from the backend's host list.
+func (s *Server) enrollData(r *http.Request, o Ops) (enrollPage, error) {
 	rows, err := o.EnrollHosts(r.Context())
 	if err != nil {
 		return enrollPage{}, err
@@ -33,7 +33,7 @@ func (s *Server) getEnroll(w http.ResponseWriter, r *http.Request) {
 	if o == nil {
 		return
 	}
-	ep, err := s.enrollPage(r, o)
+	ep, err := s.enrollData(r, o)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -60,7 +60,7 @@ func (s *Server) postEnrollLine(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audit unavailable", http.StatusInternalServerError)
 		return
 	}
-	ep, err := s.enrollPage(r, o)
+	ep, err := s.enrollData(r, o)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -84,7 +84,7 @@ func (s *Server) postEnrollPush(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audit unavailable", http.StatusInternalServerError)
 		return
 	}
-	ep, err := s.enrollPage(r, o)
+	ep, err := s.enrollData(r, o)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -109,7 +109,7 @@ func (s *Server) postReenrollAll(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := o.ReenrollAll(r.Context(), Principal(r.Context())); err != nil {
 		_ = s.AuditAction(r, "enroll.reenroll_all", "failed")
-		ep, lerr := s.enrollPage(r, o)
+		ep, lerr := s.enrollData(r, o)
 		if lerr != nil {
 			s.fail(w, r, lerr)
 			return
