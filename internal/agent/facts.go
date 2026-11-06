@@ -135,4 +135,9 @@ func (a *Agent) deliverFact(f event.ControllerFact) {
 		return
 	}
 	a.publish(e)
+	if f.Fact == "work_window" {
+		if err := a.window.apply(f); err != nil {
+			a.log.Warn("work_window fact", "err", err)
+		}
+	}
 }

@@ -12,9 +12,9 @@ import (
 
 // startBusHarness runs a harness with one subscriber module and waits until it
 // has subscribed, so a published fact cannot land before the bus has a reader.
-func startBusHarness(t *testing.T, factories []Factory) (*Harness, context.CancelFunc) {
+func startBusHarness(t *testing.T, dir string, factories []Factory) (*Harness, context.CancelFunc) {
 	t.Helper()
-	h, err := NewHarness(HarnessOptions{Host: "h1", StateDir: t.TempDir(), Factories: factories})
+	h, err := NewHarness(HarnessOptions{Host: "h1", StateDir: dir, Factories: factories})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func startBusHarness(t *testing.T, factories []Factory) (*Harness, context.Cance
 }
 
 func TestFactReachesBusNotSpool(t *testing.T) {
-	h, cancel := startBusHarness(t, []Factory{subscriberFactory("fx", []string{"controller.fact"})})
+	h, cancel := startBusHarness(t, t.TempDir(), []Factory{subscriberFactory("fx", []string{"controller.fact"})})
 	defer cancel()
 	ch := testSubscriber("fx")
 	h.Fact(event.ControllerFact{ID: "rc", Fact: "round_clock", TS: time.Now(), TTL: time.Minute, Data: map[string]any{"delay": 60}})

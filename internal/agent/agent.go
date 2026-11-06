@@ -103,9 +103,12 @@ type Agent struct {
 
 	// facts are the controller facts held in memory, keyed by id.
 	facts factStore
-	// clkMu guards nowFn, the agent's wall clock (facts and windows).
-	clkMu sync.RWMutex
-	nowFn func() time.Time
+	// the work window stamps change-class events made by hand (Task 32).
+	window *windowState
+	// clkMu guards nowFn and monoFn, the agent's wall and monotonic clocks.
+	clkMu  sync.RWMutex
+	nowFn  func() time.Time
+	monoFn func() time.Duration
 
 	mu       sync.Mutex
 	state    State
@@ -166,6 +169,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
 		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now()}
+	a.window = newWindowState(cfg.Layout.Root, a.mono)
 	if err := a.initExec(); err != nil {
 		return nil, err
 	}
@@ -186,8 +190,11 @@ func New(cfg Config) (*Agent, error) {
 // Pin is this agent's own key pin (what the controller records at enrollment).
 func (a *Agent) Pin() link.Pin { return a.id.Pin }
 
-// emit appends to the spool without touching the network.
+// emit stamps our own activity's tag (a plan step's process tree or an open
+// work window), then appends the event to the spool without touching the
+// network.
 func (a *Agent) emit(e event.Event) error {
+	e = a.stamp(e)
 	a.publish(e)
 	if a.sp == nil {
 		if a.sink != nil {
@@ -203,6 +210,38 @@ func (a *Agent) emit(e event.Event) error {
 		}
 	}
 	return err
+}
+
+// mono is the agent's monotonic clock (work windows). Tests replace it.
+func (a *Agent) mono() time.Duration {
+	a.clkMu.RLock()
+	f := a.monoFn
+	a.clkMu.RUnlock()
+	if f == nil {
+		return time.Since(a.started)
+	}
+	return f()
+}
+
+// setMono replaces the agent's monotonic clock (tests). nil restores
+// time.Since(start).
+func (a *Agent) setMono(f func() time.Duration) {
+	a.clkMu.Lock()
+	a.monoFn = f
+	a.clkMu.Unlock()
+}
+
+// stamp puts a tag on an event of our own activity: a work-window tag on a
+// change-class event of the claimed user (Task 32). An event that already
+// carries a tag keeps it.
+func (a *Agent) stamp(e event.Event) event.Event {
+	if e.Tag != "" {
+		return e
+	}
+	if a.window != nil {
+		e.Tag = a.window.tagFor(e)
+	}
+	return e
 }
 
 // core builds an event of a declared kind. The kind and its payload struct are

@@ -46,6 +46,7 @@ func NewHarness(o HarnessOptions) (*Harness, error) {
 		bundle:        &Bundle{Host: o.Host},
 		planKey:       o.PlanKey,
 		managed:       map[string]string{},
+		started:       time.Now(),
 		notify:        make(chan struct{}, 1),
 		cfgKick:       make(chan struct{}, 1),
 		factoriesOnly: true,
@@ -54,6 +55,7 @@ func NewHarness(o HarnessOptions) (*Harness, error) {
 	// The supervisor's emit is the harness's event sink: a module's event is
 	// recorded (after EmitErr) whether or not the "link" accepted it.
 	so.Emit = func(e event.Event) error {
+		e = a.stamp(e)
 		a.publish(e)
 		var err error
 		if o.EmitErr != nil {
@@ -63,6 +65,7 @@ func NewHarness(o HarnessOptions) (*Harness, error) {
 		return err
 	}
 	so.Logger = log
+	a.window = newWindowState(o.StateDir, a.mono)
 	a.sup = NewSupervisor(so)
 	h.a = a
 	return h, nil
@@ -146,6 +149,9 @@ func (h *Harness) Fact(f event.ControllerFact) {
 
 // setNow replaces the agent's wall clock (facts and windows).
 func (h *Harness) setNow(f func() time.Time) { h.a.setNow(f) }
+
+// setMono replaces the agent's monotonic clock (work windows).
+func (h *Harness) setMono(f func() time.Duration) { h.a.setMono(f) }
 
 // env is the Env a module built by this harness receives.
 func (h *Harness) env() Env {
