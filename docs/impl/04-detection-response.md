@@ -20,10 +20,9 @@
 6. **`overrides.yml` has no `exceptions`, recipe-enable record or reset record, and nothing writes it.** Task 1 adds `Overrides.Exceptions`, `Overrides.Recipes` (a `RecipeEnable{Rule, Reason, Owner, Added, Services}` record, the same shape as an exception, naming a rule whose recipe is enabled on the host) and `Overrides.RespondResetEpoch` with their validation; there is no `rule_modes` (S1). The writer `manifest.AppendOverrides(dir, fn)` (atomic read-modify-write; comments in the file are not preserved, `shortcut`) is W1 Task 11a's, and a controller module reaches it as `Host.UpdateOverrides` (W1 Task 17a). The Alerts page's "silence" button (a UI-shell item) calls it; W4 builds no button.
 7. **There is no `respond.breaker` or `respond.loop` kind, and no auto-demotion.** The attempt ledger's stop is the core `plan.failed{reason: auto_halted, trigger: repeat|red_check}` (critical), emitted by the agent executor for tier-0 recipes and by the controller engine for `RunAuto` plans; W4 declares no kind for it. `respond.action` carries `rule`, so the Responses page and the Rules page show a recipe's stops against its rule. The controller side of `respond` consumes `detect.alert`, `respond.action` and `plan.failed` (the kind table's consumer column is updated). Demoting a recipe is removing its `Overrides.Recipes` entry (or setting its template to `propose`); nothing writes it back automatically.
 8. **An operator reset needs a signed path to the agent.** The five fact subtypes do not fit. `Overrides.RespondResetEpoch` is folded into `RespondSettings.ResetEpoch`; the agent clears every ledger entry (counts and breakers) when the epoch in the signed config exceeds the one it kept. The UI's "reset" button bumps the epoch with `AppendOverrides` and pushes the config. The same epoch resets the ledger entries of `content_restore` (there is no separate guard clear epoch).
-9. **The design YAML for `respond` and `content_guard` does not map 1:1 onto the Go settings** (`breaker_window: 2m` against `BreakerWindowSec`; `services: {ecom-http: alert}` against `[]GuardService`). Each module gets a `Config` struct that is the block's YAML (the design YAML, unchanged) and the controller converts it into `plan.RespondSettings` / `plan.ContentGuardSettings`.
-10. **Rollback of a tier-0 action reuses the dead-man journal.** The runner calls `actions.Env.Execute` with `Request.Deadman` = breaker window + 30 s, probes for the whole window, then `Confirm`s; a red probe calls `Rollback`. An action that returns no rollback data (`ErrNotReversible`) cannot run at tier 0 and is reported `skipped_guard` (a click proposal follows).
+9. **The design YAML for `respond` and `content_guard` does not map 1:1 onto the Go settings** (`services: {ecom-http: alert}` against `[]GuardService`). Each module gets a `Config` struct that is the block's YAML (the design YAML, unchanged) and the controller converts it into `plan.RespondSettings` / `plan.ContentGuardSettings`.
+10. **Rollback of a tier-0 action reuses the dead-man journal.** The runner calls `actions.Env.Execute` with the action's normal dead-man (`Request.Deadman` is not overridden), probes for that dead-man period, then `Confirm`s; a red probe calls `Rollback`. An action that returns no rollback data (`ErrNotReversible`) cannot run at tier 0 and is reported `skipped_guard` (a click proposal follows).
 11. **"Scorer-labelled source" is not known on the agent.** `source_block` never blocks an address in `Tier0Settings.NeverBlock` (manifest-listed own addresses, controller, relays, Kali, learned scorer runner ranges, rendered by the controller). Divisor re-draws scorer addresses, so the list can lag (`shortcut`); the trigger (a decoy login or a honey credential, never on a scored port) and the post-block probe are what protect the scorer.
-12. **Rates.** The design gives the host cap (`max_per_host_per_min`, 3) and the ledger (count and window per (host, object, kind)). Decision: a small host `Limiter` keeps the host cap; per-object limits are the ledger's alone (the plan's earlier extra "1 per minute per object" is dropped). The ledger takes `Count`/`Window` from the template: `respond`'s `loop` block (3 in 10 minutes) for its recipes, 2 in 10 minutes for `content_restore`, the engine default (2 in 10 minutes) otherwise.
 13. **Respond and detect cannot import each other** (no sibling imports). `respond` reads `detect.alert` through its own loose view struct (not `event.Decode`, which is strict and would reject a new alert key); the cross-check "every recipe trigger names a real rule id" runs in `internal/e2e` and in `cmd/phylax` (the binary may import both).
 14. **Actions owned by other workstreams are not registered yet** (`fw.apply{op: policy|allow|block|quarantine}`, `service.state`, `task.disable`, `runkey.remove`, `file.restore{source}`, `ad.recycle_restore`, `ad.gpo_unlink`, `session.terminate_predating`, `hunt.persistence`; S4 folded `fw.restore`, `fw.quarantine`, `unit.disable` and `binary.restore_from_depot` into them). `internal/respond/pending.go` lists each with its workstream; the recipe check accepts a listed name, and a test fails when a listed name is registered (delete the entry). The same pattern applies to rules: a rule whose event kind is not declared yet lives in `rules/pending/` with `needs: kind:<kind>`, and `TestPendingRulesStillNeedSomething` fails when that kind has been declared.
 15. **Rules layout.** `rules/detect/*.yml` (every rule has `module: detect`), `rules/ported/*.yml` (hand-ported, `module: detect`), `rules/pending/*.yml`, and at the top `rules/lists.yml`, `rules/profiles.yml`. The D15 rules (owned by the `deception` module, S4) stay in `rules/detect/deception.yml` until W9 moves them. All packs go to all hosts unless the block's `packs:` names a subset (`shortcut: no per-OS pack filter, upgrade if the held-memory budget is exceeded`). `D14` is reserved for `devices` (Known bug 2).
@@ -55,7 +54,7 @@
 1. **Unknown means do not act.** No `scorer_probe_result` fact yet, an expired one, a scored service with no `health:` block, a probe that errors: expected a `respond.action` with `skipped_guard` and a click proposal, never an apply (Task 26 `TestUnknownVerdictNeverActs`, Task 30 `TestSkippedTier0BecomesProposal`).
 2. **Hostile event values used as action parameters.** A file path with `..` or a newline, a unit name with a space, an entity that the alert does not carry: expected `skipped_guard`, no action call (Task 27 `TestParamMustBeAnEntity`, `TestHostileEntityRefused`).
 3. **Replayed history.** An enrollment backscan or a resent spool carries old events flagged `replay: true`: expected no alert, no `count` window entry, no response (Task 7 `TestReplayExcluded`).
-4. **The restorer fights the red persistence or a GPO.** A timer disables the firewall every minute; an Enforced GPO reverts Defender: expected the attempt ledger's breaker opens on the third restore (`plan.failed{reason: auto_halted, trigger: repeat}`), a GPO fact turns it into `skipped_gpo` (Task 25 `TestLedgerOpensOnCount`, Task 26 `TestGPOStopsLoop`).
+4. **The restorer fights the red persistence or a GPO.** A timer disables the firewall every minute; an Enforced GPO reverts Defender: expected the attempt ledger's breaker opens on the second restore (`plan.failed{reason: auto_halted, trigger: repeat}`), a GPO fact turns it into `skipped_gpo` (Task 25 `TestLedgerOpensOnCount`, Task 26 `TestGPOStopsLoop`).
 5. **A guarded content file is replaced by a symlink, deleted, or changed while a plan holds the lock.** Expected: the guard never follows the link, reports a deleted listed file as a change with `would_restore`, ignores a tagged or lock-held change and marks the golden stale; the `content_restore` recipe's `file.restore{source: golden}` replaces the link or restores the file (Task 34 `TestSymlinkPathRefused`, Task 35 `TestTaggedChangeMarksStale`, `TestDeletedFileReported`, Task 36 `TestRestoreReplacesSymlink`).
 
 ---
@@ -136,7 +135,7 @@ type SuppressedFields struct {
 const KindAction = "respond.action" // schema 1, high
 const ( // ActionFields.Outcome
 	OutApplied = "applied"; OutFailed = "failed"; OutRolledBack = "rolled_back"; OutShadow = "shadow"
-	OutSkippedSafeMode = "skipped_safe_mode"; OutSkippedGuard = "skipped_guard"; OutSkippedRate = "skipped_rate"
+	OutSkippedSafeMode = "skipped_safe_mode"; OutSkippedGuard = "skipped_guard"
 	OutSkippedBreaker = "skipped_breaker"; OutSkippedLock = "skipped_lock"; OutSkippedGPO = "skipped_gpo"
 )
 type ActionFields struct {
@@ -211,11 +210,7 @@ type HostService struct {
 	Scored bool         `json:"scored"`
 	Health *HealthProbe `json:"health,omitempty"` // nil on a scored service: tier 0 cannot run on this host
 }
-type Tier0Settings struct { // the design's fields; BreakerWindowSec, LoopCount, LoopWindowSec and MaxPerHostPerMin configure the attempt ledger and the host cap
-	MaxPerHostPerMin int      `json:"max_per_host_per_min,omitempty"`
-	BreakerWindowSec int      `json:"breaker_window_sec,omitempty"`
-	LoopCount        int      `json:"loop_count,omitempty"`
-	LoopWindowSec    int      `json:"loop_window_sec,omitempty"`
+type Tier0Settings struct { // the design's fields; the attempt ledger is fixed (two attempts in 10 minutes) and has no setting
 	BlockExpiresSec  int      `json:"block_expires_sec,omitempty"`
 	BlockMaxActive   int      `json:"block_max_active,omitempty"`
 	Recipes          []string `json:"recipes,omitempty"` // recipes enabled on this host (the per-rule act switch)
@@ -1326,9 +1321,9 @@ func TestRunTestsFailingExpectation(t *testing.T) { /* want_tier0 [fw.apply] but
 
 ---
 
-### Task 25: Tier-0 guards: protected set, host cap, and the engine's attempt ledger (S1)
+### Task 25: Tier-0 guards: protected set and the engine's attempt ledger (S1)
 
-The per-module loop detector and per-object limiter are replaced by the engine's one attempt ledger (design: Execution engine, Autonomy and the attempt ledger): one entry per (host, object, kind) with count, window and breaker. The same type serves the controller engine's `RunAuto` plans and any other acting module's templates; the agent keeps its own instance in the state directory for tier-0 recipes that run with the link down. If the engine plan has already built `internal/actions/ledger.go`, this task adds only the agent-side use and tests.
+The per-module loop detector and per-object limiter are replaced by the engine's one attempt ledger (design: Execution engine, Autonomy and the attempt ledger): one entry per (host, object, kind) with count, window and breaker. The same type serves the controller engine's `RunAuto` plans and any other acting module's templates; the agent keeps its own instance in the state directory for tier-0 recipes that run with the link down. The controller's ledger is W1's (`internal/controller`, built by the W1 autonomy change); both use the same key and the same fixed rule (two automatic attempts inside 10 minutes open the breaker), and neither takes a limit. If the engine plan has already built `internal/actions/ledger.go`, this task adds only the agent-side use and tests.
 
 **Files:**
 - Create: `internal/actions/ledger.go`
@@ -1343,19 +1338,16 @@ type Protected struct{ /* base names, lower case */ }
 func NewProtected(extra []string) *Protected
 func (p *Protected) Exe(path string) bool // base name in: csrss.exe wininit.exe winlogon.exe services.exe smss.exe lsass.exe svchost.exe systemd sshd, or in extra; Windows and Linux separators
 
-type Limiter struct{ /* per-host window */ }
-func NewLimiter(hostPerMin int, now func() time.Time) *Limiter // hostPerMin default 3 (max_per_host_per_min); per-object limits belong to the ledger
-func (l *Limiter) Allow(host string) bool // records only when ok
 
 // internal/actions/ledger.go
 type LedgerKey struct{ Host, Object, Kind string } // Object "*" means every object of that kind on the host (a red post-check trips the action type)
-type LedgerLimit struct{ Count int; Window time.Duration } // engine default {2, 10m}; respond's loop block {3, 10m}; content_restore {2, 10m}
+const LedgerCount, LedgerWindow = 2, 10 * time.Minute // the one fixed rule: no per-template or per-module limit
 type Ledger struct{ /* entries: attempts in window, breaker open */ }
 func NewLedger(now func() time.Time) *Ledger
-func (l *Ledger) Attempt(k LedgerKey, lim LedgerLimit) (ok bool, opened bool)
-//   refused (ok false) while the breaker is open for k or for {k.Host, "*", k.Kind}; otherwise counts the attempt; opened is true exactly once, when the count reaches lim.Count inside lim.Window
+func (l *Ledger) Attempt(k LedgerKey) (ok bool, opened bool)
+//   refused (ok false) while the breaker is open for k or for {k.Host, "*", k.Kind}; otherwise counts the attempt; opened is true exactly once, when the count reaches LedgerCount inside LedgerWindow
 //   (the breaker then opens: the next attempt is refused). A shadow run never calls Attempt.
-func (l *Ledger) WouldOpen(k LedgerKey, lim LedgerLimit) bool // the next Attempt would be the Count-th (the GPO check asks this)
+func (l *Ledger) WouldOpen(k LedgerKey) bool // the next Attempt would be the second (the GPO check asks this)
 func (l *Ledger) Trip(k LedgerKey)                          // red post-check: open the breaker now
 func (l *Ledger) Open(k LedgerKey) bool
 func (l *Ledger) Reset()                                    // operator reset (signed ResetEpoch)
@@ -1374,35 +1366,27 @@ func TestProtectedSet(t *testing.T) {
 	for _, e := range []string{`C:\Windows\System32\LSASS.EXE`, "/usr/lib/systemd/systemd", "/usr/sbin/sshd", `C:\x\myagent.exe`} { if !p.Exe(e) { t.Errorf("%s", e) } }
 	if p.Exe("/usr/bin/nc") { t.Error("nc protected") }
 }
-func TestHostCapAcrossMinuteBoundary(t *testing.T) {
-	clk := newClock()
-	l := NewLimiter(3, clk.now)
-	for i := 0; i < 3; i++ { if !l.Allow("h") { t.Fatal(i) } }
-	if l.Allow("h") { t.Fatal("host cap") }
-	clk.add(61 * time.Second)
-	if !l.Allow("h") { t.Fatal("window did not slide") }
 }
 // internal/actions
 func TestLedgerOpensOnCount(t *testing.T) { // review focus 4
-	clk := newClock(); l := NewLedger(clk.now); k := LedgerKey{"h", "fw", "fw.apply"}; lim := LedgerLimit{3, 10 * time.Minute}
-	if ok, o := l.Attempt(k, lim); !ok || o { t.Fatal() }
-	clk.add(2 * time.Minute); l.Attempt(k, lim)
+	clk := newClock(); l := NewLedger(clk.now); k := LedgerKey{"h", "fw", "fw.apply"}
+	if ok, o := l.Attempt(k); !ok || o { t.Fatal() }
 	clk.add(2 * time.Minute)
-	if ok, o := l.Attempt(k, lim); !ok || !o || !l.Open(k) { t.Fatal(ok, o) }
-	if ok, _ := l.Attempt(k, lim); ok { t.Fatal("fourth attempt allowed") }
+	if ok, o := l.Attempt(k); !ok || !o || !l.Open(k) { t.Fatal(ok, o) }
+	if ok, _ := l.Attempt(k); ok { t.Fatal("third attempt allowed") }
 }
-func TestLedgerWindowExpires(t *testing.T) { /* three attempts spread over 11 minutes: breaker not opened */ }
+func TestLedgerWindowExpires(t *testing.T) { /* two attempts 11 minutes apart: breaker not opened */ }
 func TestLedgerKeysAreIndependent(t *testing.T) { /* another object or another kind on the same host keeps its own count */ }
 func TestLedgerTripClosesTheKindOnTheHost(t *testing.T) { /* Trip({h, "*", fw.apply}): Attempt on any object of that kind on h is refused, on h2 allowed */ }
-func TestLedgerWouldOpen(t *testing.T) { /* true exactly when the next Attempt is the Count-th */ }
+func TestLedgerWouldOpen(t *testing.T) { /* true exactly when the next Attempt is the second */ }
 func TestLedgerResetAndExportImport(t *testing.T) { /* round trip keeps counts and the open set; Reset clears both */ }
 func TestLedgerBounds(t *testing.T) { /* 2000 distinct keys: tracked <= 1024, no panic */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ ./internal/respond/ -run 'Protected|HostCap|Ledger' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/actions/ ./internal/respond/ -run 'Protected|Ledger' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/actions/ ./internal/respond/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "actions: attempt ledger; respond: protected set, host cap"`
+- [ ] **Step 5: Commit.** `git commit -am "actions: attempt ledger; respond: protected set"`
 
 ---
 
@@ -1489,9 +1473,6 @@ type Config struct { // modules/respond.yml: the design YAML
 	module.Common      `yaml:",inline"`
 	module.Actor       `yaml:",inline"` // act_enabled and autonomy (recipe rule id -> propose | shadow | auto); this module acts, so it carries both
 	Tier0              struct {
-		MaxPerHostPerMin int                  `yaml:"max_per_host_per_min"`
-		BreakerWindow    time.Duration        `yaml:"breaker_window"`
-		Loop             struct{ Count int `yaml:"count"`; Window time.Duration `yaml:"window"` } `yaml:"loop"` // the ledger's limit for respond's recipes
 		Block            struct{ ExpiresAfter time.Duration `yaml:"expires_after"`; MaxActive int `yaml:"max_active"` } `yaml:"block"`
 		Recipes          []string             `yaml:"recipes"` // recipes enabled on this host: the per-rule act switch (S1)
 	} `yaml:"tier0"`
@@ -1511,12 +1492,12 @@ Behaviour of `Start` (all outcomes are `respond.action` events built with `event
 1. Subscribe `detect.alert` and `controller.fact` (buffer 256). A fact of type `gpo_finding` goes to `GPOFacts.Add`. A `detect.alert` is read with `ViewOf`; the matching recipes are `RecipeSet.For(rule)` restricted to `Tier0.Recipes` (the recipe tied to the rule id and enabled for this host is the only act switch; the alert's `tier` is display only, there is no `mode`). Nothing runs unless `ActEnabled`. The template's `Autonomy[rule]` (absent means `propose`) then decides: `propose` runs nothing (the controller side offers the click); `shadow` goes through steps 2 to 4 and the before-state probe, records `respond.action{outcome: shadow}` with the would-be action and `Before`, and applies nothing (no ledger attempt); `auto` continues to step 5. Recipes run one at a time in name order, alerts through a bounded queue (64; a full queue drops with `Dropped++`).
 2. A recipe with `RequiresSensors` whose local module is not `ok` in `env.Health.ModuleHealth()` is suspended: one `skipped_guard` event with `Before` = `suspended: sensor <name> not ok`. `UnscoredHostsOnly` with any scored `HostService` is `skipped_guard`.
 3. `Resolve` errors (missing entity, hostile value) are `skipped_guard` with the error in `Before`; the action is never called.
-4. For each step, in this order, a failing check ends the step with the named outcome: safe mode (`ae.Safe.On()`) `skipped_safe_mode`; the ledger's breaker open for the step's key `{host, object, kind}` or for `{host, "*", kind}` `skipped_breaker`; `Limiter.Allow(host)` `skipped_rate`; the GPO check (`recipe.GPOSetting != ""`, Windows, and `Ledger.WouldOpen` is true: `GPOFacts.Covers(setting)`) `skipped_gpo`; unknown local verdict (`Prober.Local` not Known) or, for `Probe` steps, unknown scorer verdict `skipped_guard` with `Health` `unknown:<why>`; red before-state `skipped_guard`. (The object is the step's path, account, unit or rule id; the kind is the action name.)
-5. Execute: `Ledger.Attempt(key, LedgerLimit{Loop.Count, Loop.Window})` first (refused is `skipped_breaker`; `opened` means this is the last allowed attempt, so after the apply the runner emits `plan.failed{reason: auto_halted, trigger: repeat, lineage}` with `Lineage` from the alert's `parent.exe`/`exe` entities), then `ae.Execute(ctx, actions.Request{Action, Params, NodeID, Deadman: BreakerWindow + 30s})` with a 30 s lock wait (`context.WithTimeout`; a timeout is `skipped_lock`); `ErrScoringUnsafe` and `ErrNotReversible` are `skipped_guard`; other errors `failed`.
-6. After a successful execute: `Prober.Watch(window, 10 s, step.Probe)`. Green: `ae.Confirm(deadmanID)` and `applied` with `Health: green`. Red or unknown (for a `Probe` step): `ae.Rollback(deadmanID)`, `rolled_back`, `Ledger.Trip({host, "*", kind})` and `plan.failed{reason: auto_halted, trigger: red_check, reenable: "raise the reset epoch (Responses page, Reset)"}`.
+4. For each step, in this order, a failing check ends the step with the named outcome: safe mode (`ae.Safe.On()`) `skipped_safe_mode`; the ledger's breaker open for the step's key `{host, object, kind}` or for `{host, "*", kind}` `skipped_breaker`; the GPO check (`recipe.GPOSetting != ""`, Windows, and `Ledger.WouldOpen` is true: `GPOFacts.Covers(setting)`) `skipped_gpo`; unknown local verdict (`Prober.Local` not Known) or, for `Probe` steps, unknown scorer verdict `skipped_guard` with `Health` `unknown:<why>`; red before-state `skipped_guard`. (The object is the step's path, account, unit or rule id; the kind is the action name.)
+5. Execute: `Ledger.Attempt(key)` (the fixed rule: two in 10 minutes) first (refused is `skipped_breaker`; `opened` means this is the last allowed attempt, so after the apply the runner emits `plan.failed{reason: auto_halted, trigger: repeat, lineage}` with `Lineage` from the alert's `parent.exe`/`exe` entities), then `ae.Execute(ctx, actions.Request{Action, Params, NodeID, Deadman unset: the action's normal dead-man})` with a 30 s lock wait (`context.WithTimeout`; a timeout is `skipped_lock`); `ErrScoringUnsafe` and `ErrNotReversible` are `skipped_guard`; other errors `failed`.
+6. After a successful execute: `Prober.Watch(deadman period, 10 s, step.Probe)`. Green: `ae.Confirm(deadmanID)` and `applied` with `Health: green`. Red or unknown (for a `Probe` step): `ae.Rollback(deadmanID)`, `rolled_back`, `Ledger.Trip({host, "*", kind})` and `plan.failed{reason: auto_halted, trigger: red_check, reenable: "raise the reset epoch (Responses page, Reset)"}`.
 7. State (the ledger) is saved with `env.Keep`; when `s.ResetEpoch` is greater than the kept epoch, `Ledger.Reset()` clears all of it.
 8. `Health()`: `ok`; `disabled` detail `tier 0 off` when `ActEnabled` is false or no recipe is enabled; `degraded` when a breaker is open, a recipe step names an action missing on this OS (gap per action) or a required sensor has a gap. `Info`: `recipes`, `breakers_open`, `actions_last_hour`.
-`shortcut: the 30 s dead-man grace and the 10 s poll are fixed; make them settings only if a lab run needs it`.
+`shortcut: the 10 s poll is fixed; make it a setting only if a lab run needs it`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -1546,9 +1527,8 @@ func TestActDisabledDoesNothing(t *testing.T) { /* ActEnabled false: no events, 
 func TestRecipeNotInSignedConfigRefuses(t *testing.T) { /* alert for a rule whose recipe is not in s.Recipes: no calls */ }
 func TestRecipeNotEnabledForHostRefuses(t *testing.T) { /* recipe present in s.Recipes but not in Tier0.Recipes: no calls */ }
 func TestSafeModeSkips(t *testing.T) { /* ae.Safe.Set(true): skipped_safe_mode; rollback of an earlier armed entry still permitted */ }
-func TestHostCapRateLimited(t *testing.T) { /* four alerts for four objects in a minute: three applied, the fourth skipped_rate */ }
-func TestLedgerOpensOnThird(t *testing.T) { /* same object restored three times in ten minutes: plan.failed trigger repeat emitted once with lineage, the fourth alert is skipped_breaker */ }
-func TestGPOStopsLoop(t *testing.T) { /* gpo_finding fact for firewall present, third restore: skipped_gpo, no plan.failed */ }
+func TestLedgerOpensOnSecond(t *testing.T) { /* same object restored twice in ten minutes: plan.failed trigger repeat emitted once with lineage, the third alert is skipped_breaker */ }
+func TestGPOStopsLoop(t *testing.T) { /* gpo_finding fact for firewall present, second restore: skipped_gpo, no plan.failed */ }
 func TestLockWaitSkips(t *testing.T) { /* hold the action's lock; the step ends skipped_lock after the wait (test shortens the wait) */ }
 func TestNotReversibleSkips(t *testing.T) { /* fake action with Rollback{} and Deadman > 0: skipped_guard */ }
 func TestRequiresSensorsSuspends(t *testing.T) { /* ModuleHealth()["audit"] degraded: skipped_guard "suspended" */ }
@@ -1560,7 +1540,7 @@ func TestRespondConformance(t *testing.T) {
 
 `newRunnerFixture` builds a real `actions.Env` (`actions.NewEnv("h1", t.TempDir())` with `Registry: actions.NewRegistry()` holding only `fakeAction` instances and real `net.tcp_probe`), a deadman manager in `t.TempDir()`, an `agent.Harness` with the respond factory, and a controllable clock; `fakeAction` is an `actions.Action` that records calls, writes a file on `Apply` and restores it from `Capture` data on rollback.
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Applied|Shadow|ProposeAutonomy|RedProbe|UnknownVerdict|ParamMust|HostileEntity|ActDisabled|SignedConfig|NotEnabled|SafeMode|HostCap|LedgerOpens|GPOStops|LockWait|NotReversible|RequiresSensors|ResetEpoch|Conformance' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/respond/ -run 'Applied|Shadow|ProposeAutonomy|RedProbe|UnknownVerdict|ParamMust|HostileEntity|ActDisabled|SignedConfig|NotEnabled|SafeMode|LedgerOpens|GPOStops|LockWait|NotReversible|RequiresSensors|ResetEpoch|Conformance' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified (one goroutine per recipe run, at most 4 at once).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/respond/ ./internal/agent/... ./internal/module/...`. Expected: PASS, `respond` passing the agent conformance checks (link loss: tier 0 keeps running).
 - [ ] **Step 5: Commit.** `git commit -am "respond: tier-0 runner over the attempt ledger, with autonomy, guards and dead-man rollback"`
@@ -1678,7 +1658,7 @@ func init() { module.Register(&Controller{}) }
 
 Rules: `Start` loads `Content()` (embedded recipes) and subscribes to `detect.alert`, `respond.action`, `plan.failed` (committed events, all agents; `plan.failed{reason: auto_halted}` only feeds the Responses page and tile, because the refused attempt's `respond.action` already made the click). The controller reads the recipe-enable records (`Overrides.Recipes`) and the `autonomy` settings through `Host.Config()`; `shortcut: fleet-wide values, not the per-host effective ones, upgrade when Host exposes the rendered per-host respond settings`. For each `detect.alert` seen once (dedupe by `agent|id`, LRU 4096):
 - every matching recipe's `propose` entries become `Host.Propose(Proposal{Title, Template, Params, Evidence: []EventRef{{Agent, Seq}}, Reason})` with params `host` = the alert's agent plus the entries' `params` and resolved `params_from`, and `Reason` `tier 1` (or the alert's tier), at once when the recipe is not enabled for the host or its template is at `propose` or `shadow`; when the recipe is enabled at `autonomy: auto` and has `tier0:` steps no proposal is made yet (the agent acts), while each `auto:` template is started with `Host.RunAuto(template, params)` only at `autonomy: auto` (at `propose` the engine's auto conditions turn it into a click proposal on their own); `module.ErrProposed` is not an error (the Host already created the click proposal).
-- a `respond.action` whose outcome is `skipped_rate`, `skipped_breaker`, `skipped_guard` or `skipped_lock`, or `failed`, creates the recipe's `propose` entries with `Reason` = the outcome and, for `skipped_guard` with unknown health, `unknown verdict`. `skipped_safe_mode` and `skipped_gpo` make none (safe mode is a deliberate stop; the GPO finding is raised by `ad`).
+- a `respond.action` whose outcome is `skipped_breaker`, `skipped_guard` or `skipped_lock`, or `failed`, creates the recipe's `propose` entries with `Reason` = the outcome and, for `skipped_guard` with unknown health, `unknown verdict`. `skipped_safe_mode` and `skipped_gpo` make none (safe mode is a deliberate stop; the GPO finding is raised by `ad`).
 - a proposal for a `proc.*` template is not created when `Protected.Exe(entities.exe)` is true or the exe is a scored service binary (`Config.ProtectedProcesses`, plus the rendered scored binaries the agent config carries are not visible here: `shortcut: the controller checks the built-in set and Config.ProtectedProcesses only; the agent action refuses scored trees anyway`).
 A recipe that fails `Resolve` for an alert is logged and skipped, never fatal.
 
@@ -1909,7 +1889,7 @@ func TestSymlinkReplacementIsAChange(t *testing.T) { /* replace the file by a sy
 `guard.restore`, the module's own probe and rollback code, its loop stop and `RestoreFields`/`StopFields` are removed: the restore is the core action `file.restore{source: golden}` (one file-restore action for golden, depot and backup), run by the `content_restore` recipe in `respond`; its probe and rollback are the action's, its stop is the attempt ledger (limit 2 attempts in 10 minutes per (host, file, kind)), and it is recorded as `respond.action` and `plan.failed`.
 
 **Files:**
-- Create: `rules/respond/content_restore.yml` (the recipe; the module owns it, `respond` loads it), `internal/content_guard/source.go` (registers the `golden` source), `internal/content_guard/lint.go`, the rule `D2j.content-guard-change` in `rules/detect/linux_persistence.yml`
+- Create: `rules/respond/content_restore.yml` (the recipe; the module owns it, `respond` loads it), `internal/content_guard/source.go` (registers the `golden` source), `internal/content_guard/lint.go`, the rule `D2k.content-guard-change` in `rules/detect/linux_persistence.yml`
 - Modify: `internal/actions/guard.go` (`OpRestore`, `StaticGuard.RestorePaths`)
 - Test: `internal/content_guard/source_test.go`, `internal/actions/guard_restore_test.go`, `internal/content_guard/lint_test.go`, `internal/respond/content_restore_test.go`
 
@@ -1927,12 +1907,11 @@ const OpRestore = "restore" // actions.OpRestore, in internal/actions/guard.go (
 //   file at the path is replaced, never followed), keep the replaced file under StateDir/content_guard/replaced/<id>, tag the write `guard:<id>`, probe again (one retry after 5 s, then fail);
 //   Verify: hash equals golden; a failed after-probe returns an error, so Execute rolls back to the replaced file.
 // rules/respond/content_restore.yml:
-//   recipe: content_restore; module: respond; triggers: [D2j.content-guard-change]; collect: [process_tree, content_changes]
+//   recipe: content_restore; module: respond; triggers: [D2k.content-guard-change]; collect: [process_tree, content_changes]
 //   tier0: [{action: file.restore, params: {source: golden}, params_from: {path: entities.path, service: entities.service}, probe: true, rollback: true}]
 //   propose: [{template: restore_file (Task 32), params: {source: golden}, params_from: {path: entities.path, service: entities.service}}]
-//   Ledger limit for the template: {Count 2, Window 10m}. Enabled per host, optionally per service (RecipeEnable.Services); autonomy propose | shadow | auto from the respond block.
-// rule D2j.content-guard-change: event content_guard.change, decision alert; tier 1; entities service, path, would_restore, writer.exe. (The design names this rule D2j; the plan's
-//   existing D2j.splunk-fim is a different rule, so the full ids differ and recipe triggers use the exact id.)
+//   Enabled per host, optionally per service (RecipeEnable.Services); autonomy propose | shadow | auto from the respond block.
+// rule D2k.content-guard-change: event content_guard.change, decision alert; tier 1; entities service, path, would_restore, writer.exe. (The design names this rule D2k; D2j is splunk-fim.)
 // lint rule CG001 (lint.Register in init): a node of action file.restore with source golden is accepted only when its path is on a service's content.guard list in the manifest
 //   and the plan class is click or auto; any other node touching scored content is rejected by the existing rules.
 ```
@@ -1953,7 +1932,7 @@ func TestStaticGuardAllowsRestoreOnlyOnListedPath(t *testing.T) { /* guard Paths
 func TestLintCG001(t *testing.T) { /* file.restore{source: golden} for a path not in content.guard -> finding CG001; listed path in a click plan -> none */ }
 func TestRestorePreservesModeOwnerLabel(t *testing.T) { /* mode 0640 restored; xattr/owner assertions skip with a reason when not root */ }
 // internal/respond
-func TestContentRestoreRecipeResolves(t *testing.T) { /* a D2j.content-guard-change alert -> Tier0 [file.restore{source: golden}], Propose [restore_file]; the recipe validates (source golden is allowed under tier0:) */ }
+func TestContentRestoreRecipeResolves(t *testing.T) { /* a D2k.content-guard-change alert -> Tier0 [file.restore{source: golden}], Propose [restore_file]; the recipe validates (source golden is allowed under tier0:) */ }
 func TestSecondRestoreStopsViaLedger(t *testing.T) { /* runner fixture, recipe enabled at auto: two restores of one file inside 10 minutes apply and the second opens the ledger (plan.failed auto_halted trigger repeat); a third alert is skipped_breaker and the controller makes the click; after 11 minutes (fresh window) and a reset it applies again */ }
 func TestShadowRecordsWouldRestore(t *testing.T) { /* autonomy shadow: respond.action outcome shadow, the file on disk unchanged */ }
 ```
@@ -1992,7 +1971,7 @@ func (m *Module) Start(ctx context.Context, emit agent.Emit) error
 func (m *Module) Health() module.Health
 ```
 
-Behaviour: every file change on a listed path emits `content_guard.change` with `decision` and `would_restore` (Task 35); `golden_missing` and `golden_stale` go out as `telemetry_gap{source: content_guard}` (critical). The module restores nothing: the `D2j.content-guard-change` alert and the `content_restore` recipe (Task 36) do, by the recipe's `autonomy` (`propose`, `shadow`, `auto`), so promotion from propose to auto is that one signed setting, made on the shadow data, and there is no module-side promotion, demotion or mode. **Boot-critical**: only when `BootCritical.Enabled` and the host has a scored service (its probe is the gate); with no scored service every entry has `would_restore: false`. `content_guard/boot_critical.yml` lists explicit candidates (no globs): `/etc/fstab`, grub config per distro (`/boot/grub2/grub.cfg` for rocky, `/boot/grub/grub.cfg` for debian and ubuntu), `/boot/efi/EFI/<vendor>/grub.cfg` resolved from the existing vendor directory, the running kernel's initramfs (`resolve: initramfs`), `/etc/ssh/sshd_config`, the host's network config files that exist (netplan `00-installer-config.yaml` and `50-cloud-init.yaml` on Ubuntu, `/etc/network/interfaces` on Debian, the NetworkManager connection files named in `hosts.yml` on Rocky), and `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` flagged `never: true` (watched, never restored automatically); on Windows the BCD store (`\Boot\BCD`, restored with the pre-approved `bcdedit /import`; `shortcut`: a `host.exec` special case, upgrade when `file.restore` gains a registry-hive form), `ntds.dit` excluded. `plans/content_guard/guard.snapshot.yaml` is the plan node hardening plans append for each service they touched.
+Behaviour: every file change on a listed path emits `content_guard.change` with `decision` and `would_restore` (Task 35); `golden_missing` and `golden_stale` go out as `telemetry_gap{source: content_guard}` (critical). The module restores nothing: the `D2k.content-guard-change` alert and the `content_restore` recipe (Task 36) do, by the recipe's `autonomy` (`propose`, `shadow`, `auto`), so promotion from propose to auto is that one signed setting, made on the shadow data, and there is no module-side promotion, demotion or mode. **Boot-critical**: only when `BootCritical.Enabled` and the host has a scored service (its probe is the gate); with no scored service every entry has `would_restore: false`. `content_guard/boot_critical.yml` lists explicit candidates (no globs): `/etc/fstab`, grub config per distro (`/boot/grub2/grub.cfg` for rocky, `/boot/grub/grub.cfg` for debian and ubuntu), `/boot/efi/EFI/<vendor>/grub.cfg` resolved from the existing vendor directory, the running kernel's initramfs (`resolve: initramfs`), `/etc/ssh/sshd_config`, the host's network config files that exist (netplan `00-installer-config.yaml` and `50-cloud-init.yaml` on Ubuntu, `/etc/network/interfaces` on Debian, the NetworkManager connection files named in `hosts.yml` on Rocky), and `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers` flagged `never: true` (watched, never restored automatically); on Windows the BCD store (`\Boot\BCD`, restored with the pre-approved `bcdedit /import`; `shortcut`: a `host.exec` special case, upgrade when `file.restore` gains a registry-hive form), `ntds.dit` excluded. `plans/content_guard/guard.snapshot.yaml` is the plan node hardening plans append for each service they touched.
 
 - [ ] **Step 1: Write the tests:**
 
@@ -2083,7 +2062,7 @@ func TestRecipeEntitiesAreRuleEntities(t *testing.T) { /* each params_from entit
 func TestRecordedAlertStreamOutcomes(t *testing.T) { // fixture replay
 	/* testdata/alert_stream.json: a recorded list of detect.alert and controller.fact events with relative times (D10k fw tamper x4, 30 s apart, with firewall_restore enabled at autonomy auto and loop count 3, D17c service stop, D15b decoy login from an own address, a D2a webroot change, a gpo_finding fact);
 	   feed it to a harness running the real respond module over fake actions; the exact outcome list is asserted:
-	   [applied fw.apply, applied fw.apply, applied fw.apply (the ledger opens: one plan.failed auto_halted trigger repeat), skipped_breaker fw.apply, skipped_guard (D17c, unknown verdict), skipped_guard (source_block own address), no event for D2a] */
+	   [applied fw.apply, applied fw.apply (the ledger opens: one plan.failed auto_halted trigger repeat), skipped_breaker fw.apply, skipped_guard (D17c, unknown verdict), skipped_guard (source_block own address), no event for D2a] */
 }
 func TestUnknownFactProposesTier1(t *testing.T) { // T74 respond half
 	/* agent side: tier-0 recipe with a Probe step and no scorer fact -> skipped_guard; feed that respond.action to the controller module with a fake Host: Propose called with Reason "unknown verdict"; after a fresh scorer_probe fact, the same alert applies */
@@ -2113,7 +2092,7 @@ Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra, the "ccdc27" lab)
 
 - [ ] **Step 1: Prepare.** Build the branch, enable `detect` and `respond` with `act_enabled: false` first (the alert-only stage), `content_guard` off; snapshot the VMs.
 - [ ] **Step 2: Run these lab tests** (ids from the design's Test matrix):
-  - T02: a systemd timer disables the host firewall every minute. Tier 0 restores it; measure restore latency (alert to applied); the loop opens on the third restore and names the timer in `Lineage`.
+  - T02: a systemd timer disables the host firewall every minute. Tier 0 restores it; measure restore latency (alert to applied); the loop opens on the second restore and names the timer in `Lineage`.
   - T03: PHP webshell upload, command, file change. `D1.*` and `D17b` fire; the Alerts page shows the four proposals; kill-tree is a click.
   - T11: stop Sysmon; `D10e` fires; `sysmon_reinstall` reinstalls it (Windows member); a log clear fires `D10d`.
   - T16: a hardening plan that breaks a scored page is caught by the probe and rolled back; a forced `fw.apply{op: policy}` on a host whose scored service goes red trips the breaker and rolls back.
@@ -2134,7 +2113,7 @@ Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra, the "ccdc27" lab)
 - W2: `session.terminate_predating{source, before}` (Tier B); respond's `session_evict` calls it with `before: ${now}`.
 - W8 (`traceback`): declare `traceback.label` (with `source_label`) so `rules/pending/pass_the_hash.yml` can be unparked, and make `deps` use ids `DEP1` to `DEP3` (the rules are renamed here).
 - W9 (`deception`): the D15 rules live in `rules/detect/deception.yml` until W9 moves them. W5 (`hunt`): consumes `plan.failed{reason: auto_halted, trigger: repeat}` for the targeted hunt on the lineage.
-- The engine plan (W2) and the design: the attempt ledger type is built here in `internal/actions/ledger.go` unless the engine plan built it first; the `file.restore` restore-source hook (Task 36) is the same kind of shared definition.
+- The engine plan (W2) and the design: the agent-side attempt ledger type is built here in `internal/actions/ledger.go` unless the engine plan built it first (the controller ledger is W1's, `internal/controller`); the `file.restore` restore-source hook (Task 36) is the same kind of shared definition.
 - W10: an Alerts-page "silence" button that calls `manifest.AppendOverrides` with a `RuleException`; the Content guard page and host-grid column (gap 21); `backup.failed` for a scored user deleted with no Recycle Bin entry.
 - W11: the chunk transfer of `evidence.blob` items.
 
@@ -2146,7 +2125,7 @@ Runs on the BTaP Proxmox replica (`stacks/ccdc` in btap-infra, the "ccdc27" lab)
 
 **2. Step scan.** Every code step names a file, an exact signature and the spec values; test steps give names and assertions. Content tasks (16 to 19, 28, 29, 32) give the rule or recipe table and tests that pin tiers and ids; the YAML bodies are left to the implementer on purpose.
 
-**3. Type consistency.** `AlertFields` (Task 1) is used by Tasks 2, 10, 12; `AlertView` (Task 24) is respond's own view and never imports `detect`. `Tier0Settings` field names (`MaxPerHostPerMin`, `BreakerWindowSec`, `LoopCount`, `LoopWindowSec`, `BlockExpiresSec`, `BlockMaxActive`, `Recipes`) are the design's and are read by Tasks 27, 29, 38. `Step` flags (Task 24) are the ones Tasks 27 and 29 act on. `plan.HostService` / `HealthProbe` are produced in Task 1, read by 26 and 38. `ResetEpoch` comes from `Overrides.RespondResetEpoch` (Task 1) and is folded in Task 38; `actions.Ledger` (Task 25) is used by Tasks 26, 27, 29 and 36, and `module.Actor` (W1) by Task 27.
+**3. Type consistency.** `AlertFields` (Task 1) is used by Tasks 2, 10, 12; `AlertView` (Task 24) is respond's own view and never imports `detect`. `Tier0Settings` field names (`BlockExpiresSec`, `BlockMaxActive`, `Recipes`) are the design's and are read by Tasks 27, 29, 38. `Step` flags (Task 24) are the ones Tasks 27 and 29 act on. `plan.HostService` / `HealthProbe` are produced in Task 1, read by 26 and 38. `ResetEpoch` comes from `Overrides.RespondResetEpoch` (Task 1) and is folded in Task 38; `actions.Ledger` (Task 25) is used by Tasks 26, 27, 29 and 36, and `module.Actor` (W1) by Task 27.
 
 **4. Review Focus.** Unknown verdict: Tasks 26, 27, 30, 39. Hostile parameters: Tasks 24, 27. Replay: Tasks 7, 9, 39. Restorer fights: Tasks 25, 26, 27, 36. Guarded file tricks: Tasks 34, 35, 36.
 
