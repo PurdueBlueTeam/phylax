@@ -11,12 +11,12 @@ import (
 func (s *Server) routes() {
 	sub, _ := fs.Sub(staticFS, "static")
 	files := http.StripPrefix("/static/", http.FileServerFS(sub))
-	s.mux.HandleFunc("GET /static/{file}", func(w http.ResponseWriter, r *http.Request) {
+	s.public("GET /static/{file}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		files.ServeHTTP(w, r)
 	})
-	s.mux.HandleFunc("GET /login", s.getLogin)
-	s.mux.HandleFunc("POST /login", s.postLogin)
+	s.public("GET /login", s.getLogin)
+	s.public("POST /login", s.postLogin)
 
 	s.Handle("GET /{$}", http.HandlerFunc(s.getDashboard))
 	s.Handle("GET /agents", http.HandlerFunc(s.getAgents))
@@ -24,6 +24,7 @@ func (s *Server) routes() {
 	s.Handle("GET /agents/table", http.HandlerFunc(s.getAgentsTable))
 	s.opsRoutes()
 	s.proposalRoutes()
+	s.enrollRoutes()
 	s.Handle("GET /account", http.HandlerFunc(s.getAccount))
 	s.Handle("POST /account/password", http.HandlerFunc(s.postPassword))
 	s.Handle("POST /logout", http.HandlerFunc(s.postLogout))

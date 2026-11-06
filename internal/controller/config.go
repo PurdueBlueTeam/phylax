@@ -74,6 +74,9 @@ type Config struct {
 	MaxBufferedEvents int      `json:"max_buffered_events"` // per-agent reorder buffer cap (default 16384)
 	MaxLiveTokens     int      `json:"max_live_tokens"`     // default 1024
 	ReleaseDir        string   `json:"release_dir"`         // phylax-linux-amd64 and phylax-windows-amd64.exe
+	// Advertise is the controller host:port the agent dials (serve
+	// -advertise): the address in the one-liner and in the bootstrap config.
+	Advertise string `json:"advertise"`
 	// BenchOff disables the bench recorder, which is on by default in every
 	// mode including observe mode.
 	BenchOff bool `json:"bench_off"`

@@ -1248,7 +1248,7 @@ The one-liner carries two pins: the controller's public-key hash (`curl --pinned
 
 #### Enrollment
 
-1. The UI mints a token bound to a host identity. Only a logged-in operator can do this (review D142).
+1. The UI mints a token bound to a host identity. Only a logged-in operator can do this (review D142). Token minting is only reachable from the UI's enrollment page and from `phylax enroll` run by someone with the controller's data directory; the agent port has no route that mints one (T28).
 2. The agent generates its keypair and connects with `phylax/agent`, presenting the token.
 3. The controller records the key, binds the token to that key and replies `welcome`. The agent persists its `enrolled` flag only after `welcome`. Until then the same key may re-present the same token, so a dropped connection never wedges enrollment [CR §3.7].
 4. Token consumption is atomic. A wrong-host claim does not burn a token.

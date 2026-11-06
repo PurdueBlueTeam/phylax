@@ -164,6 +164,9 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	if opt.Logger == nil {
 		opt.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if cfg.Advertise == "" {
+		cfg.Advertise = opt.Advertise
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return nil, err
 	}

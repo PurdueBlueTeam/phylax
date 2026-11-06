@@ -56,7 +56,35 @@ type Ops interface {
 	ApproveNode(ctx context.Context, id, node, by, note string) error
 	Apply(ctx context.Context, id, by string) error
 	Rollback(ctx context.Context, id, by string) error
+
+	// EnrollHosts lists the manifest's hosts and their enrollment state for
+	// the enrollment page.
+	EnrollHosts(ctx context.Context) ([]EnrollRow, error)
+	// EnrollLine mints a token for host and returns the one-liner (shown
+	// once). osName is "linux" or "windows".
+	EnrollLine(ctx context.Context, host, osName, by string) (string, error)
+	// EnrollPush pushes host with the method that matches its OS (SSH or
+	// WinRM), using the manifest credential. The error is a *PushError with
+	// the failure class on failure.
+	EnrollPush(ctx context.Context, host, by string) error
+	// ReenrollAll revokes every host's key and runs first contact again in
+	// dependency order.
+	ReenrollAll(ctx context.Context, by string) error
 }
+
+// EnrollRow is one host on the enrollment page.
+type EnrollRow struct {
+	Host, State string // State: not_enrolled | enrolled | revoked
+	Connected   bool
+}
+
+// PushError is a failed enrollment push: the fixed failure class and the next
+// step the operator takes.
+type PushError struct {
+	Class, Detail, Next string
+}
+
+func (e *PushError) Error() string { return e.Class + ": " + e.Detail + " (" + e.Next + ")" }
 
 // OpsDashboard is the data of the one-screen dashboard.
 type OpsDashboard struct {

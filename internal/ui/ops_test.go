@@ -99,6 +99,16 @@ func (f *fakeOps) ApproveNode(_ context.Context, id, n, by, note string) error {
 }
 func (f *fakeOps) Apply(_ context.Context, id, by string) error    { return f.rec("apply:" + id) }
 func (f *fakeOps) Rollback(_ context.Context, id, by string) error { return f.rec("rollback:" + id) }
+func (f *fakeOps) EnrollHosts(context.Context) ([]EnrollRow, error) {
+	return []EnrollRow{{Host: "h1", State: "enrolled", Connected: true}, {Host: "h2", State: "not_enrolled"}}, nil
+}
+func (f *fakeOps) EnrollLine(_ context.Context, h, osName, by string) (string, error) {
+	return "curl -sk --pinnedpubkey sha256//PIN https://ctl:7443/l/" + testToken + "|sh", f.rec("line:" + h + ":" + osName + ":" + by)
+}
+func (f *fakeOps) EnrollPush(_ context.Context, h, by string) error {
+	return f.rec("push:" + h + ":" + by)
+}
+func (f *fakeOps) ReenrollAll(_ context.Context, by string) error { return f.rec("reenroll:" + by) }
 
 func opsEnv(t *testing.T) (*env, *fakeOps) {
 	f := &fakeOps{}
@@ -138,6 +148,7 @@ var opsPosts = []string{
 	"/agents/h1/safemode", "/auto/reenable", "/alerts/7/trace", "/alerts/7/state", "/plans",
 	"/plans/p-1/dryrun", "/plans/p-1/approve", "/plans/p-1/nodes/n1/approve", "/plans/p-1/apply", "/plans/p-1/rollback",
 	"/proposals/1/accept", "/proposals/1/dismiss",
+	"/enroll/h1/line", "/enroll/h1/push", "/enroll/reenroll-all",
 }
 
 func TestOpsRoutesRequireAuthAndCSRF(t *testing.T) {
@@ -148,7 +159,7 @@ func TestOpsRoutesRequireAuthAndCSRF(t *testing.T) {
 			t.Errorf("anonymous POST %s: %d", p, w.Code)
 		}
 	}
-	for _, p := range []string{"/agents/h1", "/alerts", "/alerts/7", "/chains", "/chains/1", "/plans", "/plans/p-1", "/plans/p-1/nodes", "/proposals", "/dashboard/live"} {
+	for _, p := range []string{"/agents/h1", "/alerts", "/alerts/7", "/chains", "/chains/1", "/plans", "/plans/p-1", "/plans/p-1/nodes", "/proposals", "/dashboard/live", "/enroll"} {
 		if w := anon.do("GET", p, nil, nil); w.Code != 303 {
 			t.Errorf("anonymous GET %s: %d", p, w.Code)
 		}

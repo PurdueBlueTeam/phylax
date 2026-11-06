@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>Enrollment</h1>
+{{if .Data.Line}}<div class="notice" role="status">
+<p>One-liner for <strong>{{.Data.Host}}</strong> (shown once; it carries a one-time token):</p>
+<pre id="enroll-line">{{.Data.Line}}</pre>
+</div>{{end}}
+<table>
+<thead><tr><th>Host</th><th>State</th><th>Connected</th><th>Console line</th><th>Push</th></tr></thead>
+<tbody>{{range .Data.Hosts}}<tr>
+<td>{{.Host}}</td><td>{{.State}}</td><td>{{if .Connected}}yes{{else}}no{{end}}</td>
+<td><form method="post" action="/enroll/{{.Host | urlq}}/line" class="inline">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<select name="os"><option value="linux">linux</option><option value="windows">windows</option></select>
+<button type="submit">Mint line</button></form></td>
+<td><form method="post" action="/enroll/{{.Host | urlq}}/push" class="inline">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<button type="submit">Push</button></form></td>
+</tr>{{else}}<tr><td colspan="5">No hosts.</td></tr>{{end}}</tbody>
+</table>
+<h2>Re-enroll all</h2>
+<p>Revokes every host's key and runs first contact again in dependency order (the domain controller first). Repeat the T+0 console phase on the new hosts first.</p>
+<form method="post" action="/enroll/reenroll-all" class="stack">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+<label>Type REENROLL to confirm <input name="confirm" autocomplete="off" required></label>
+<button type="submit">Revoke and re-enroll every host</button>
+</form>
+{{end}}

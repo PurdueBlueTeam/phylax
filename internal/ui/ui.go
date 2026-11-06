@@ -131,6 +131,13 @@ type Server struct {
 	auditQueue []AuditEntry
 	modGrids   []modGrid
 	modPages   []modPage
+
+	// routeMu guards the registered patterns. publicRoutes are the routes
+	// that need no session (login and static files); allRoutes is every
+	// route, so the T28 test can walk them.
+	routeMu      sync.Mutex
+	allRoutes    []string
+	publicRoutes map[string]bool
 }
 
 type ctxKey int
@@ -273,6 +280,26 @@ func (s *Server) EnsureAdmin(ctx context.Context) (password string, created bool
 // controller uses it to add pages and actions. Call before serving.
 func (s *Server) Handle(pattern string, h http.Handler) {
 	s.mux.Handle(pattern, s.protected(h))
+	s.recordRoute(pattern, false)
+}
+
+// public registers a route that is reachable without a session (the login
+// page and the static files) and records it as public.
+func (s *Server) public(pattern string, h http.HandlerFunc) {
+	s.mux.HandleFunc(pattern, h)
+	s.recordRoute(pattern, true)
+}
+
+func (s *Server) recordRoute(pattern string, public bool) {
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	s.allRoutes = append(s.allRoutes, pattern)
+	if public {
+		if s.publicRoutes == nil {
+			s.publicRoutes = map[string]bool{}
+		}
+		s.publicRoutes[pattern] = true
+	}
 }
 
 // AuditAction lets handlers record a named operator action.
