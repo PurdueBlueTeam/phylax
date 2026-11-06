@@ -85,3 +85,9 @@ and its findings are design requirements.
   check is a regexp over the statement text (a shortcut for a SQLite
   authorizer), so quoted table names are refused and `ON CONFLICT ... DO UPDATE`
   is skipped rather than mistaken for an `UPDATE` on `SET`.
+- A `destructive` or `lockout` node gets a default 90 s dead-man
+  (`plan.EffectiveDeadmanSec`), so an action with no undo data must use risk
+  `service` (or the run fails with `actions.ErrNotReversible`). `host.exec` is
+  `service` for that reason; it is gated by its own node approval and by
+  `SS010`, not by the risk class. The envelope plan tag is
+  `actions.Tag.PlanTag()` (`plan:<id>`).
