@@ -8,7 +8,6 @@ import (
 )
 
 func TestSummarizeRates(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
 	var a, b Ctl
 	a.Events[0], a.Bytes[0] = 20, 4000
 	a.Latency[0].Observe(30 * time.Millisecond)
@@ -28,7 +27,6 @@ func TestSummarizeRates(t *testing.T) {
 }
 
 func TestSummarizeFilterAndPrefix(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
 	recs := []Record{agRec(10, AgentSample{Host: "bench-1", RTTMs: 2}), agRec(10, AgentSample{Host: "ad", RTTMs: 90}),
 		agRec(50, AgentSample{Host: "bench-1", RTTMs: 4})}
 	s := Summarize(recs, Filter{HostPrefix: "bench-", To: time.Unix(1700000040, 0)})
@@ -38,7 +36,6 @@ func TestSummarizeFilterAndPrefix(t *testing.T) {
 }
 
 func TestSummarizeReconnect(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
 	end := time.Unix(1700000100, 0).UTC()
 	recs := []Record{{T: end, Kind: KindMark, Mark: "partition_end"},
 		agRec(110, AgentSample{Host: "h1", ConnectedAt: end.Add(-100 * time.Second), Connects: 1}),
@@ -55,7 +52,6 @@ func TestSummarizeReconnect(t *testing.T) {
 }
 
 func TestSummarizeModuleRatesAndReset(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
 	mk := func(sec int, cpu, ev uint64) Record {
 		return agRec(sec, AgentSample{Host: "h1", Modules: map[string]ModuleUse{"net": {State: "ok", CPUMs: cpu, Events: ev, HeldBytes: 5 << 20}}})
 	}
@@ -71,7 +67,6 @@ func TestSummarizeModuleRatesAndReset(t *testing.T) {
 }
 
 func TestSummarizeSkewLine(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
 	s := Summarize([]Record{agRec(0, AgentSample{Host: "h", SkewMS: -7000})}, Filter{})
 	var buf bytes.Buffer
 	s.Write(&buf)
@@ -81,8 +76,35 @@ func TestSummarizeSkewLine(t *testing.T) {
 }
 
 func TestWriteGoldenOrder(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 5")
-	// A small mixed fixture: assert the output lines start with, in order:
-	// "window ", "class ", "critical ", "high ", "normal ", "bulk ", "commit ms", "down ms", "gaps ",
-	// "controller ", "query ms", "agents ", "reconnect after partition", "module ", "mark ".
+	t0 := time.Unix(1700000000, 0).UTC()
+	var c Ctl
+	for i := 0; i < NumClasses; i++ {
+		c.Events[i], c.Bytes[i] = 10, 1000
+		c.Latency[i].Observe(20 * time.Millisecond)
+	}
+	c.Commit.Observe(5 * time.Millisecond)
+	c.Down.Observe(2 * time.Second)
+	c.CPUMs, c.RSSBytes, c.StoreBytes = 500, 40<<20, 10<<20
+	c.QueryMS = map[string]float64{"overview": 3.5}
+	recs := []Record{
+		{T: t0, Kind: KindMark, Mark: "load_start"},
+		{T: t0.Add(10 * time.Second), Kind: KindMark, Mark: "partition_end"},
+		ctlRecAt(t0.Add(20*time.Second), c),
+		agRecAt(t0.Add(20*time.Second), AgentSample{Host: "h1", Connected: true, ConnectedAt: t0.Add(15 * time.Second), Connects: 2, RTTMs: 3, SpoolDepth: 4,
+			Modules: map[string]ModuleUse{"net": {State: "ok", CPUMs: 100, HeldBytes: 1 << 20, Events: 10}}}),
+		{T: t0.Add(30 * time.Second), Kind: KindMark, Mark: "caught_up"},
+	}
+	var buf bytes.Buffer
+	Summarize(recs, Filter{}).Write(&buf)
+	want := []string{"window ", "class ", "critical ", "high ", "normal ", "bulk ", "commit ms", "down ms", "gaps ",
+		"controller ", "query ms", "agents ", "reconnect after partition", "module ", "mark "}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) < len(want) {
+		t.Fatalf("%d lines, want at least %d:\n%s", len(lines), len(want), buf.String())
+	}
+	for i, p := range want {
+		if !strings.HasPrefix(lines[i], p) {
+			t.Fatalf("line %d is %q, want prefix %q\n%s", i, lines[i], p, buf.String())
+		}
+	}
 }
