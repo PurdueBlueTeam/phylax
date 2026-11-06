@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,13 +54,17 @@ type agentState struct {
 	// verify is set in hello when the agent's head still equals its restore
 	// point: the restored controller asked for the whole spool, so events at
 	// or below acked go through Ingest for the restore-point check.
-	verify   bool
-	buf      map[uint64]event.Event // out-of-order events waiting for their predecessors
-	gapFrom  map[uint64]uint64      // gap record "from" -> its Seq (the record covers from..Seq-1)
-	sess     *agentConn
-	lastSeen time.Time
-	silent   bool
-	hb       AgentStatus
+	verify  bool
+	buf     map[uint64]event.Event // out-of-order events waiting for their predecessors
+	gapFrom map[uint64]uint64      // gap record "from" -> its Seq (the record covers from..Seq-1)
+	sess    *agentConn
+	// sessAddr is the remote IP of the live session; lastReuseAlert is when
+	// the stolen-key alert for this host last rang (agent.go).
+	sessAddr       string
+	lastReuseAlert time.Time
+	lastSeen       time.Time
+	silent         bool
+	hb             AgentStatus
 	// bench bookkeeping (bench.go): accepted hellos, when the last one was,
 	// and when the last session ended (0 while one is up).
 	connects    uint64
@@ -229,16 +234,23 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if err != nil {
 		return err
 	}
+	now := c.now()
+	addr := remoteIP(a.conn.RemoteAddr())
 	st.mu.Lock()
+	reuse := ""
 	if old := st.sess; old != nil {
+		if st.sessAddr != "" && addr != st.sessAddr && (st.lastReuseAlert.IsZero() || now.Sub(st.lastReuseAlert) >= time.Minute) {
+			st.lastReuseAlert = now
+			reuse = fmt.Sprintf("second live session from %s, first from %s", addr, st.sessAddr)
+		}
 		old.sess.Close()
 	}
 	st.sess = a
+	st.sessAddr = addr
 	st.acked = ag.LastSeq
 	st.verify = ag.RestoredSeq > 0 && ag.LastSeq == ag.RestoredSeq
 	st.buf = map[uint64]event.Event{}
 	st.gapFrom = map[uint64]uint64{}
-	now := c.now()
 	st.lastSeen = now
 	st.connects++
 	st.connectedAt = now
@@ -252,6 +264,9 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		defer c.alert(h.Host, "agent.resumed", "agent reconnected")
 	}
 	st.mu.Unlock()
+	if reuse != "" {
+		c.enrollAlert(h.Host, event.ReasonKeyReuse, reuse)
+	}
 	a.stp.Store(st)
 	welcome := &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: res.Enrolled || res.Reenrolled}
 	if wc, err := c.AgentConfigFor(ctx, h.Host); err != nil {
@@ -282,6 +297,20 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	go c.resume(h.Host)
 	c.log.Info("agent connected", "host", h.Host, "version", h.Version, "enrolled_now", res.Enrolled || res.Reenrolled, "acked", ag.LastSeq, "agent_last_seq", h.LastSeq)
 	return nil
+}
+
+// remoteIP returns the IP part of a connection's remote address.
+func remoteIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	if a, ok := addr.(*net.TCPAddr); ok {
+		return a.IP.String()
+	}
+	if host, _, err := net.SplitHostPort(addr.String()); err == nil {
+		return host
+	}
+	return addr.String()
 }
 
 func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
