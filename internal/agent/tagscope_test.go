@@ -263,7 +263,7 @@ func TestEmitStampsOnlyTheStepTree(t *testing.T) {
 		t.Fatalf("step: %+v", res)
 	}
 	eventually(t, 10*time.Second, "the step's tag scope to be released", func() bool {
-		return r.a.tags.Tag(event.KindProcessStart, map[string]any{"pid": child}) == ""
+		return r.a.tags.Tag(event.KindProcessStart, map[string]any{"pid": child, "start_ticks": childStart}) == ""
 	})
 	emit(child, childStart)
 	eventually(t, 10*time.Second, "the descendant after the step ended", func() bool {
