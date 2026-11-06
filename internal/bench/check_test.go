@@ -42,7 +42,6 @@ func failed(rs []Result) []string {
 }
 
 func TestCheckPasses(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 6")
 	rs := Check(loadRun(3*time.Second, 2*time.Second, 0, 1, 5*time.Second, true), "bench-", Criteria{LatencyP99Ms: 10000, MaxReconnectS: 35})
 	if f := failed(rs); len(f) != 0 {
 		t.Fatal(f, rs)
@@ -50,7 +49,6 @@ func TestCheckPasses(t *testing.T) {
 }
 
 func TestCheckEachFailure(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 6")
 	c := Criteria{LatencyP99Ms: 10000, MaxReconnectS: 35}
 	cases := map[string][]Record{
 		"latency_p99_before": loadRun(15*time.Second, time.Second, 0, 1, 5*time.Second, true),
@@ -74,7 +72,6 @@ func TestCheckEachFailure(t *testing.T) {
 }
 
 func TestCheckNoPartitionMarks(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 6")
 	rs := Check([]Record{{T: time.Unix(1700000000, 0), Kind: KindMark, Mark: "load_start"}}, "bench-", Criteria{})
 	if len(rs) != 1 || rs[0].Name != "partition_marks" || rs[0].Pass {
 		t.Fatal(rs)
