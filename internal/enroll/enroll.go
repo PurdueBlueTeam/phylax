@@ -31,6 +31,7 @@ type Options struct {
 	Alert         func(host, reason, detail string)                             // the enroll.alert reasons
 	Connected     func(host string) bool                                        // true when the host's agent has a live session
 	Disconnect    func(host string)                                             // closes a live session (Revoke and ReenrollAll)
+	OnEnrolled    func()                                                        // an enrollment or re-enrollment was announced
 	Now           func() time.Time                                              // nil means time.Now
 }
 
@@ -205,6 +206,9 @@ func (e *Enroller) Announce(ctx context.Context, host string, pin link.Pin, r Re
 	}
 	if _, err := e.opt.Emit(ctx, ev); err != nil {
 		return err
+	}
+	if e.opt.OnEnrolled != nil {
+		e.opt.OnEnrolled()
 	}
 	return nil
 }

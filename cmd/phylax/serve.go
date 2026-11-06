@@ -40,6 +40,8 @@ func runServe(ctx context.Context, args []string) error {
 	servedDir := fs.String("served-dir", "", "directory the web root serves; phylax and phylax.exe are hashed for the enrollment watch")
 	enrollWindow := fs.Duration("enroll-window", 0, "how long enrollment stays open (default -bundle-ttl)")
 	releaseDir := fs.String("release-dir", "", "directory holding phylax-linux-amd64 and phylax-windows-amd64.exe for bootstrap downloads")
+	restoreFile := fs.String("restore", "", "restore this encrypted snapshot into the data directory before opening it")
+	restoreReason := fs.String("restore-reason", "", "epoch reason recorded by -restore (default \"restore\")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,9 +73,16 @@ func runServe(ctx context.Context, args []string) error {
 	if *releaseDir != "" {
 		cfg.ReleaseDir = *releaseDir
 	}
+	if *vaultPath != "" {
+		cfg.VaultPath = *vaultPath
+	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("%w (use -config or -data-dir)", err)
 	}
+	// The operator passphrase is used before the environment is cleared: it
+	// unlocks the vault, decrypts -restore and encrypts snapshots.
+	pass := []byte(os.Getenv("PHYLAX_VAULT_PASSPHRASE"))
+	os.Unsetenv("PHYLAX_VAULT_PASSPHRASE")
 	// serve is the single writer of the data dir while it runs; the enroll
 	// commands refuse until it stops.
 	unlock, err := enroll.LockDataDir(cfg.DataDir)
@@ -84,6 +93,14 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	defer unlock()
+	if *restoreFile != "" {
+		if len(pass) == 0 {
+			return fmt.Errorf("-restore needs PHYLAX_VAULT_PASSPHRASE")
+		}
+		if err := controller.RestoreSnapshot(ctx, *restoreFile, pass, cfg.DataDir, *restoreReason, false); err != nil {
+			return fmt.Errorf("restore: %w", err)
+		}
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	opt := controller.Options{Logger: log, Version: version, Advertise: *advertise}
 	var m *manifest.Manifest
@@ -105,7 +122,7 @@ func runServe(ctx context.Context, args []string) error {
 		if m == nil {
 			return fmt.Errorf("-vault needs a manifest (manifest_path)")
 		}
-		v, err := openVault(*vaultPath)
+		v, err := openVault(*vaultPath, pass)
 		if err != nil {
 			return err
 		}
@@ -155,6 +172,7 @@ func runServe(ctx context.Context, args []string) error {
 			log.Error("controller module runner stopped", "err", err)
 		}
 	}()
+	go c.RunSnapshots(ctx, func() []byte { return pass })
 	log.Info("plan-signing public key (bootstrap plan_key)", "plan_key", hex.EncodeToString(c.PlanPublicKey()))
 	log.Info("controller key pin", "pin", c.Pin().String(), "curl", c.Pin().Curl())
 	if cfg.UIListen != "off" {
@@ -236,19 +254,18 @@ func startUI(ctx context.Context, c *controller.Controller, cfg controller.Confi
 	return nil
 }
 
-// openVault opens and unlocks the vault; the passphrase comes from the
-// PHYLAX_VAULT_PASSPHRASE environment variable and is cleared from it.
-func openVault(path string) (*vault.Vault, error) {
-	pass := os.Getenv("PHYLAX_VAULT_PASSPHRASE")
-	if pass == "" {
-		return nil, fmt.Errorf("-vault: set PHYLAX_VAULT_PASSPHRASE")
-	}
-	os.Unsetenv("PHYLAX_VAULT_PASSPHRASE")
+// openVault opens the vault and, when a passphrase is held, unlocks it. The
+// passphrase came from PHYLAX_VAULT_PASSPHRASE before it was cleared. Without
+// one the vault stays locked and the controller starts locked (R8).
+func openVault(path string, pass []byte) (*vault.Vault, error) {
 	v, err := vault.Open(path, vault.Options{})
 	if err != nil {
 		return nil, err
 	}
-	if err := v.Unlock([]byte(pass)); err != nil {
+	if len(pass) == 0 {
+		return v, nil
+	}
+	if err := v.Unlock(pass); err != nil {
 		return nil, err
 	}
 	return v, nil

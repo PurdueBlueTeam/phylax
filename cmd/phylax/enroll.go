@@ -269,7 +269,7 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 			if vaultPath == "" {
 				return errors.New("enroll push: -vault is required for the manifest's default credentials")
 			}
-			if v, err = openVault(vaultPath); err != nil {
+			if v, err = openVault(vaultPath, []byte(os.Getenv("PHYLAX_VAULT_PASSPHRASE"))); err != nil {
 				return fmt.Errorf("enroll push: vault: %w", err)
 			}
 		}
@@ -377,7 +377,7 @@ func enrollReenrollAll(ctx context.Context, b *enrollBase, vaultPath string, arg
 			if vaultPath == "" {
 				return "", "", errors.New("enroll reenroll-all: -vault is required for the manifest's default credentials")
 			}
-			if v, err = openVault(vaultPath); err != nil {
+			if v, err = openVault(vaultPath, []byte(os.Getenv("PHYLAX_VAULT_PASSPHRASE"))); err != nil {
 				return "", "", fmt.Errorf("enroll reenroll-all: vault: %w", err)
 			}
 		}

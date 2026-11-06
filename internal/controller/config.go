@@ -85,6 +85,14 @@ type Config struct {
 	// BenchMaxMB bounds the bench file before it rotates to <path>.1 (default
 	// 64).
 	BenchMaxMB int `json:"bench_max_mb"`
+	// VaultPath is the secrets vault file; when set it is part of a snapshot.
+	VaultPath string `json:"vault_path"`
+	// SnapshotDirs are the directories the controller writes its encrypted
+	// state snapshots to (a mounted share or the backup box path). Empty
+	// disables the snapshot writer.
+	SnapshotDirs []string `json:"snapshot_dirs"`
+	// SnapshotInterval is how often a snapshot is written (default 15m).
+	SnapshotInterval Duration `json:"snapshot_interval"`
 }
 
 func (c *Config) applyDefaults() {
@@ -124,6 +132,7 @@ func (c *Config) applyDefaults() {
 	if c.BenchMaxMB <= 0 {
 		c.BenchMaxMB = 64
 	}
+	def(&c.SnapshotInterval, 15*time.Minute)
 }
 
 // Validate applies defaults and checks the config.

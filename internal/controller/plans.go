@@ -1275,6 +1275,7 @@ func (rt *planRT) maybeFinishLocked() {
 	}
 	_ = rt.persistLocked(context.Background())
 	close(rt.done)
+	rt.c.snapshotSoon()
 }
 
 // ---- scorer-mimic probes (Task 27) ----

@@ -152,6 +152,11 @@ type Controller struct {
 	// benchLog is the recorder's file while Serve runs (bench.go).
 	benchLog *bench.Log
 
+	// snapshot writer state (snapshot.go).
+	snapMu     sync.Mutex
+	snapStatus string
+	snapSoonC  chan struct{}
+
 	modMu   sync.Mutex
 	mods    map[string]*moduleRunState
 	runMu   sync.Mutex
@@ -219,7 +224,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{},
-		probeRetry: 5 * time.Second, restoreWait: map[string]bool{}}
+		probeRetry: 5 * time.Second, restoreWait: map[string]bool{}, snapSoonC: make(chan struct{}, 1)}
 	enr, err := enroll.New(enroll.Options{
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
 		PlanKey:    pk.Public().(ed25519.PublicKey),
@@ -228,6 +233,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.enrollAlert,
 		Connected:  func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
 		Disconnect: c.disconnectAgent,
+		OnEnrolled: c.snapshotSoon,
 	})
 	if err != nil {
 		st.Close()
