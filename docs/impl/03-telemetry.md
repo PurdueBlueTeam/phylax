@@ -4,7 +4,7 @@
 
 **Goal:** Move `audit`, `winevt` and `net` onto the module contract, build `logs` and `inventory`, make every producer emit the canonical common kinds through `event.New`, and apply the rename map to producers, rules and consumers so no old kind name is left.
 
-**Architecture:** Each module is one package (`internal/audit`, `internal/winevt`, `internal/net` with Go package `netmod`, `internal/logs`, `internal/inventory`) with its agent registration in `internal/agent/mods/`. A producer builds a typed common-kind struct, calls `event.New`, and attaches anything the struct does not carry with `Event.WithExtra` (an `x_` field no rule may read). `internal/sockets` takes the socket-table, process-join and Community ID code that `net`, `capture`, `traceback` and `depot/gotools` share. `inventory` has an agent side (collectors, differential engine, probes) and a controller side (fold into two tables, a page); the pure fold lives in `internal/inventory/fold`.
+**Architecture:** Each module is one package (`internal/audit`, `internal/winevt`, `internal/net` with Go package `netmod`, `internal/logs`, `internal/inventory`) with its agent registration in `internal/agent/mods/`. A producer builds a typed common-kind struct, calls `event.New`, and attaches anything the struct does not carry with `Event.WithExtra` (an `x_` field no rule may read). `internal/sockets` takes the socket-table, process-join and Community ID code that `net`, `capture`, `traceback` and `depot/gotools` share. `inventory` is a core module (S4: always on where its OS conditions hold; `hunt`, drift and generators diff its rows instead of re-collecting). It has an agent side (collectors, differential engine, probes) and a controller side (fold into two tables, a page); the pure fold lives in `internal/inventory/fold`. A module block carries `enabled` only; `act_enabled` and `autonomy` exist only on acting modules (none of these five carries them; `audit`'s two actions are gated by approval class), and `rate_per_sec`/`burst` come from the manifest budget unless the block overrides them (S4).
 
 **Tech Stack:** Go 1.27.2 (mise), `modernc.org/sqlite` (rpm database), `gopkg.in/yaml.v3`, `golang.org/x/sys`, `go-libaudit` (already used). No new modules in `go.mod`.
 
@@ -19,7 +19,7 @@
 5. **`CommunityID` and the protocol constants move to `internal/sockets`.** `capture`, `traceback` and `chains` import them from `internal/net` today; after the move that would be a sibling import (Known bug 15). The design describes `internal/sockets` as `sock_diag` plus the inode join; Task 1 adds "Community ID v1" to that line.
 6. **Content for `logs` and `inventory` lives inside the package** (`internal/logs/parsers/*.yml`, `internal/inventory/probes/*.yml`, `internal/inventory/software/*.yml`, embedded with `go:embed`). Appendix D has no top-level `logs/` or `inventory/` and the agent needs the content offline and signed with the release. The consistency pass already corrected the module sections and Appendix D; Task 1 Step 5 verifies it.
 7. **`net` stops feeding `deps` and `deps` is not yet a subscriber.** Task 17 removes `net`'s `deps` import (Known bug 15); `deps.edge` and `deps.peer` stop being produced until W8 makes `deps` subscribe to `conn` and `listener`. W8's plan must start from that fact. Until then `internal/deps` keeps its code and tests.
-8. **Hand-offs, not built here.** (a) `net.shadow_drop` and `net.ingress_denied` are declared here; emitting them (the separate NFLOG group, Known bug 14, the Windows shadow evaluator) is W6, in `internal/net`. `plan.NetSettings` keeps `NFLogGroups` until W6 swaps it for `deny_log_group` and `shadow_log_group`. (b) `sysmon.install`, `sysmon.config`, `eventlog.size` and an action that enables an analytic channel have no owner in the master plan; none is built here. Recommend W5 (hardening) takes them. (c) The controller-side comparison of the heartbeat `rules_hash` (tier-1 alert on a change or a drop to no rules) has no declared kind to emit; this plan only fills `Health.Info`. Recommend W10 (Platform page) or W4 (a rule on `agent.health`) owns it. (d) The `respond` tier-0 Sysmon reinstall recipe is W4.
+8. **Hand-offs, not built here.** (a) `net.shadow_drop` and `net.ingress_denied` are declared here; emitting them (the separate NFLOG group, Known bug 14, the Windows shadow evaluator) is W6, in `internal/net`. `plan.NetSettings` keeps `NFLogGroups` until W6 swaps it for `deny_log_group` and `shadow_log_group`. (b) `sysmon.install`, `sysmon.config`, `eventlog.size` and an action that enables an analytic channel have no owner in the master plan; none is built here. Recommend W5 (hardening) takes them. (c) There is no controller-side comparison of the heartbeat `rules_hash` (S4 removed the audit-rules hash compare): this plan fills `Health.Info` (`rules_hash` and the rest), `agent.health` carries it, and the Platform page displays it. The agent's own verify loop still repairs and emits `audit.rules_changed`. (d) The `respond` recipe for `telemetry_gap{reason: sysmon_degraded}` (Sysmon reinstall) is W4, switched by the recipe's enablement and the engine `autonomy` setting (S1), not by anything in `winevt`.
 9. **`json.Number` on the bus.** `event.New` stores numbers as `json.Number`; `internal/detect/field.go` (`toStr`, `toNum`) does not handle it, so `uid: {gt: 0}` would silently stop matching live events. Task 2 fixes it first; W4 inherits the fix.
 
 ## Global Constraints
@@ -56,9 +56,9 @@
 | `internal/audit/` | `audit` module (moved from `internal/collect/audit`) | 1, 4-10 |
 | `internal/audit/kinds.go` | `audit.module_load`, `audit.rules_changed`, `audit.af_alg` | 1 |
 | `internal/winevt/` | `winevt` module (moved from `internal/collect/winevt`) | 1, 11-15 |
-| `internal/winevt/kinds.go` | `winevt.sec_event`, `winevt.sensor_state` | 1 |
+| `internal/winevt/kinds.go` | `winevt.sec_event` (the Sysmon state is a `telemetry_gap{reason: sysmon_degraded}`, S4) | 1 |
 | `internal/net/` (package `netmod`) | `net` module (moved from `internal/collect/net`) | 1, 3, 17-21 |
-| `internal/net/kinds.go` | `net.egress_denied`, `net.shadow_drop`, `net.ingress_denied`, `net.canary_result`, `net.sensor_degraded` | 1 |
+| `internal/net/kinds.go` | `net.egress_denied`, `net.shadow_drop`, `net.ingress_denied`, `net.canary_result` (the NFLOG sensor state is a `telemetry_gap{reason: sensor_degraded}`, S4) | 1 |
 | `internal/logs/` | `logs` module: `tail.go`, `parser.go`, `parsers/*.yml`, `module.go`, `kinds.go` | 1, 22-27 |
 | `internal/inventory/` | `inventory`: `tables.go`, `diff.go`, `collect_linux_*.go`, `collect_windows*.go`, `software.go`, `probe.go`, `probes/`, `software/`, `module.go`, `actions.go`, `controller.go`, `ui.go` | 1, 28-37 |
 | `internal/inventory/fold/` | pure fold of snapshot plus row events | 1, 2 |
@@ -67,7 +67,7 @@
 | `internal/plan/agentconfig.go` | `LogsSettings`, `InventorySettings`, `WinevtSettings.BackscanHours` | 1 |
 | `internal/detect/field.go` | `json.Number` | 2 |
 | `rules/*.yml`, `rules/pending/needs_producer.yml` | renamed kinds and fields; unparked inventory and logs rules | 3-5, 11, 12, 27, 38 |
-| `internal/traceback/obs.go`, `trace.go`, `internal/chains/remediate.go`, `internal/deps/graph.go`, `internal/controller/capture_ingest.go` | readers of the renamed kinds | 3, 4, 10, 11 |
+| `internal/traceback/obs.go`, `internal/chains/hops/` (the within-host hop builder that `chains` calls; `trace.go` and `tbtest` move there from `internal/traceback`, S4), `internal/chains/remediate.go`, `internal/deps/graph.go`, `internal/controller/capture_ingest.go` | readers of the renamed kinds | 3, 4, 10, 11 |
 | `manifest/2027/modules/{audit,winevt,net,logs,inventory}.yml`, `internal/controller/genconfig.go`, `internal/event/legacy_test.go` | reference blocks, rendering, retired-name guard | 38 |
 | `docs/rules.md`, `docs/agent.md`, `docs/deps.md`, `docs/capture.md` | field and kind reference | with each rename |
 | `docs/impl/lab/w3-telemetry.md` | lab record | 40 |
@@ -140,19 +140,9 @@ const (KindModuleLoad = "audit.module_load"; KindRulesChanged = "audit.rules_cha
 
 // ---- internal/winevt/kinds.go ----
 type SecEvent map[string]any // open payload; shortcut: untyped per category, type a category when a consumer needs it
-type SensorState struct {
-	Sensor            string `json:"sensor"` // sysmon
-	Present           bool   `json:"present"`
-	Running           bool   `json:"running"`
-	DriverRunning     bool   `json:"driver_running"`
-	ServiceName       string `json:"service_name,omitempty"`
-	DriverName        string `json:"driver_name,omitempty"`
-	Renamed           bool   `json:"renamed"`
-	ConfigHash        string `json:"config_hash,omitempty"`
-	ExpectedConfigHash string `json:"expected_config_hash,omitempty"`
-	Fallback          string `json:"fallback,omitempty"` // "4688" while Sysmon is not running
-}
-const (KindSecEvent = "winevt.sec_event"; KindSensorState = "winevt.sensor_state") // High, Critical
+// Sysmon state is not a kind (S4): it is telemetry_gap{source winevt, reason sysmon_degraded} (Critical) with the probe result attached through WithExtra
+// (x_sensor "sysmon", x_present, x_running, x_driver_running, x_service_name, x_driver_name, x_renamed, x_config_hash, x_expected_config_hash, x_fallback "4688"), and Health.Info["sysmon"]
+const KindSecEvent = "winevt.sec_event" // High, Critical
 
 // ---- internal/net/kinds.go ----
 type ProcFields struct { // embedded in the three process-bearing kinds
@@ -209,9 +199,9 @@ type CanaryResult struct {
 	Detail    string `json:"detail,omitempty"`
 	ElapsedMS int64  `json:"elapsed_ms"`
 }
-type SensorDegraded struct{ Module, Sensor, Error string }
+// NFLOG sensor state is not a kind (S4): telemetry_gap{source net, reason sensor_degraded} (High) with x_sensor "nflog" and x_error
 const (KindEgressDenied = "net.egress_denied"; KindShadowDrop = "net.shadow_drop"; KindIngressDenied = "net.ingress_denied";
-	KindCanaryResult = "net.canary_result"; KindSensorDegraded = "net.sensor_degraded") // High, Normal, High, Normal (Critical on a leak), High
+	KindCanaryResult = "net.canary_result") // High, Normal, High, Normal (Critical on a leak)
 
 // ---- internal/logs/kinds.go ----
 type Line struct {
@@ -473,7 +463,7 @@ func TestNoNetConnectKindRemains(t *testing.T) { /* walk every event of every au
 
 ---
 
-### Task 6: `audit`: settings, manifest, `HealthReporter` and the heartbeat rules hash (Known bugs 16, 17)
+### Task 6: `audit`: settings, manifest, `HealthReporter` and the `Health.Info` rules hash (Known bugs 16, 17)
 
 **Files:**
 - Modify: `internal/agent/mods/audit_linux.go` (`Manifest`, `Section` honours `Enabled`, `Build` passes settings), `internal/audit/module.go` (`Health()`), `internal/audit/manifest.go` (new: the `Manifest` literal)
@@ -481,7 +471,7 @@ func TestNoNetConnectKindRemains(t *testing.T) { /* walk every event of every au
 
 **Interfaces:**
 - Consumes: `module.Manifest`, `module.Health`, `module.Gap`, `module.State*`, `agent.Factory.Manifest`, `agent.HealthReporter`; the `Status` struct already in `module.go`.
-- Produces: `func (m *Module) Health() module.Health`; `func Manifest() module.Manifest` (the literal in design section 3: `Name "audit"`, `OS ["linux"]`, `Privilege "root"`, `Emits` the seven kinds, `Budget{150, 96, 2000, 4000, 24<<20, 1}`, `Default true`, `Actions ["audit.rules","audit.immutable"]`).
+- Produces: `func (m *Module) Health() module.Health`; `func Manifest() module.Manifest` (the literal in design section 3: `Name "audit"`, `OS ["linux"]`, `Privilege "root"`, `Emits` the seven kinds, `Budget{150, 96, 2000, 4000, 24<<20, 1}` (rate and burst default from the budget; the block sets them only to override, S4), `Default true`, `Actions ["audit.rules","audit.immutable"]`).
 
 - [ ] **Step 1: Remove the skips and write the tests:**
 
@@ -504,7 +494,8 @@ func TestSectionHonoursEnabled(t *testing.T) { /* block with Enabled false -> Se
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/audit/ ./internal/agent/mods/ -run 'Health|Manifest|SectionHonours' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** `Health()` reads `Status()`: `ok` when installed, enabled, reader attached, no never rules; `degraded` per the design's list; `Info` keys `rules_hash` (full), `mode`, `rules_installed`, `rules_failed`, `audit_pid`, `backlog`, `lost`; `Usage` from the module's counters (events, dropped = rate-limited + queue overflow, held bytes = process table + queue + sweep snapshot estimate). Factory sets `Manifest: audit.Manifest()`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/audit/ ./internal/agent/mods/`. Expected: PASS.
-- [ ] **Step 5: Commit** `audit: manifest, HealthReporter and heartbeat rules hash`.
+No controller-side hash compare is built (S4); the hash is displayed from `agent.health` only.
+- [ ] **Step 5: Commit** `audit: manifest, HealthReporter and Health.Info rules hash`.
 
 ---
 
@@ -644,12 +635,12 @@ On a non-root test run the factory reports `unavailable`, which check 2 accepts;
 ### Task 11: `winevt`: canonical `process_start`, `process_exit`, `conn`, `file_change`, `dns_query`, and `winevt.*` names; remove `net_connect`
 
 **Files:**
-- Modify: `internal/winevt/mapper.go` (`mapSysmon`, 4688 branch, constants), `internal/winevt/pipeline.go` (`sensor_state`), `internal/winevt/mapper_test.go`, `module_test.go`, `internal/traceback/obs.go` (delete the `KindNetConnect` branch, `KindSecEvent` becomes `winevt.sec_event`, file branch drops `actor_*`), `internal/traceback/trace.go`, `internal/chains/remediate.go` (`traceback.KindSecEvent` use), `rules/windows.yml`, `rules/mw-redteam.yml`, `rules/deception.yml`, `rules/pending/needs_producer.yml`, `docs/rules.md`
+- Modify: `internal/winevt/mapper.go` (`mapSysmon`, 4688 branch, constants), `internal/winevt/pipeline.go` (the Sysmon probe emits `telemetry_gap{reason: sysmon_degraded}`), `internal/winevt/mapper_test.go`, `module_test.go`, `internal/traceback/obs.go` (delete the `KindNetConnect` branch, `KindSecEvent` becomes `winevt.sec_event`, file branch drops `actor_*`), the hop builder (`internal/chains/hops`, moved from `internal/traceback/trace.go`; edit whichever path exists when this task runs), `internal/chains/remediate.go` (`traceback.KindSecEvent` use), `rules/windows.yml`, `rules/mw-redteam.yml`, `rules/deception.yml`, `rules/pending/needs_producer.yml`, `docs/rules.md`
 - Test: `internal/winevt/canonical_test.go`
 
 **Interfaces:**
-- Consumes: `event.ProcessStart`, `ProcessExit`, `Conn`, `FileChange`, `DNSQuery`, `winevt.SecEvent`, `winevt.SensorState`, `WithExtra`.
-- Produces: Sysmon 1 and 4688 emit `process_start` (`source: winevt`; `parent{exe, comm, cmdline}`); Sysmon 5 emits `process_exit`; Sysmon 3 emits `conn` (`op: opened`, `dir` outbound when `Initiated`, else inbound; `laddr/lport` the local end; `raddr/rport` the other end; `x_rhost` from `destination_hostname`); Sysmon 11, 23, 26 emit `file_change` (`exe`, `pid`, `user` the writer; `gpo` fields in the struct); Sysmon 22 emits `dns_query` (`query`, `query_results`, `pid`, `exe`, `user`, `source: winevt`, Priority Bulk) and no longer a `sec_event`; everything else stays `winevt.sec_event` / `winevt.sensor_state`. Sysmon `ProcessGuid`, hashes, `channel`, `provider`, `event_id`, `record_id`, `host`, `sensor`, `logon_id` are `x_` on the common kinds.
+- Consumes: `event.ProcessStart`, `ProcessExit`, `Conn`, `FileChange`, `DNSQuery`, `winevt.SecEvent`, `event.TelemetryGap`, `WithExtra`.
+- Produces: Sysmon 1 and 4688 emit `process_start` (`source: winevt`; `parent{exe, comm, cmdline}`); Sysmon 5 emits `process_exit`; Sysmon 3 emits `conn` (`op: opened`, `dir` outbound when `Initiated`, else inbound; `laddr/lport` the local end; `raddr/rport` the other end; `x_rhost` from `destination_hostname`); Sysmon 11, 23, 26 emit `file_change` (`exe`, `pid`, `user` the writer; `gpo` fields in the struct); Sysmon 22 emits `dns_query` (`query`, `query_results`, `pid`, `exe`, `user`, `source: winevt`, Priority Bulk) and no longer a `sec_event`; everything else stays `winevt.sec_event`; the Sysmon state probe emits `telemetry_gap{source: winevt, reason: sysmon_degraded}` (no `winevt.sensor_state` kind, S4). Sysmon `ProcessGuid`, hashes, `channel`, `provider`, `event_id`, `record_id`, `host`, `sensor`, `logon_id` are `x_` on the common kinds.
 
 - [ ] **Step 1: Remove the skips and write the tests:**
 
@@ -671,7 +662,7 @@ func TestSysmon3DirectionOutboundAndInbound(t *testing.T) {
 	// the same record with Initiated false: dir "inbound", laddr = DestinationIp, raddr = SourceIp (local end is the destination)
 }
 func TestSysmon5IsProcessExit(t *testing.T) { /* a Sysmon 5 record (extend mkXML or add testdata/sysmon5.xml) -> kind process_exit, pid, exe set; Validate ok */ }
-func TestSecEventAndSensorStateRenamed(t *testing.T) { /* sec4697.xml -> winevt.sec_event with category service_install; pipeline sensor probe -> winevt.sensor_state; Priority critical; both Validate ok (open payload / SensorState struct) */ }
+func TestSecEventAndSysmonGap(t *testing.T) { /* sec4697.xml -> winevt.sec_event with category service_install; pipeline sensor probe with Sysmon stopped -> telemetry_gap{reason sysmon_degraded, x_fallback "4688"}; Priority critical; both Validate ok */ }
 func TestWindowsRulesStillFire(t *testing.T) { /* run rules/windows.yml + mw-redteam.yml engine over the mapped fixtures: sethc created (file_change, exe) matches; service install matches on winevt.sec_event */ }
 ```
 
@@ -728,7 +719,7 @@ func TestObsAuthEvent(t *testing.T) { /* auth_event success -> ClassAuthOK, fail
 - Test: `internal/winevt/health_test.go`
 
 **Interfaces:**
-- Produces: `func Manifest() module.Manifest` (design section 3: `OS ["windows"]`, `Privilege "root"`, `Emits` nine kinds, `Budget{100, 64, 500, 1000, 12<<20, 1}`, `Default true`, `Content ["sysmon"]`, `Actions` nil here because the four logging actions are not built in W3); `func (m *Module) Health() module.Health`; `telemetry_gap{source:"winevt:<channel>" or "winevt", reason, count, from, to}` with `x_channel`, `x_from_record`, `x_to_record`.
+- Produces: `func Manifest() module.Manifest` (design section 3: `OS ["windows"]`, `Privilege "root"`, `Emits` nine kinds, `Budget{100, 64, 500, 1000, 12<<20, 1}` (rate and burst default from it, S4), `Default true`, `Content ["sysmon"]`, `Actions` nil here because the four logging actions are not built in W3); `func (m *Module) Health() module.Health` (`Info["sysmon"]` carries the probe result); `telemetry_gap{reason: sysmon_degraded}` (Critical, `x_` probe fields, emitted at start and on a change to a degraded state) replaces the old sensor-state kind; `telemetry_gap{source:"winevt:<channel>" or "winevt", reason, count, from, to}` with `x_channel`, `x_from_record`, `x_to_record`.
 
 - [ ] **Step 1: Remove the skips and write the tests:**
 
@@ -742,7 +733,7 @@ func TestHealthStates(t *testing.T) {
 	// a channel missing -> degraded with "channel <name> missing"; stale bookmark -> Gaps "Security log cleared / bookmark reset: events between ..."
 	// Detail empty unless the Sysmon service name is not stock
 }
-func TestManifestValid(t *testing.T) { /* Validate nil; Emits contain process_start, process_exit, auth_event, conn, file_change, dns_query, telemetry_gap, winevt.sec_event, winevt.sensor_state */ }
+func TestManifestValid(t *testing.T) { /* Validate nil; Emits contain process_start, process_exit, auth_event, conn, file_change, dns_query, telemetry_gap, winevt.sec_event; no sensor_state kind */ }
 func TestSectionHonoursEnabled(t *testing.T) { /* enabled false -> Section false */ }
 ```
 
@@ -886,12 +877,12 @@ func TestNetEmitsNoDepsKinds(t *testing.T) { /* run the tracker over a connectio
 ### Task 18: `net`: typed `net.*` events, `canary: true`, own-link exclusion, NFLOG overflow gap
 
 **Files:**
-- Modify: `internal/net/egress.go` (`try` builds `EgressDenied`), `internal/net/canary.go` (`CanaryResult`, `canary: true`), `internal/net/module.go` (`SensorDegraded`, `telemetry_gap` through `event.New`, own-link exclusion), `internal/net/tracker.go` (skip the agent's own sockets), `internal/net/nflog_linux.go` (expose `Lost`), `rules/network.yml` (canary exemptions read `canary: true`; D12 canary rule), `internal/traceback/obs.go` (egress fallback reads `raddr/rport` only)
+- Modify: `internal/net/egress.go` (`try` builds `EgressDenied`), `internal/net/canary.go` (`CanaryResult`, `canary: true`), `internal/net/module.go` (`telemetry_gap` through `event.New` including `reason: sensor_degraded`, own-link exclusion), `internal/net/tracker.go` (skip the agent's own sockets), `internal/net/nflog_linux.go` (expose `Lost`), `rules/network.yml` (canary exemptions read `canary: true`; D12 canary rule), `internal/traceback/obs.go` (egress fallback reads `raddr/rport` only)
 - Test: `internal/net/typed_test.go`
 
 **Interfaces:**
-- Consumes: `netmod.EgressDenied`, `CanaryResult`, `SensorDegraded`, `event.TelemetryGap`.
-- Produces: `TrackerConfig.OwnPID int` and `EgressConfig.OwnPID int` (sockets owned by that pid are neither reported as `conn` nor attributed); gap reasons `nflog_enobufs`, `connection_table_full` as `telemetry_gap{source:"net"}`.
+- Consumes: `netmod.EgressDenied`, `CanaryResult`, `event.TelemetryGap`.
+- Produces: `TrackerConfig.OwnPID int` and `EgressConfig.OwnPID int` (sockets owned by that pid are neither reported as `conn` nor attributed); gap reasons `nflog_enobufs`, `connection_table_full`, `sensor_degraded` (`x_sensor: nflog`, `x_error`; High) as `telemetry_gap{source:"net"}`.
 
 - [ ] **Step 1: Remove the skips and write the tests:**
 
@@ -909,7 +900,7 @@ func TestOwnLinkExcluded(t *testing.T) {
 	// Poll -> exactly one conn opened (pid 900); a denied packet matching the agent's socket is emitted unattributed? no: not emitted at all (platform problem reported by the link)
 }
 func TestNFLogOverflowBecomesGap(t *testing.T) { /* feed Lost=5 -> telemetry_gap{source net, reason nflog_enobufs, count 5}; Health later shows the gap */ }
-func TestSensorDegradedTyped(t *testing.T) { /* Start with a source that fails NFLOG -> net.sensor_degraded Validate ok; the module continues with socket telemetry */ }
+func TestSensorDegradedIsGap(t *testing.T) { /* Start with a source that fails NFLOG -> telemetry_gap{reason sensor_degraded, x_sensor nflog} Validate ok; the module continues with socket telemetry */ }
 func TestCanaryRulesExemptByPayloadFlag(t *testing.T) { /* rules/network.yml egress rules: {canary: true} is exempt, V3.egress-canary-leak fires on net.canary_result result leak */ }
 ```
 
@@ -976,7 +967,7 @@ func TestManifestOSIncludesWindows(t *testing.T) { /* Manifest().OS == [linux wi
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/net/ -run 'SocksFromTables|ManifestOSIncludes' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** NFLOG and canaries stay Linux (`Config.NFLogGroups` ignored on Windows with a `net.sensor_degraded`-free skip); canaries work on both (plain dial).
+- [ ] **Step 3: Implement.** NFLOG and canaries stay Linux (`Config.NFLogGroups` ignored on Windows with a skip that emits no `sensor_degraded` gap); canaries work on both (plain dial).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/net/ && GOOS=windows go vet ./internal/net/ ./internal/agent/...`. Expected: PASS.
 - [ ] **Step 5: Commit** `net: Windows listeners and connections from the extended tables`.
 
@@ -1477,7 +1468,7 @@ func TestWindowsCollectorsRegistered(t *testing.T) { /* Collectors("windows") ha
 
 **Interfaces:**
 - Consumes: Tasks 28 to 33, `plan.InventorySettings`.
-- Produces: `func New(cfg Config) (*Module, error)`, `Config{Tables []string; Interval, SoftwareInterval time.Duration; ResnapshotEvery time.Duration; MaxRows int; StateDir string; Root string; GOOS string; Now func() time.Time; Collectors map[string]Collector; Logger *slog.Logger; Keep func(string, any); Kept func(string) any}`; `Manifest()` (design section 3: `Sides [agent, controller]`, `OS nil`, `Consumes ["inventory.row","inventory.snapshot"]`, `Tables ["inventory_rows","inventory_epochs"]`, `Default false`, `Budget{60, 48, 50, 400, 6<<20, 8}`, `Actions ["collect.inventory","probe.run"]`, `Pages ["/inventory"]`); `func (m *Module) CollectNow(ctx context.Context, tables []string, snapshot bool) (map[string]int, error)` (rows per table); `Health()`.
+- Produces: `func New(cfg Config) (*Module, error)`, `Config{Tables []string; Interval, SoftwareInterval time.Duration; ResnapshotEvery time.Duration; MaxRows int; StateDir string; Root string; GOOS string; Now func() time.Time; Collectors map[string]Collector; Logger *slog.Logger; Keep func(string, any); Kept func(string) any}`; `Manifest()` (design section 3: `Sides [agent, controller]`, `OS nil`, `Consumes ["inventory.row","inventory.snapshot"]`, `Tables ["inventory_rows","inventory_epochs"]`, `Default true` (core, S4), `Budget{60, 48, 50, 400, 6<<20, 8}`, `Actions ["collect.inventory","probe.run"]`, `Pages ["/inventory"]`); `func (m *Module) CollectNow(ctx context.Context, tables []string, snapshot bool) (map[string]int, error)` (rows per table); `Health()`.
 
 Rules: one goroutine, one table at a time, jittered start (`Now`-seeded hash of host name so tests are deterministic), `software` every 15 min, `domain_join` at start and hourly, others every `Interval` (60 s); baseline snapshots chunked at 500 rows (`part`/`parts`), bulk priority; row events normal, High for `Persist` tables; at most 200 row events per table per collection then one `op: overflow` with the count; `ResnapshotEvery` (6 h) full snapshot reason `periodic`; a truncated table or failed collector becomes a `telemetry_gap{source:"inventory", reason, table, count}` and a Health gap.
 
@@ -1643,7 +1634,7 @@ func TestReferenceModuleBlocksDecodeStrictly(t *testing.T) { /* each manifest/20
 // internal/event/legacy_test.go
 func TestNoRetiredKindNamesInTree(t *testing.T) {
 	// walks the repo (../..) *.go, *.yml, *.yaml, *.md; skips phylax_design.md, docs/impl/, docs/phylax_design.v2-*.md, testdata, this file
-	// patterns (regexp, case sensitive): `\bproc\.exec\b`, `\bprocess_end\b`, `\bauth_success\b`, `\bauth_fail\b`, `\bnet_connect\b`, `\bnet\.connection_(opened|closed)\b`, `\bnet\.listener_(added|removed)\b`, `\blog_line\b`, `(^|[^.\w])sec_event\b`, `(^|[^.\w])sensor_state\b`, `"fim"`
+	// patterns (regexp, case sensitive): `\bproc\.exec\b`, `\bprocess_end\b`, `\bauth_success\b`, `\bauth_fail\b`, `\bnet_connect\b`, `\bnet\.connection_(opened|closed)\b`, `\bnet\.listener_(added|removed)\b`, `\blog_line\b`, `(^|[^.\w])sec_event\b`, `(^|[^.\w])sensor_state\b`, `\bnet\.sensor_degraded\b`, `"fim"`
 	// any hit fails with file:line
 }
 ```
@@ -1704,7 +1695,7 @@ Run on the BTaP Proxmox replica (`stacks/ccdc`, the "ccdc27" lab). Record in `do
 
 - [ ] **T43 exec storm** on a Rocky 9 and an Ubuntu 22.04 host: 50, 200 and 1000 execs per second for 60 s each; audit keeps 99% or more at 200 per second and every miss has a `telemetry_gap` (compare `process_start` count with a controlled loop's exec count). If it fails, record it against open question A2.Q2.
 - [ ] **T12 `LD_PRELOAD` rootkit**: a unit with `LD_PRELOAD` appears as `inventory.row` (`units`), and `process_start.env` carries it; D11 and D6d2 fire; latency reported.
-- [ ] **T11 log clear and Sysmon stop** (campaign 03) on a Windows host: `wevtutil cl Security` produces `winevt.sec_event{category: log_cleared}` at critical, a stopped Sysmon produces `winevt.sensor_state` with `fallback: "4688"`, the heartbeat stays intact, and the bookmark resets with a `bookmark_stale` gap. Reinstall is W4 and not run.
+- [ ] **T11 log clear and Sysmon stop** (campaign 03) on a Windows host: `wevtutil cl Security` produces `winevt.sec_event{category: log_cleared}` at critical, a stopped Sysmon produces `telemetry_gap{reason: sysmon_degraded}` with `x_fallback: "4688"`, the heartbeat stays intact, and the bookmark resets with a `bookmark_stale` gap. Reinstall is W4 and not run.
 - [ ] **Windows `net`**: listeners and connections from the extended tables on the DC, the 5157 re-emit with a real blocked outbound connection (`New-NetFirewallRule -Action Block`), measured latency; the real `ExtendedTables` and `NetUserEnum` calls.
 - [ ] **T21** first contact then the agent killed and disabled (Linux and Windows): the per-module telemetry stops and the controller marks the host silent; report first-heartbeat and silence latencies.
 - [ ] **T29 module-state half**: `kill -9` the agent at random during winevt bookmark writes, `logs` offsets writes and `inventory` snapshot writes (200 iterations each); every restart succeeds, no inventory mass-add, no log line duplicated more than the in-flight batch, no skipped complete line.
