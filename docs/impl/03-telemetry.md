@@ -76,7 +76,7 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Moves the three packages, writes the declared kinds, the shared-library skeletons, the stubs of the two new modules, the new settings structs, and every skipped test the later tasks implement. Merges on its own (its own pull request into `v3-redesign`); W6 waits for it (it needs the `net.*` kinds).
+Done by a stronger model. Moves the three packages, writes the declared kinds, the shared-library skeletons, the stubs of the two new modules, the new settings structs, and every skipped test the later tasks implement. Merges on its own (its own pull request into `v4`); W6 waits for it (it needs the `net.*` kinds).
 
 **Files:**
 - Move (`git mv`, then fix the package clause and every importer in the same commit): `internal/collect/audit` to `internal/audit` (package `audit`); `internal/collect/winevt` to `internal/winevt` (package `winevt`); `internal/collect/net` to `internal/net` (package stays `netmod`). Importers to fix: `internal/agent/mods/{audit_linux,winevt,net}.go`, `internal/traceback/obs.go`, `internal/capture/{decode,engine,events,engine_test}.go`, `internal/chains/chains_test.go`, `internal/depot/gotools/proc_linux.go`.

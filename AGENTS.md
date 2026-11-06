@@ -1,9 +1,11 @@
 # phylax: repo notes for contributors (human and AI)
 
-This branch is a **from-scratch rewrite** to the v4 design in
-[phylax_design.md](phylax_design.md) (version 4, which supersedes v3). Don't copy
-code from the `main` or `qwen-wip` branches; their review is in ccdc-private
-`strategy/phylax-code-review.md`, and its findings are design requirements.
+Branch `v4` builds the v4 design in [phylax_design.md](phylax_design.md)
+(version 4, which supersedes v3) by moving the v3 code onto the module contract,
+workstream by workstream (`docs/impl/README.md`). Don't copy code from `main` or
+from the older `qwen-wip` work (branch deleted 2026-11-06, still in git objects of
+old clones only); their review is in ccdc-private `strategy/phylax-code-review.md`,
+and its findings are design requirements.
 
 ## The design and the module contract
 - phylax_design.md is authoritative for the target. Where a module section says it

@@ -43,7 +43,7 @@
 - Observe mode: probes and flows without effects run, the doctor collects only, `scorer` learns and publishes, proposals appear, no transaction starts and no automatic re-apply runs.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
-- Branch `v4-scoring-creds`, cut from `v3-redesign` after W1 and W6's seams merge.
+- Branch `v4-scoring-creds`, cut from `v4` after W1 and W6's seams merge.
 
 ## Review Focus
 
@@ -81,7 +81,7 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Extracts the probe library, moves the PCR engine, declares the kinds of the four modules, writes the stubs of their packages and the core hooks later tasks fill, and the skipped tests. **Open it as two pull requests into `v3-redesign`:** 1A is Steps 1 to 3 (probe extraction; W12 waits on it), merged first; 1B is the rest.
+Done by a stronger model. Extracts the probe library, moves the PCR engine, declares the kinds of the four modules, writes the stubs of their packages and the core hooks later tasks fill, and the skipped tests. **Open it as two pull requests into `v4`:** 1A is Steps 1 to 3 (probe extraction; W12 waits on it), merged first; 1B is the rest.
 
 **Files:**
 - Move (`git mv`, fix package clauses and every importer in the same commit): every non-test and test file of `internal/checks/*.go` to `internal/checks/probe/` (package `probe`; `checks.go` keeps its name); `internal/vantage/compare.go` to `internal/checks/compare.go` (package `checks`); `internal/vantage/checkrunner.go` and `checkrunner_test.go` to `internal/checks/runner.go` and `runner_test.go` (package `checks`); `internal/scorer/pcr.go`, `pcr_test.go`, `csv.go`, `csv_test.go` to `internal/creds/pcr/engine.go`, `engine_test.go`, `csv.go`, `csv_test.go` (package `pcr`).

@@ -1,6 +1,6 @@
 # Phylax v4 redesign: progress and where to resume
 
-Status as of 2026-10-31. Branch `v3-redesign` (local only, not pushed). No product code has been written; David said not to start implementation yet.
+Status as of 2026-10-31. Branch `v4` (local only, not pushed). No product code has been written; David said not to start implementation yet.
 
 ## Done
 

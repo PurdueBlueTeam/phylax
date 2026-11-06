@@ -75,7 +75,7 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Writes the package moves, exported hooks, kind declarations with payload structs, module skeletons and manifests, the settings structs, the skipped tests of Tasks 2 to 35 and the design-text deviations. Merges on its own as a pull request into `v3-redesign`; W7 waits for the `capture.*` kinds in it.
+Done by a stronger model. Writes the package moves, exported hooks, kind declarations with payload structs, module skeletons and manifests, the settings structs, the skipped tests of Tasks 2 to 35 and the design-text deviations. Merges on its own as a pull request into `v4`; W7 waits for the `capture.*` kinds in it.
 
 **Files:**
 - Move (`git mv`, delete old paths, update every import): `internal/devices/{devices,runner,diff}.go` and `runner_test.go` → `internal/devices/adapter/` (package `adapter`); `palo` and `vyos` import `internal/devices/adapter`.
@@ -214,7 +214,7 @@ git add internal docs phylax_design.md
 git commit -m "network: W6 seams (adapter move, action hooks, kinds, settings, skipped tests, design deviations)"
 ```
 
-Open as its own pull request into `v3-redesign`; merge after review.
+Open as its own pull request into `v4`; merge after review.
 
 ---
 

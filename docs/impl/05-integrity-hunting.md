@@ -37,7 +37,7 @@
 - `integrity` is alert-only: nothing in it writes, quarantines or restores a file by itself. `hunt` never deletes: disable and quarantine, `chattr -i` applied explicitly and logged first. Scored state is refused by every new action's `Touches` and the scoring-safety lint.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
-- Branch `v4-integrity-hunting`, cut from `v3-redesign` after W1 merges.
+- Branch `v4-integrity-hunting`, cut from `v4` after W1 merges.
 
 ## Review Focus
 

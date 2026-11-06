@@ -702,7 +702,7 @@ git add internal docs phylax_design.md
 git commit -m "module: W1 seams (contract types, stubs, skipped tests, design deviations)"
 ```
 
-Open this as its own pull request into `v3-redesign` and merge after review; W3 and W5 start from it.
+Open this as its own pull request into `v4` and merge after review; W3 and W5 start from it.
 
 ---
 
@@ -4220,7 +4220,7 @@ func TestHealthPageModuleTable(t *testing.T) {
 
 **Interfaces:**
 - Consumes: the conformance package (Tasks 34 to 37).
-- Produces: `TestKindCounts` (M1): the three numbers in the Event kinds prose of `phylax_design.md` ("There are N kinds: 8 common kinds, C core kinds and M module kinds") equal the counts computed from the table, and the test names in the T46 row ("All twelve checks") equal the conformance suite's check list length; a drift fails CI. `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v3-redesign` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
+- Produces: `TestKindCounts` (M1): the three numbers in the Event kinds prose of `phylax_design.md` ("There are N kinds: 8 common kinds, C core kinds and M module kinds") equal the counts computed from the table, and the test names in the T46 row ("All twelve checks") equal the conformance suite's check list length; a drift fails CI. `make conformance` = `go test -race -count=1 ./internal/module/... ` plus every package containing a `conformance_test.go` (`go test -race -count=1 -run Conformance ./...`); CI triggers on pushes to `v4` and `v4-*` and on pull requests; separate jobs `build` (`make build build-windows size vet`), `test` (`go test ./...`), `race` (`go test -race ./...`), `conformance` (`make conformance`, full 60 s link loss, no `-short`); `TestSkipsCarryReason`: every `t.Skip(`/`t.Skipf(` call in a `_test.go` file under `internal/` and `cmd/` has a non-empty string argument (parsed with `go/parser`), and every `t.SkipNow()` has a `shortcut:` or reason comment on the line above.
 
 - [ ] **Step 1: Remove the skip:**
 
@@ -4236,7 +4236,7 @@ func TestSkipsCarryReason(t *testing.T) {
 - [ ] **Step 2: Run, expect FAIL or PASS.** Run: `go test ./internal/module/conformance/ -run TestSkipsCarryReason -v`. Expected: FAIL listing offenders if any exist; fix each by adding the reason the skip already implies (the precondition it checks). If none exist, the test passes on first run; keep it as the guard.
 - [ ] **Step 3: Implement** the workflow and Makefile changes. Mark `race` and `conformance` as required checks in the repository settings (David does this in GitHub; note it in the pull request).
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows size vet test race conformance`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "ci: race and conformance jobs on v3-redesign and v4-*; t.Skip reason guard"`
+- [ ] **Step 5: Commit.** `git commit -am "ci: race and conformance jobs on v4 and v4-*; t.Skip reason guard"`
 
 ---
 

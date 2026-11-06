@@ -81,7 +81,7 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Moves `wazuh` and `splunk`, declares every kind with its payload struct, writes the four module manifests, config structs and settings, the module skeletons, the transfer and fetch signatures, the manifest fields, the skipped tests of Tasks 2 to 30 and the design edits. Merges on its own as a pull request into `v3-redesign`. **Entry gate:** W5 Task 2 (`internal/signing`, `internal/integrity/format`) and W3 Task 1 (`internal/sockets`, the `gotools` import) are merged; if W6 Task 1 is not, add its `actions` hooks first (Deviation 1).
+Done by a stronger model. Moves `wazuh` and `splunk`, declares every kind with its payload struct, writes the four module manifests, config structs and settings, the module skeletons, the transfer and fetch signatures, the manifest fields, the skipped tests of Tasks 2 to 30 and the design edits. Merges on its own as a pull request into `v4`. **Entry gate:** W5 Task 2 (`internal/signing`, `internal/integrity/format`) and W3 Task 1 (`internal/sockets`, the `gotools` import) are merged; if W6 Task 1 is not, add its `actions` hooks first (Deviation 1).
 
 **Files:**
 - Move (`git mv`, delete old paths, fix every importer in the same commit): `internal/integrations/wazuh/*` to `internal/wazuh/`; `internal/integrations/splunk/*` to `internal/splunk/`. Rename the client config types: `wazuh.Config` to `wazuh.ClientConfig`, `splunk.Config` to `splunk.ForwarderConfig`. `internal/integrations/` no longer exists (`suricata` was moved by W1 Task 39). `internal/actions/app_wazuh.go` keeps importing `internal/wazuh` until Task 22 moves it.
@@ -343,7 +343,7 @@ git add internal docs phylax_design.md cmd
 git commit -m "depot: W11 seams (module moves, kinds, config, transfer signatures, skipped tests)"
 ```
 
-Open this as its own pull request into `v3-redesign`; merge after review.
+Open this as its own pull request into `v4`; merge after review.
 
 ---
 

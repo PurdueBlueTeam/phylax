@@ -41,7 +41,7 @@
 - A module imports only core packages (W1). `internal/bench` imports only the standard library; `internal/controller`, `internal/store` and `cmd/phylax` import it; it imports none of them. `internal/bench/load` may import `internal/agent`, `internal/link`, `internal/spool`, `internal/event` and `internal/bench`, never `internal/agent/mods`.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
 - Code style ponytail: the smallest complete change; a known limit carries `// shortcut: <limit>, <when to upgrade>`.
-- Branch `v4-bench`, cut from `v3-redesign` after W1 and W2's Tasks 2 and 3 merge. **Order:** Tasks 1 to 12 (the recorder and report) ship first and are what runs at the Invitational; Tasks 13 to 17 (load) follow.
+- Branch `v4-bench`, cut from `v4` after W1 and W2's Tasks 2 and 3 merge. **Order:** Tasks 1 to 12 (the recorder and report) ship first and are what runs at the Invitational; Tasks 13 to 17 (load) follow.
 
 ## Review Focus
 
@@ -54,7 +54,7 @@
 
 ---
 
-## What exists today (verified in the code on branch `v3-redesign`, 2026-11-06) and what is new
+## What exists today (verified in the code on branch `v4`, 2026-11-06) and what is new
 
 | Number | Already measured | New in this plan |
 | --- | --- | --- |

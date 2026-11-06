@@ -88,7 +88,7 @@
 
 ### Task 1: Seams (Sonnet or Opus)
 
-Done by a stronger model. Declares the nine kinds, writes the settings structs, the package skeletons with stub bodies, the extension fields on W1 and W3 types, the design edits and every skipped test file the later tasks implement. Merges on its own (its own pull request into `v3-redesign`); W9 waits for it (it needs `detect.alert`).
+Done by a stronger model. Declares the nine kinds, writes the settings structs, the package skeletons with stub bodies, the extension fields on W1 and W3 types, the design edits and every skipped test file the later tasks implement. Merges on its own (its own pull request into `v4`); W9 waits for it (it needs `detect.alert`).
 
 **Files:**
 - Create: `internal/detect/kinds.go`, `internal/respond/{doc.go,kinds.go,recipe.go,validate.go,pending.go,guards.go,breaker.go,runner.go,controller.go,config.go,manifest.go}`, `internal/content_guard/{doc.go,kinds.go,golden.go,watch.go,restore.go,modes.go,boot.go,module.go,config.go}` (package `contentguard`), `rules/respond/recipes.go`, `internal/agent/mods/{respond,content_guard}.go`
@@ -300,7 +300,7 @@ git add internal rules cmd phylax_design.md
 git commit -m "detect: W4 seams (kinds, settings, package skeletons, skipped tests, design edits)"
 ```
 
-Open this as its own pull request into `v3-redesign` and merge after review.
+Open this as its own pull request into `v4` and merge after review.
 
 ---
 

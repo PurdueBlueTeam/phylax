@@ -35,7 +35,7 @@
 
 ---
 
-## What exists today (verified in the code on branch `v3-redesign`, 2026-10-31)
+## What exists today (verified in the code on branch `v4`, 2026-10-31)
 
 | Item (design I1, I2, data doc) | Status | Evidence and consequence |
 |---|---|---|

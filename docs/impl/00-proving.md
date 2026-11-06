@@ -30,7 +30,7 @@
 
 ---
 
-## State found when this plan was written (2026-10-31, branch `v3-redesign`, commit 7169fe5, uid 1000)
+## State found when this plan was written (2026-10-31, branch `v4`, commit 7169fe5, uid 1000)
 
 Run by hand before writing the plan; Task 1 repeats it so the record lives in the repo.
 
