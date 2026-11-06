@@ -488,9 +488,10 @@ func TestSeedWithoutSessionGraftsTimeWindowGuess(t *testing.T) {
 	}
 }
 
-func TestOwnTrafficAndTaggedActivityExcluded(t *testing.T) {
+func TestScorerExcludedButTaggedActivityChained(t *testing.T) {
 	f, ev := webshellFixture(t)
-	// The scorer also logged in; our own plan changed a file.
+	// The scorer also logged in; a change carries a tag (ours, or red imitating
+	// ours) and must still be seen in the chain (R6).
 	f.Add("ecom", 90*sec, "auth_success", map[string]any{"account": "scorer", "source": "10.9.9.9", "service": "http"})
 	f.Add("ecom", 101*sec, "file_change", map[string]any{"op": "write", "path": "/etc/apache2/ours.conf", "pid": 901, "exe": "/bin/sh", "tag": "plan-3"})
 	b := &Builder{Src: f.Store, Cfg: Config{Label: func(a string) string {
@@ -503,10 +504,34 @@ func TestOwnTrafficAndTaggedActivityExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tagged := false
 	for _, h := range c.Hops {
-		if h.Account == "scorer" || strings.Contains(h.Path, "ours.conf") {
-			t.Errorf("own or scorer activity in the chain: %+v", h)
+		if h.Account == "scorer" {
+			t.Errorf("scorer activity in the chain: %+v", h)
 		}
+		if strings.Contains(h.Path, "ours.conf") {
+			tagged = true
+		}
+	}
+	if !tagged {
+		t.Errorf("tagged change was hidden from the chain: %+v", c.Hops)
+	}
+}
+
+func TestTaggedProcessAndChangeStillChained(t *testing.T) {
+	f := tbtest.New(t, t0)
+	f.Add("web", 0, "net.connection_opened", inbound(800, 5000, attacker, 51000, "1:abc"))
+	f.Add("web", 100*sec+200*time.Millisecond, "process_start", map[string]any{
+		"pid": 901, "ppid": 800, "exe": "/bin/sh", "cmdline": "sh -c echo '<?php system($_GET[1]);' > uploads/x.php",
+		"start_ticks": 5100, "parent": map[string]any{"pid": 800, "exe": "/usr/sbin/apache2"}, "pexe": "/usr/sbin/apache2", "tag": "plan-3"})
+	ev := f.Add("web", 100*sec+400*time.Millisecond, "file_change", map[string]any{
+		"op": "create", "path": "/var/www/html/uploads/x.php", "pid": 901, "exe": "/bin/sh", "writer_start_ticks": 5100, "source": "audit", "tag": "window:w1"})
+	c, err := (&Builder{Src: f.Store}).Build(f.Ctx, Seed{Kind: SeedServiceChange, Event: &ev})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hopOf(c, Change, "x.php") == nil || hopOf(c, Exec, "sh -c") == nil || hopOf(c, Access, attacker) == nil {
+		t.Fatalf("tagged activity was hidden from the chain: %+v", c.Hops)
 	}
 }
 

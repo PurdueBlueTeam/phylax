@@ -317,7 +317,7 @@ func (r *run) seedObs(seed Seed) (int, error) {
 	}
 	best := -1
 	for i, o := range r.obs {
-		if o.Host != seed.Agent || o.Tag != "" || o.T.After(seed.Time.Add(30*time.Second)) {
+		if o.Host != seed.Agent || o.T.After(seed.Time.Add(30*time.Second)) {
 			continue
 		}
 		if o.Class != traceback.ClassFile || (seed.Path != "" && o.Path != seed.Path) {

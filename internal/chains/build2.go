@@ -24,10 +24,8 @@ func (r *run) procNode(i int) *node {
 	defer delete(r.procBusy, i)
 	o := &r.obs[i]
 	var n *node
-	if o.Tag == "" {
-		if att := r.attach(o); att != nil {
-			n = r.makeProcNode(i, att)
-		}
+	if att := r.attach(o); att != nil {
+		n = r.makeProcNode(i, att)
 	}
 	r.procMemo[i] = n
 	return n
@@ -73,7 +71,7 @@ func (r *run) changeNode(i int) *node {
 		return n
 	}
 	o := &r.obs[i]
-	if o.Tag != "" || (o.Class == traceback.ClassFile && o.Sweep) {
+	if o.Class == traceback.ClassFile && o.Sweep {
 		return nil
 	}
 	if o.Class == traceback.ClassSec {
@@ -169,7 +167,7 @@ func (r *run) outNode(i int) *node {
 		return n
 	}
 	o := &r.obs[i]
-	if o.RAddr == "" || traceback.IsLoopback(o.RAddr) || r.cfg.ours(o.RAddr) || o.Tag != "" || r.consumed[i] {
+	if o.RAddr == "" || traceback.IsLoopback(o.RAddr) || r.cfg.ours(o.RAddr) || r.consumed[i] {
 		return nil
 	}
 	att := r.attach(o)

@@ -216,10 +216,35 @@ func TestChainBreaksNameTheMissingLink(t *testing.T) {
 	}
 }
 
-func TestRedCheckTriggerFindsLatestUntaggedChange(t *testing.T) {
+func TestTaggedFileChangeStillTraced(t *testing.T) {
+	f := tbtest.New(t, t0)
+	f.Add("web", 0, "net.connection_opened", inbound(800, 5000, "198.51.100.7", 51000, "1:abc"))
+	// A change that carries a tag is still a trace source: the tag labels it,
+	// it never hides it (R6).
+	f.Add("web", 5*sec, "file_change", map[string]any{"op": "write", "path": "/var/www/a.php", "pid": 800, "exe": "/usr/sbin/apache2", "writer_start_ticks": 5000, "tag": "window:w1"})
+	res, err := (&Tracer{Src: f.Store}).Trace(f.Ctx, Trigger{Reason: "red_check:http", Agent: "web", Time: t0.Add(10 * sec)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picked := false
+	for _, e := range res.Timeline {
+		if e.Role == "change" && strings.Contains(e.Summary, "a.php") {
+			picked = true
+		}
+	}
+	if !picked {
+		t.Fatalf("tagged change was skipped: timeline %+v links %+v", res.Timeline, res.Links)
+	}
+	if req := link(res, "lineage<-request"); req == nil || req.Method != MethodSocket {
+		t.Fatalf("trace stopped at the tagged change: %+v", req)
+	}
+}
+
+func TestRedCheckTriggerFindsLatestChange(t *testing.T) {
 	f, _ := webshell(t)
-	// An older change and a tagged (our own) change must not be picked.
-	f.Add("ecom", 150*sec, "file_change", map[string]any{"op": "write", "path": "/etc/apache2/ours.conf", "pid": 1, "tag": "plan-7"})
+	// A tagged (our own) change after the red check is still a source: the
+	// latest change wins whether or not it carries a tag (R6).
+	f.Add("ecom", 120*sec, "file_change", map[string]any{"op": "write", "path": "/etc/apache2/ours.conf", "pid": 1, "tag": "plan-7"})
 	res, err := (&Tracer{Src: f.Store}).Trace(f.Ctx, Trigger{Reason: "red_check:http", Agent: "ecom", Time: t0.Add(130 * sec)})
 	if err != nil {
 		t.Fatal(err)
@@ -227,11 +252,11 @@ func TestRedCheckTriggerFindsLatestUntaggedChange(t *testing.T) {
 	picked := false
 	for _, e := range res.Timeline {
 		if e.Role == "change" {
-			picked = strings.Contains(e.Summary, "x.php")
+			picked = strings.Contains(e.Summary, "ours.conf")
 		}
 	}
 	if !picked {
-		t.Fatalf("picked %+v", res.Timeline)
+		t.Fatalf("tagged change was skipped: %+v", res.Timeline)
 	}
 	// No change at all -> an explicit break.
 	f2 := tbtest.New(t, t0)

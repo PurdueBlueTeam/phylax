@@ -272,7 +272,8 @@ func (t *Tracer) findChange(ctx context.Context, trig Trigger, res *Result) (*Ob
 	if trig.Agent == "" || trig.Time.IsZero() {
 		return nil, fmt.Errorf("traceback: trigger needs an event or an agent and time")
 	}
-	// Latest untagged file change (optionally on Path) at or before the trigger.
+	// Latest file change (optionally on Path) near the trigger. A tag labels
+	// the change; it must not hide it (R6).
 	lo := trig.Time.Add(-t.Cfg.Window)
 	files, err := t.fetch(ctx, trig.Agent, KindFileChange, lo, trig.Time.Add(t.Cfg.FallbackWindow), res)
 	if err != nil {
@@ -281,7 +282,7 @@ func (t *Tracer) findChange(ctx context.Context, trig Trigger, res *Result) (*Ob
 	var best *Obs
 	for i := range files {
 		f := &files[i]
-		if f.Tag != "" || (trig.Path != "" && f.Path != trig.Path) {
+		if trig.Path != "" && f.Path != trig.Path {
 			continue
 		}
 		if best == nil || f.T.After(best.T) {
