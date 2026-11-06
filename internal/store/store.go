@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/bench"
+
 	_ "modernc.org/sqlite" // pure-Go driver
 )
 
@@ -43,6 +45,9 @@ type Store struct {
 	r     *sql.DB // read pool
 	hook  atomic.Pointer[IngestHook]
 	quota atomic.Pointer[Quota]
+	// commit is the duration of every successful Ingest transaction commit
+	// (the bench reads it; see CommitHist).
+	commit bench.AtomicHist
 }
 
 func fileSize(p string) int64 {
@@ -130,6 +135,14 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 
 // Path returns the database file path.
 func (s *Store) Path() string { return s.path }
+
+// CommitHist is one observation per successful Ingest commit: the time
+// database/sql took in tx.Commit, SQLite's fsync included.
+func (s *Store) CommitHist() bench.Hist { return s.commit.Snapshot() }
+
+// Size is the database file plus its -wal file, in bytes. A missing file counts
+// as 0.
+func (s *Store) Size() int64 { return fileSize(s.path) + fileSize(s.path+"-wal") }
 
 // Close checkpoints the WAL and closes the database.
 func (s *Store) Close() error {

@@ -261,9 +261,11 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 			return start, err
 		}
 	}
+	commitStart := time.Now()
 	if err := tx.Commit(); err != nil {
 		return start, err
 	}
+	s.commit.Observe(time.Since(commitStart))
 	for _, f := range itx.after {
 		f()
 	}
