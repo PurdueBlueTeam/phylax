@@ -5,22 +5,13 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
-// ClickOnly are the actions that always need a human click: they are never run
-// from an `auto` plan even when the module may act.
-var ClickOnly = map[string]bool{
-	"proc.kill_tree":          true,
-	"ad.account.krbtgt_reset": true,
-	"palo.revert":             true,
-	"backup.restore":          true,
-}
-
 // hostExec is the design's explicit escape hatch; it is never automatic.
 const hostExec = "host.exec"
 
 func init() {
 	Register(Rule{
 		ID:  "SS000",
-		Doc: "Automatic plans run only read-only, no-risk, untouching actions; auto plans refuse click-only and destructive actions.",
+		Doc: "Read-only plans run only read-only, no-risk, untouching actions.",
 		Check: func(n plan.Node, c Ctx) []Finding {
 			return ss000(n, c)
 		},
@@ -28,7 +19,7 @@ func init() {
 }
 
 func ss000(n plan.Node, c Ctx) []Finding {
-	if c.Class != plan.ClassAutoReadOnly && c.Class != plan.ClassAuto {
+	if c.Class != plan.ClassAutoReadOnly {
 		return nil
 	}
 	refuse := func(msg string) []Finding {
@@ -45,16 +36,6 @@ func ss000(n plan.Node, c Ctx) []Finding {
 		return refuse("unknown action " + n.Action)
 	}
 	sp := a.Spec()
-	if c.Class == plan.ClassAuto {
-		if sp.Risk == actions.RiskDestructive {
-			return refuse("destructive action " + n.Action)
-		}
-		if ClickOnly[n.Action] {
-			return refuse(n.Action + " always needs a click")
-		}
-		return nil
-	}
-	// auto_readonly: nothing may change, and nothing scored may be touched.
 	if n.Gate {
 		return refuse("a gate is not read-only")
 	}

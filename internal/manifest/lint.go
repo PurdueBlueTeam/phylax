@@ -56,8 +56,8 @@ const (
 	RuleNTLM            = "SS007"
 	RuleDisabled        = "SS008"
 	RulePCR             = "SS009"
-	RuleCredlist        = "SS010"
-	RuleKill            = "SS011"
+	RuleCredlist        = "SS012"
+	RuleKill            = "SS013"
 	RuleDecoyPort       = "DC001"
 	RuleDecoyRole       = "DC002"
 	RuleDHCP            = "FW002"
@@ -73,6 +73,17 @@ const (
 	RuleScorerTime      = "SC002"
 	RuleOverridesNoHost = "OV001"
 )
+
+// RuleIDs lists every manifest lint rule id. The plan lint registry test
+// compares it with the plan rules: lint ids are one namespace.
+func RuleIDs() []string {
+	return []string{
+		RuleLockout, RuleSSH, RuleAccountLogin, RuleMail, RuleSourceFilter, RuleICMP, RuleNTLM,
+		RuleDisabled, RulePCR, RuleCredlist, RuleKill, RuleDecoyPort, RuleDecoyRole, RuleDHCP,
+		RuleIPv6, RuleEgressWide, RulePatchWindow, RuleReservation, RuleNoPublic, RuleDepPort,
+		RuleDomainMember, RuleRPCPin, RuleScorerEst, RuleScorerTime, RuleOverridesNoHost,
+	}
+}
 
 // Lint checks the manifest against the design's scoring-safety rules ("The
 // scoring-safety lint"), decoy rules and egress hygiene. The firewall lint on

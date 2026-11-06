@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -41,11 +42,32 @@ func TestSS000ReadOnly(t *testing.T) {
 	}
 }
 
-func TestSS000AutoRefusesClickOnly(t *testing.T) {
+func TestSS010AutoRefusesClickOnly(t *testing.T) {
 	reg := actions.Core()
 	p := plan.Plan{Nodes: []plan.Node{node("x", "host.exec", map[string]any{"argv": []any{"/bin/true"}})}}
-	if f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg}); len(f) == 0 {
-		t.Fatal("host.exec allowed in an auto plan")
+	f := Run(p, Ctx{Class: plan.ClassAuto, Actions: reg})
+	if len(f) == 0 || f[0].Rule != "SS010" {
+		t.Fatal("host.exec allowed in an auto plan, or reported under the wrong id")
+	}
+}
+
+func TestRuleIDsUniqueAcrossRegistries(t *testing.T) {
+	planIDs := map[string]bool{}
+	for _, r := range Rules() {
+		if planIDs[r.ID] {
+			t.Errorf("duplicate plan lint id %s", r.ID)
+		}
+		planIDs[r.ID] = true
+	}
+	seen := map[string]bool{}
+	for _, id := range manifest.RuleIDs() {
+		if seen[id] {
+			t.Errorf("duplicate manifest lint id %s", id)
+		}
+		seen[id] = true
+		if planIDs[id] {
+			t.Errorf("lint id %s is used by both plan and manifest lint", id)
+		}
 	}
 }
 
@@ -54,7 +76,7 @@ func TestRulesSorted(t *testing.T) {
 	for _, r := range Rules() {
 		ids = append(ids, r.ID)
 	}
-	if !slices.IsSorted(ids) || !slices.Contains(ids, "SS000") {
+	if !slices.IsSorted(ids) || !slices.Contains(ids, "SS000") || !slices.Contains(ids, "SS010") {
 		t.Fatal(ids)
 	}
 }

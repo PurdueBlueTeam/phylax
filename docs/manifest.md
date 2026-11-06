@@ -172,8 +172,8 @@ both. Errors fail CI and plan generation. Warnings and info can be accepted in
 | SS007 | error | NTLM denied, `lm_compat_level` < 3, Protected Users, required encryption (SMB, WinRM, FTPS, MSSQL), non-NTLM WinRM on scored paths |
 | SS008 | error | A scored service is `stopped` or `disabled` (never SSH/WinRM/RDP) |
 | SS009 | error | Scored/protected account not rotated by `pcr_transaction` |
-| SS010 | error/warn | Scored account without a credlist (error); protected without one (warn) |
-| SS011 | error | A response tier action kills or disables a service |
+| SS012 | error/warn | Scored account without a credlist (error); protected without one (warn) |
+| SS013 | error | A response tier action kills or disables a service |
 | DC001 | error/warn | A decoy on a scored port (error) or any service port (warn) |
 | DC002 | error | Decoys on a host without the `decoys` role |
 | FW002 | error | `policy.firewall.dhcp: drop` |
