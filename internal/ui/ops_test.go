@@ -43,6 +43,9 @@ func (f *fakeOps) AgentDetail(_ context.Context, h string) (AgentDetail, error) 
 func (f *fakeOps) SetSafeMode(_ context.Context, h string, on bool, by string) error {
 	return f.rec("safe:" + h + ":" + by + ":" + map[bool]string{true: "on", false: "off"}[on])
 }
+func (f *fakeOps) ReenableAuto(_ context.Context, host, object, kind, by string) error {
+	return f.rec("reenable:" + host + ":" + object + ":" + kind + ":" + by)
+}
 func (f *fakeOps) Alerts(context.Context, string) ([]AlertRow, error) {
 	return []AlertRow{{ID: 7, Severity: "high", Title: "<b>x</b>", Host: "h1", State: "open", Time: time.Unix(0, 0)}}, nil
 }
@@ -132,7 +135,7 @@ func TestOpsPagesRender(t *testing.T) {
 }
 
 var opsPosts = []string{
-	"/agents/h1/safemode", "/alerts/7/trace", "/alerts/7/state", "/plans",
+	"/agents/h1/safemode", "/auto/reenable", "/alerts/7/trace", "/alerts/7/state", "/plans",
 	"/plans/p-1/dryrun", "/plans/p-1/approve", "/plans/p-1/nodes/n1/approve", "/plans/p-1/apply", "/plans/p-1/rollback",
 	"/proposals/1/accept", "/proposals/1/dismiss",
 }
@@ -188,6 +191,7 @@ func TestOpsActionsAuditedAndAttributed(t *testing.T) {
 	}
 	for path, extra := range map[string]url.Values{
 		"/agents/h1/safemode":         {"on": {"1"}, "confirm": {"h1"}},
+		"/auto/reenable":              {"host": {"h1"}, "object": {"/etc/hosts"}, "kind": {"t1"}},
 		"/alerts/7/trace":             nil,
 		"/alerts/7/state":             {"state": {"closed"}},
 		"/plans":                      {"template": {"t1"}},
@@ -201,7 +205,7 @@ func TestOpsActionsAuditedAndAttributed(t *testing.T) {
 			t.Errorf("POST %s: %d", path, code)
 		}
 	}
-	want := []string{"safe:h1:admin:on", "trace:admin", "alertstate:closed", "create:t1:admin", "dry:p-1",
+	want := []string{"safe:h1:admin:on", "reenable:h1:/etc/hosts:t1:admin", "trace:admin", "alertstate:closed", "create:t1:admin", "dry:p-1",
 		"approve:p-1:admin", "approvenode:p-1/n1:admin:checked", "apply:p-1", "rollback:p-1"}
 	got := f.called()
 	for _, w := range want {

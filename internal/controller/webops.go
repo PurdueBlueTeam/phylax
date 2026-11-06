@@ -387,6 +387,11 @@ func (o *WebOps) SetSafeMode(ctx context.Context, host string, on bool, by strin
 	return nil
 }
 
+// ReenableAuto clears the attempt ledger's breaker for one key.
+func (o *WebOps) ReenableAuto(ctx context.Context, host, object, kind, by string) error {
+	return o.c.ReenableAuto(ctx, host, object, kind, by)
+}
+
 // ListAgents implements ui.AgentLister for the agents table.
 func (c *Controller) ListAgents(ctx context.Context) ([]ui.AgentInfo, error) {
 	var out []ui.AgentInfo

@@ -31,6 +31,8 @@ type Ops interface {
 
 	AgentDetail(ctx context.Context, host string) (AgentDetail, error)
 	SetSafeMode(ctx context.Context, host string, on bool, by string) error
+	// ReenableAuto clears the attempt ledger's breaker for one key.
+	ReenableAuto(ctx context.Context, host, object, kind, by string) error
 
 	Alerts(ctx context.Context, state string) ([]AlertRow, error)
 	Alert(ctx context.Context, id int64) (AlertDetail, error)

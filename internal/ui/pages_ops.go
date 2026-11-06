@@ -17,6 +17,7 @@ func (s *Server) opsRoutes() {
 	h("GET /agents/{host}", s.getAgentDetail)
 	h("GET /agents/{host}/safemode", s.getSafeMode)
 	h("POST /agents/{host}/safemode", s.postSafeMode)
+	h("POST /auto/reenable", s.postReenableAuto)
 
 	h("GET /alerts", s.getAlerts)
 	h("GET /alerts/{id}", s.getAlert)
@@ -105,6 +106,27 @@ func (s *Server) getSafeMode(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, r, http.StatusOK, "safemode", pageData{Title: "Safe mode " + host, Nav: "agents",
 		Data: safeModePage{Host: host, On: !d.SafeMode}})
+}
+
+// postReenableAuto clears the attempt ledger's breaker for one key. The
+// controller records the auto_reenable audit row with the operator identity.
+func (s *Server) postReenableAuto(w http.ResponseWriter, r *http.Request) {
+	o := s.ops(w)
+	if o == nil {
+		return
+	}
+	host := strings.TrimSpace(r.PostForm.Get("host"))
+	object := strings.TrimSpace(r.PostForm.Get("object"))
+	kind := strings.TrimSpace(r.PostForm.Get("kind"))
+	if host == "" || object == "" || kind == "" {
+		http.Error(w, "host, object and kind are required", http.StatusBadRequest)
+		return
+	}
+	if err := o.ReenableAuto(r.Context(), host, object, kind, Principal(r.Context())); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.redirect(w, r, "/plans")
 }
 
 func (s *Server) postSafeMode(w http.ResponseWriter, r *http.Request) {

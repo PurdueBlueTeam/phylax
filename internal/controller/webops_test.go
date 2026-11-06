@@ -325,3 +325,45 @@ func TestUIAgentDetectAlertQueued(t *testing.T) {
 		t.Fatalf("chain: %d %s", ch.Code, ch.Body)
 	}
 }
+
+// The operator reset route clears the attempt ledger's breaker for one key and
+// records who did it.
+func TestUIReenableAutoRoute(t *testing.T) {
+	c, _, u, tok := newUITest(t, "")
+	now := time.Now()
+	for i := 0; i < 2; i++ {
+		if _, _, err := c.noteAutoAttempt(ctx, "h1", "/etc/hosts", "t1", now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if open, err := ledgerOpen(c, "h1", "/etc/hosts", "t1"); err != nil || !open {
+		t.Fatalf("ledger open=%v, %v; want true", open, err)
+	}
+	if w := u.do("POST", "/auto/reenable", url.Values{"csrf_token": {tok}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing key: %d %s", w.Code, w.Body)
+	}
+	if open, err := ledgerOpen(c, "h1", "/etc/hosts", "t1"); err != nil || !open {
+		t.Fatalf("a refused reset changed the ledger: open=%v, %v", open, err)
+	}
+	w := u.do("POST", "/auto/reenable", url.Values{"csrf_token": {tok},
+		"host": {"h1"}, "object": {"/etc/hosts"}, "kind": {"t1"}})
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/plans" {
+		t.Fatalf("reenable: %d %q %s", w.Code, w.Header().Get("Location"), w.Body)
+	}
+	if open, err := ledgerOpen(c, "h1", "/etc/hosts", "t1"); err != nil || open {
+		t.Fatalf("after reset open=%v, %v; want false", open, err)
+	}
+	rows, err := c.st.Audit(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.Action == "auto_reenable" && r.Actor == "admin" && strings.Contains(r.Detail, "t1 on h1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no auto_reenable audit row: %+v", rows)
+	}
+}
