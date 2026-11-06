@@ -260,6 +260,28 @@ Review rows carried by the principles above (traceability; the row text is in `d
 
 Every capability above the core is a module. The contract makes "modular, not bloated" checkable: CI fails a module that breaks it, and a module that cannot meet it is a cut candidate (review N1.1, N1.2, N1.3; review decision 1).
 
+**Implementation deviations (v4 module contract, W1).** The code is authoritative where these differ from the sketches below:
+
+1. `Host` plan methods take a template name and parameters, not a `plan.Plan`: `internal/plan` imports `internal/module` (for `ModuleLimits`), so `internal/module` cannot import `internal/plan`. `Proposal` carries a template too.
+2. `store.Reader` is the read-only query interface the sketches call `store.Query`; `store.Query` remains the existing event filter struct. `Query` gains `Fields map[string]string`.
+3. `Host.Tables()` is added so a module that declares `Tables` has the write path for its one writer goroutine.
+4. `Analyzer.Run` takes a `context.Context`, so the analysis worker can stop a run over its deadline.
+5. `module.Common` gains `Auto []string` (`auto:`), the module's auto-template allowlist.
+6. `event.Type` gains `Alert bool`, the per-kind alert flag; `event.Type.Fields` is not serialised.
+7. `Event.Schema` is `json:"schema,omitempty"`, so an event sealed before this change (schema 0, no tag) keeps its hash.
+8. `process_start` parent fields are one object `parent: {exe, comm, cmdline, service}`; the flat `pexe`, `pcomm`, `pcmdline` names do not exist. `dns_query` and `telemetry_gap` get canonical structs: `dns_query {query, query_results, pid, exe, user, source}` and `telemetry_gap {source, reason, count, from, to, detail}`.
+9. `hosts.yml` `modules:` is a map `{<module>: true|false}` and `labels:` is a list of strings.
+10. Controller modules register with `module.Register` from their package `init`; `internal/module/all` blank-imports every module package so the binary and CI see one list.
+11. `Env.Subscribe(buf int, kinds ...string)` keeps the buffer argument.
+12. `RunAuto`'s triggering event is the reserved parameter `trigger` (`<agent>:<seq>`), recorded in the plan's `Approver` and never substituted into the template.
+13. There are 29 core kinds, not 28 (the table has 29 rows); the total is 168 kinds.
+14. `act_enabled` is per module block and fleet-wide. A per-host form is not designed; `shortcut: act_enabled per module only, upgrade when hosts.yml gets a per-host act entry`.
+15. The seam extras W3, W5, W6, W7 and W11 assumed are W1's: one action registration name `actions.Register`, plus `actions.RegisterUndo`, `actions.Unsupported`, `Env.Now()` and `Env.Ext`; `Event.WithExtra`; extension fields on the common structs; `storetest.New`; `Host.Manifest` and `Host.UpdateOverrides`; `LoadModuleTemplateFor`, `plans.Parse`/`ResolveLabels` and the root `plans` package in the module allow list.
+16. `Env.Now` is a method, so the old field `Env.Now` is renamed `Env.Clock`.
+17. `internal/module` may also import `internal/manifest` (which imports no repo package), because `Host.Manifest` returns the loaded manifest and `Host.UpdateOverrides` takes `*manifest.Overrides`. `manifest` never imports `module`.
+18. The two plan options no workstream owned are W1's: `expires_after` (the dead-man machinery with the confirm turned off) and `gate: auto` with `until:` conditions (time, probe, absence of an event).
+19. Modules reach `overrides.yml` and per-device vault keys through `Host`: `Host.UpdateOverrides` over `manifest.AppendOverrides` (with `Overrides.LearnedListeners`), and `Host.Secrets` accepts prefix grants (`cred/*`).
+
 ### What a module is
 
 A module is:
@@ -303,7 +325,7 @@ type Event struct {
 	Seq      uint64         `json:"seq"`              // per-agent sequence, assigned by the spool
 	Time     time.Time      `json:"time"`             // host clock, display only; ordering comes from Seq
 	Kind     string         `json:"kind"`             // declared kind (see below)
-	Schema   int            `json:"schema"`           // NEW: schema version of Kind, set by event.New
+	Schema   int            `json:"schema,omitempty"` // NEW: schema version of Kind, set by event.New (0 only for pre-change events)
 	Priority Priority       `json:"prio"`             // critical, high, normal, bulk
 	Tag      string         `json:"tag,omitempty"`    // NEW: plan or work-window tag only (Execution: tagging); nothing else uses it
 	Fields   map[string]any `json:"fields,omitempty"` // the typed payload, encoded
@@ -327,16 +349,26 @@ Existing kind names in the code (`proc.exec`, `exec`, `fim`, `login` and others)
 ```go
 // package event
 type Type struct {
-	Kind     string   // "process_start" or "<module>.<name>"
-	Schema   int      // starts at 1; bump on any change a consumer would notice
-	Priority Priority // default priority for this kind; an emitter may lower or raise it per event (a module that does so names the range in its Events part), and only kinds flagged Alert in the kind table turn a high or critical event into an alert row
-	Fields   any      // zero value of the payload struct, for docs, schema generation and the conformance suite
+	Kind     string   `json:"kind"`
+	Schema   int      `json:"schema"`
+	Priority Priority `json:"prio"`
+	Alert    bool     `json:"alert,omitempty"` // the kind-table alert flag
+	Fields   any      `json:"-"`               // zero value of the payload struct
 }
 
-func Declare(t Type)                                   // from init; panics on a duplicate kind
+var (
+	ErrUndeclared   = errors.New("event: kind not declared")
+	ErrKindMismatch = errors.New("event: kind or payload type mismatch")
+	ErrSchema       = errors.New("event: schema version not understood")
+)
+
+func Declare(t Type)                                // from init; panics on duplicate kind, Schema < 1, nil Fields or empty Kind
 func Lookup(kind string) (Type, bool)
-func New[T any](kind string, v T) (Event, error)       // sets Kind, Schema, Priority, Fields; error if undeclared or T mismatches
-func Decode[T any](e Event, kind string) (T, error)    // strict: wrong kind, unknown schema or unknown field is an error
+func Declared() []Type                              // sorted by Kind
+func New[T any](kind string, v T) (Event, error)    // sets Kind, Schema, Priority, Fields; numbers are json.Number
+func Decode[T any](e Event, kind string) (T, error) // strict; keys with prefix "x_" are ignored
+func Validate(e Event) error                        // strict decode of e against its declared kind
+func (e Event) WithExtra(key string, v any) Event   // Fields["x_"+key] on a copy; key ^[a-z][a-z0-9_]{0,31}$
 ```
 
 A consumer declares the schema versions it understands; the controller stores events of any version and analysers skip versions they do not know, reporting the count in their health.
@@ -362,7 +394,7 @@ A consumer declares the schema versions it understands; the controller stores ev
 
 `listener` (schema 1): `op` (`added` or `removed`), `proto`, `laddr`, `lport`, `pid`, `exe`, `comm`, `user`, `service`, `baseline`, `source`.
 
-`process_start` and `process_exit` (schema 1): `pid`, `ppid`, `exe` (full path; there is no `image` field), `comm`, `cmdline`, `cwd`, `user`, `uid` (Linux), `sha256` where known, `pexe`, `pcomm`, `pcmdline`, `parent.*` (rules read `parent.exe`, `parent.cmdline`, `parent.service`), `source`. `process_exit` adds `exit_code`.
+`process_start` and `process_exit` (schema 1): `pid`, `ppid`, `exe` (full path; there is no `image` field), `comm`, `cmdline`, `cwd`, `user`, `uid` (Linux), `sha256` where known, `parent` (one object: `exe`, `comm`, `cmdline`, `service`; rules read `parent.exe`), `source`. `process_exit` adds `exit_code`.
 
 `file_change` (schema 1): `op` (`create`, `delete`, `modify`, `attr`, `rename`), `path`, `old_path` (rename), `exe`, `pid`, `user` (the writer; the names `actor_exe` and `actor_pid` do not exist), `sha256`, `old_sha256`, `content_changed`, `is_dir`, `source` (`audit`, `sweep`, `winevt`).
 
@@ -372,7 +404,7 @@ Fields beyond these (the audit serial, Sysmon GUIDs, parser names, cgroup) stay 
 
 ### Event kinds
 
-One table lists every event kind, who emits it and who consumes it. It is the single source for kind names: module sections, rules, the Splunk `forward` list and the report generators all use these names, and CI compares the table with the `event.Declare` registry and with every module's `Consumes` (T46). There are 167 kinds: 8 common kinds, 28 core kinds and 131 module kinds. All are at schema version 1; a schema bump adds a row note here and in the owning module's Events part.
+One table lists every event kind, who emits it and who consumes it. It is the single source for kind names: module sections, rules, the Splunk `forward` list and the report generators all use these names, and CI compares the table with the `event.Declare` registry and with every module's `Consumes` (T46). There are 168 kinds: 8 common kinds, 29 core kinds and 131 module kinds. All are at schema version 1; a schema bump adds a row note here and in the owning module's Events part.
 
 **Classes.** *Common* kinds describe one thing several producers report and are declared in `internal/event/kinds.go`. *Core* kinds are emitted by the agent supervisor, the executor, the dead-man, the spool and the controller's own plan, enrollment and link-monitor code; the controller-origin ones are stored under agent `controller`. **Alert-class** is a per-kind flag in the table (`Alert` column, builder check): an event of a kind flagged `yes` whose priority is high or critical also becomes an alert row through the ingest hook, whichever agent it comes from. A kind without the flag never becomes an alert row, whatever its priority. `notify` rings on alert-flagged kinds with severity high or above, plus `checks.red` on scored services; the `teamfeed`, `creds` and `backup` kinds are never alert-class. *Module* kinds are `<module>.<name>` and only the named module may emit them.
 
@@ -582,7 +614,7 @@ D5d is wired to `integrity.verdict`; there is no `binary_integrity` kind (Known 
 ### The capability manifest
 
 ```go
-// package module (internal/module, new; imports internal/event and the interface types of store, vault and ui, nothing else)
+// package module (internal/module, new; imports internal/event, internal/store, internal/vault, internal/ui and internal/manifest)
 type Side string
 
 const (
@@ -646,7 +678,7 @@ type ModuleSpec struct {
 
 type Factory struct {
 	Name     string
-	Manifest module.Manifest                                              // NEW
+	Manifest module.Manifest                                              // NEW; zero for a pre-contract module
 	Section  func(cfg *plan.AgentConfig) (fingerprint string, enabled bool) // its config block
 	Build    func(env Env, cfg *plan.AgentConfig) (ModuleSpec, error)      // ErrUnavailable when it cannot run here
 }
@@ -657,8 +689,8 @@ type Env struct {
 	Logger   *slog.Logger
 	PlanKey  ed25519.PublicKey
 	Health   HealthSource
-	// Subscribe(kinds ...string) filters by kind (NEW: v3 code takes only a buffer size).
-	// Keep/Kept hand state to a replacement after a reconfiguration.
+	// Subscribe(buf int, kinds ...string) filters by kind; Keep/Kept hand state to a replacement after a reconfiguration.
+	// Fact(id) returns a controller fact, false when never received or expired; Ext holds module-owned backends.
 }
 ```
 
@@ -673,14 +705,14 @@ The controller side mirrors the agent side. Today controller features are method
 ```go
 // package module
 type Host interface {
-	Config(v any) error                                     // decode the module's manifest block, strict
-	Query() store.Query                                     // read-only event-store queries
+	Config(v any) error                                     // decode the module's manifest block, strict; ErrNoConfig when absent
+	Query() store.Reader                                    // read-only event-store queries
 	Emit(e event.Event) error                               // controller-origin events, stored under agent "controller"; alert-class ones (priority high or critical) also become alert rows
 	Subscribe(kinds []string, buf int) (<-chan event.Event, func()) // events as they are committed
 	Propose(p Proposal) error                               // a one-click suggestion or a plan draft; never applies (an automatic change goes through RunAuto)
-	RunReadOnly(template string, params map[string]string) (planID string, err error) // builder check: auto-approved plan of read-only actions only; a template under plans/<module>/, not a plan.Plan (plan imports module, so module cannot import plan)
-	RunStanding(approvalID, template string, params map[string]string) (string, error) // builder check: a template plan inside an operator's standing approval (scope and expiry)
-	RunAuto(template string, params map[string]string) (string, error) // A-AUTO: a plan from the module's own `auto` allowlist, signed by the controller; falls back to a click proposal when a precondition fails (Execution engine: approval classes)
+	RunReadOnly(template string, params map[string]string) (planID string, err error) // auto-approved plan of read-only actions only; template under plans/<module>/
+	RunStanding(approvalID, template string, params map[string]string) (string, error) // a template plan inside an operator's standing approval (scope and expiry); ErrProposed out of scope
+	RunAuto(template string, params map[string]string) (string, error) // A-AUTO: a plan from the module's own `auto` allowlist; falls back to a click proposal (ErrProposed)
 	Control(m ControlMsg) error                             // builder check: a typed `control: fact` message to agents, signed by the controller (Wire protocol)
 	Tables() (store.ModuleDB, error)                        // the module's own <module>_* tables (the one writer goroutine's path); error unless the manifest declares Tables
 	Manifest() *manifest.Manifest                           // the loaded manifest (hosts, labels, services, overrides), read-only
@@ -696,8 +728,8 @@ type ControlMsg struct {
 	Hosts []string       // agent names, or a label expression the engine resolves
 	Fact  string         // subtype: "gpo_finding", "scorer_probe_result", "round_clock" or "work_window" (Wire protocol: fact subtypes)
 	ID    string         // fact id; a later fact with the same id replaces the earlier one
-	Data  map[string]any // typed by the subtype
-	TTL   time.Duration  // the agent treats the fact as unknown after this
+	Data  map[string]any // typed by the subtype; at most plan.MaxFactData bytes encoded
+	TTL   time.Duration  // > 0 and <= plan.MaxFactTTL; counted from the agent's receipt
 }
 
 type ControllerModule interface {
@@ -711,7 +743,7 @@ type Analyzer struct {
 	Name     string
 	Inputs   []string                                            // kinds it reads; also the trigger set
 	Every    time.Duration                                       // periodic run; 0 means on trigger only
-	Run      func(q store.Query, now time.Time) ([]event.Event, error)
+	Run      func(ctx context.Context, q store.Reader, now time.Time) ([]event.Event, error)
 }
 ```
 
@@ -754,7 +786,7 @@ The supervisor fills `State`, `Events` and `Dropped` for every module (built: `M
 
 ### Configuration
 
-- The manifest enables modules per host with a `modules:` list in `hosts.yml` (or for every host matching a label expression), plus each module's block in `modules/<name>.yml`. Core-default modules are enabled unless the host's entry turns them off.
+- The manifest enables modules per host with a `modules:` map of booleans in `hosts.yml` (`modules: {<name>: true|false}`), or for every host matching a `labels:` list and label expression, plus each module's block in `modules/<name>.yml`. Core-default modules are enabled unless the host's entry turns them off.
 - The controller renders each host's `AgentConfig` from the manifest (built: `controller/agentconfig.go`, `genconfig.go`); each agent module's block becomes its `ModuleSettings` field. The signed config carries the module blocks, the rule files the host's modules need and the budgets.
 - Event-specific values are entered in the UI and written to `overrides.yml` (Manifest), never to the module's base block.
 - **Generic `enabled` and `act_enabled` (builder check).** Every `modules/<name>.yml` has both fields, defined once:
@@ -762,13 +794,14 @@ The supervisor fills `State`, `Events` and `Dropped` for every module (built: `M
 ```go
 // package module
 type Common struct {
-	Enabled    bool `json:"enabled" yaml:"enabled"`                 // fleet default; a host's `modules:` entry in hosts.yml overrides it per host. Defaults to Manifest.Default
-	ActEnabled bool `json:"act_enabled" yaml:"act_enabled"`         // false: the module only observes and alerts; true: it may take its automatic actions (tier-0 responses, content-guard restores, automatic eviction, auto-class plans, scheduled plans)
+	Enabled    bool     `json:"enabled" yaml:"enabled"`         // fleet default; a host's `modules:` entry in hosts.yml overrides it per host. Defaults to Manifest.Default
+	ActEnabled bool     `json:"act_enabled" yaml:"act_enabled"` // false: the module only observes and alerts; true: it may take its automatic actions
+	Auto       []string `json:"auto,omitempty" yaml:"auto,omitempty"` // templates under plans/<module>/ that RunAuto may start
 }
 // package plan: every agent settings struct embeds ModuleLimits{ module.Common; RatePerSec float64; Burst int }
 ```
 
-  `act_enabled` defaults to false for every module in code (fail closed, principle 13). (A-AUTO) The event manifest sets it to true for the modules in the automatic set (`respond`, `firewall`, `hardening`, `ad`, `content_guard`, `creds` re-apply, `backup` Recycle Bin restore) once the lab and the Invitational data support it; the reference manifest used at the Invitational keeps everything false. A module that has no automatic action accepts and ignores it (the conformance suite checks that every block decodes both fields). Effective enablement for a host is the host's `modules:` entry when present, else the module's `enabled`, else `Manifest.Default`. **Observe mode** is every module's `act_enabled: false` plus safe mode; the tiers of the Invitational are signed config changes that flip `act_enabled` for named modules and hosts and then turn safe mode off (Operations). The detection module's global `override_mode: alert` is the same switch for rules (detect: `act_enabled`).
+  `act_enabled` defaults to false for every module in code (fail closed, principle 13). (A-AUTO) The event manifest sets it to true for the modules in the automatic set (`respond`, `firewall`, `hardening`, `ad`, `content_guard`, `creds` re-apply, `backup` Recycle Bin restore) once the lab and the Invitational data support it; the reference manifest used at the Invitational keeps everything false. A module that has no automatic action accepts and ignores it (the conformance suite checks that every block decodes both fields). Effective enablement for a host is the host's `modules:` entry when present, else the module's `enabled`, else `Manifest.Default`. **Observe mode** is every module's `act_enabled: false` plus safe mode; the tiers of the Invitational are signed config changes that flip `act_enabled` per module (fleet-wide) and then turn safe mode off (Operations). The detection module's global `override_mode: alert` is the same switch for rules (detect: `act_enabled`).
 
 ### Content before code
 
@@ -887,7 +920,7 @@ hosts:
 
 The `capture` role is Linux only: Windows packet capture is cut (Removed in v4), so Windows hosts carry no `capture` role and their network coverage comes from Sysmon 3, Security 5156 and 5157 and the Palo logs. The `capture` module reports `degraded` on a role it cannot honour, which is why the example leaves the role off the Windows hosts. The public addresses use the same last octet as the internal ones. The workstations and the Kali go out through VyOS source NAT (`172.31.(20+team).2`), so they have no public address of their own [PKT §2]. Hosts with the `decoys` role never decoy on a scored port and never on a public address (the `decoys` module).
 
-**Reference module enablement** (`manifest/2027/modules/`, builder check). The reference manifest ships one `<name>.yml` per module. The core-default modules are enabled for every host whose OS and roles satisfy their manifest (`audit`, `net`, `logs` on Linux, `winevt` on Windows, `ad` on the `domain_controller` host, `capture` on `capture` hosts, `vantage` on the Kali, and the controller modules `checks`, `scorer`, `creds` and the rest). The opt-in modules the game-day order uses are switched on where it uses them: `inventory` on every host (the baseline step), `backup` on the servers (`rocky-ecom`, `ubuntu-email`, `debian-splunk`, `ad`, `mssql`: as-found and golden backups), `decoys` and `honeytokens` on the hosts that carry the `decoys` role, `teamfeed` and `notify` on the controller. `content_guard` (per service), `vuln`, `wazuh`, `splunk` and `suricata` stay off until a team turns them on. Every block ships with `act_enabled: false`: the reference manifest starts in observe mode, and the full run flips `act_enabled` per module and per host (Operations).
+**Reference module enablement** (`manifest/2027/modules/`, builder check). The reference manifest ships one `<name>.yml` per module. The core-default modules are enabled for every host whose OS and roles satisfy their manifest (`audit`, `net`, `logs` on Linux, `winevt` on Windows, `ad` on the `domain_controller` host, `capture` on `capture` hosts, `vantage` on the Kali, and the controller modules `checks`, `scorer`, `creds` and the rest). The opt-in modules the game-day order uses are switched on where it uses them: `inventory` on every host (the baseline step), `backup` on the servers (`rocky-ecom`, `ubuntu-email`, `debian-splunk`, `ad`, `mssql`: as-found and golden backups), `decoys` and `honeytokens` on the hosts that carry the `decoys` role, `teamfeed` and `notify` on the controller. `content_guard` (per service), `vuln`, `wazuh`, `splunk` and `suricata` stay off until a team turns them on. Every block ships with `act_enabled: false`: the reference manifest starts in observe mode, and the full run flips `act_enabled` per module (fleet-wide; a per-host form is not designed) (Operations).
 
 #### Roles and links
 
@@ -1419,7 +1452,7 @@ Where an organizer-set "insecure" value is the reason the scorer works, the pre-
 - **Scored-account restore from the Recycle Bin (B1).** `ad.recycle_restore` carries the same `Restore` marker. The lint accepts it only for an account the manifest names as scored, only when the Recycle Bin holds the object, and only without a password argument: the object returns with its original hash, so no scored password is set or generated. The verifying step is the next scorer login (`checks`, `scorer`).
 - **Scored-password change.** The rule "Scored passwords change only through the PCR transaction" is keyed by transaction id: a node that sets a scored account's password passes only when it carries `txn: <id>` for an open `creds.txn` and sits in a plan from `plans/creds/` (a `resync` transaction, the host-side re-apply after a revert, is the one such plan the controller starts as `auto`). The lint reads `creds.state` through a registered lint rule (below). A password change on a scored account without a transaction id is rejected on the controller and again on the agent.
 
-**Lint registration.** The lint is a registry, not a closed list. `internal/plan/lint` exposes `Register(Rule)` with `Rule{ID, Doc, Check func(Node, Ctx) []Finding}`; `Ctx` carries the manifest and a read-only `store.Query`. The core registers the rules in the table above and `SS000`, the read-only rule: every node of a plan started with `Host.RunReadOnly` must name an action with `Spec.ReadOnly` set and an empty `Touches`, or the plan is refused. A module registers its own from its package `init` (it lists them in its manifest under `Content`), so no core package depends on a module: `deps` registers `DEP001` to `DEP003` and `DEP101`, which read `deps.graph` through `Ctx.Query`, and `creds` registers the transaction rule above. Lint ids are one namespace (`SS###` for scoring safety, `FW###` for the firewall, `DEP###` for dependencies; the detection-rule ids `D`/`V`/`DEP1`-`DEP3` are a different namespace), enforced by the registry test. A registered rule needs inline tests like any rule. Rules that need the store run on the controller at template time and at approval; the agent's last-line guard runs the rules expressible as rendered guard data (`phylax guard <host>`).
+**Lint registration.** The lint is a registry, not a closed list. `internal/plan/lint` exposes `Register(Rule)` with `Rule{ID, Doc, Check func(Node, Ctx) []Finding}`; `Ctx` carries the manifest and a read-only `store.Reader` (`Ctx{Manifest, Query, Class, Actions}`). The core registers the rules in the table above and `SS000`, the read-only rule: every node of a plan started with `Host.RunReadOnly` must name an action with `Spec.ReadOnly` set and an empty `Touches`, or the plan is refused. A module registers its own from its package `init` (it lists them in its manifest under `Content`), so no core package depends on a module: `deps` registers `DEP001` to `DEP003` and `DEP101`, which read `deps.graph` through `Ctx.Query`, and `creds` registers the transaction rule above. Lint ids are one namespace (`SS###` for scoring safety, `FW###` for the firewall, `DEP###` for dependencies; the detection-rule ids `D`/`V`/`DEP1`-`DEP3` are a different namespace), enforced by the registry test. A registered rule needs inline tests like any rule. Rules that need the store run on the controller at template time and at approval; the agent's last-line guard runs the rules expressible as rendered guard data (`phylax guard <host>`).
 
 #### The scorer-mimic probe
 
@@ -1627,7 +1660,7 @@ The controller keeps everything in one SQLite database, a directory of encrypted
 #### Storage
 
 - **SQLite** in WAL mode, pure Go, one file, with indexes on the hot queries and full-text search over transcripts and command lines (review D454). Event inserts are batched in transactions. Agent alert rows are written inside the ingest transaction (`store.SetIngestHook`), so a crash can never leave a stored alert event without its row; rows are idempotent and replayed on start.
-- **Query API.** Modules read through `store.Query`: events by kind, host, time range and field equality; full-text search; the core tables; and their own tables. No module issues raw SQL against another module's tables.
+- **Query API.** Modules read through `store.Reader` (`Events`, `Event`, `Latest`) with a `store.Query`: events by kind, host, time range and field equality; full-text search; the core tables; and their own tables. No module issues raw SQL against another module's tables.
 - **Evidence directory:** pcap slices, collected files, memory dumps. Each file is encrypted at rest with `age` and referenced from the database by hash (review D455).
 - **Cache directory:** the content-addressed depot (the `depot` module).
 - **Retention** (review D456): indefinite for the event. The Platform page shows free disk and warns at 70% and 85%. The first lever is compressing raw transaction bodies older than a day.
@@ -6238,7 +6271,7 @@ Trace-back is built with tests (`internal/traceback/trace.go`, `obs.go`, scenari
 - The controller wires the tracer only from the UI report path (`internal/controller/report_ir.go`); there is no analyser run, no trigger loop and no stored result.
 - IIS request linking is dropped (review D289): IIS is not in the 2027 environment. The code has no IIS path; it stays out.
 
-Retrofit: `Tracer.Trace` becomes the body of an analyser. The `Source` interface is satisfied by `store.Query`. The tracer keeps no state between runs.
+Retrofit: `Tracer.Trace` becomes the body of an analyser. The `Source` interface is satisfied by `store.Reader`. The tracer keeps no state between runs.
 
 Files: `internal/traceback/*.go`, `internal/traceback/tbtest`, `rules/traceback` (app-level queries), `internal/controller/report_ir.go` (consumer, to be folded away).
 
@@ -6697,7 +6730,7 @@ The collector only reads events; the controller only reads and proposes. The lin
 - `shortcut: a planted dependency inside the learning window is learned as normal; a baseline-only proposal mode and DEP2 limit the damage, no further control.`
 - `shortcut: no Windows collector; upgrade when a scored service on a Windows host needs egress allowances rendered from observation (the AD host's allowances come from the declared domain membership, so the gap is small for 2027).`
 - Open (`net` section): the `net` section's `conn` events carry `op`, `dir`, `service`, `duration_ms` and process fields; the collector needs the process fields to include pid and start ticks (for the ancestor chain with `process_start`) and `conn` closed events for connections that open and close within one poll. If `net` cannot provide that, the collector stays inside `net` as a documented exception to the no-sibling-import rule.
-- Resolved: the lint is a registry (Execution engine: lint registration). `deps` registers `DEP001` to `DEP003` and `DEP101` from its package and reads `deps.graph` through the lint context's read-only `store.Query`; no core package depends on a module.
+- Resolved: the lint is a registry (Execution engine: lint registration). `deps` registers `DEP001` to `DEP003` and `DEP101` from its package and reads `deps.graph` through the lint context's read-only `store.Reader`; no core package depends on a module.
 - Open: the lint codes versus detection rule ids look alike (`DEP001` against `DEP1`). If the registry check flags the confusion, rename the lint codes `LDEP1`-`LDEP4`.
 - Cross-section: `inventory` emits the `domain_join` table rows; `capture` or `net` emits `dns_query`; `checks` consumes `deps.graph`; the manifest section's egress rendering reads accepted `depends_on`.
 
@@ -9011,7 +9044,7 @@ The Overview shows each role with its assigned names. A role with no name shows 
 The Invitational (2026-11-07, four hours) is largely for instrumenting the environment and collecting data; `docs/impl/invitational-data.md` lists the open questions it can answer and the collectors (review I1, I2). The collection kit need not be minimal.
 
 - **The tiers below are the Invitational's and are unchanged by A-AUTO** (David: the battle-test tiers stay as they are for that event); the automatic default of the full run (game-day order above) applies from the first event after it, once the lab and the Invitational data support it.
-- **Observe mode** (I1). Phylax runs with every module alert-only and safe mode on, plus standalone collector scripts as a fallback. Observe mode is configuration, not an event profile: every module's `act_enabled` is false (the reference manifest ships that way), safe mode is on at start, `detect` runs with `override_mode: alert`, the content guard and eviction are alert-only, and the firewall renders in shadow only. **The act switch** is `act_enabled` per module in `modules/<name>.yml` (module contract: Configuration); there is no other switch. Moving to a Tier B or Tier C action is a signed config change that flips `act_enabled` for the named modules and hosts, followed by turning safe mode off for them (builder check).
+- **Observe mode** (I1). Phylax runs with every module alert-only and safe mode on, plus standalone collector scripts as a fallback. Observe mode is configuration, not an event profile: every module's `act_enabled` is false (the reference manifest ships that way), safe mode is on at start, `detect` runs with `override_mode: alert`, the content guard and eviction are alert-only, and the firewall renders in shadow only. **The act switch** is `act_enabled` per module in `modules/<name>.yml` (module contract: Configuration); there is no other switch. Moving to a Tier B or Tier C action is a signed config change that flips `act_enabled` for the named modules, followed by turning safe mode off (builder check).
 - **Tier A, everywhere** (I2; every module `act_enabled: false`): external checks, hunts, the ledger, YARA, decoys, honeytokens, firewall shadow mode, alert-only content guard, service doctor, flag-only session eviction (sessions are listed, none is terminated), scorer learning.
 - **Tier B, on non-scored accounts and one canary host:** a signed config change sets `act_enabled: true` for `respond`, `firewall` and the eviction path on those hosts only, and turns safe mode off for them: T+0 admin rotation plus real eviction, tier-0 responses on non-scored targets, hardening packs with the dead-man, red-IP blocks on non-scored ports.
 - **Tier C, only in the second half:** a second signed config change sets `act_enabled: true` for `creds` and `hardening` on the one scored user's host and the one scored server: one deliberate scored-password change of a single scored user, and hardening on one scored server.
