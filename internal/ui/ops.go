@@ -24,6 +24,11 @@ var (
 type Ops interface {
 	Overview(ctx context.Context) (OpsDashboard, error)
 
+	// Modules lists every module's health for the Platform page: each agent's
+	// modules from their heartbeats and the controller's own modules, with the
+	// modules not yet on the contract marked.
+	Modules(ctx context.Context) []ModuleRow
+
 	AgentDetail(ctx context.Context, host string) (AgentDetail, error)
 	SetSafeMode(ctx context.Context, host string, on bool, by string) error
 

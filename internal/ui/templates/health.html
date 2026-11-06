@@ -11,5 +11,10 @@
 <td{{if .SkewBad}} class="link-down"{{end}}>{{dur .ClockSkew}}</td><td>{{.SpoolDepth}}</td><td>{{.Congestion}}</td><td>{{.Dropped}}</td><td>{{.GapRecords}}</td><td>{{.Modules}}</td>
 <td>{{range .ModuleErrors}}<span class="link-down">{{.}}</span><br>{{else}}none{{end}}</td></tr>
 {{else}}<tr><td colspan="10">No agents enrolled.</td></tr>{{end}}</tbody></table>
+<h2>Modules</h2>
+<table><thead><tr><th>Agent</th><th>Module</th><th>State</th><th>Detail</th><th>Gaps</th><th>Contract</th></tr></thead><tbody>
+{{range .Data.Modules}}<tr><td>{{.Agent}}</td><td>{{.Module}}</td><td class="link-{{.State}}">{{.State}}</td><td>{{.Detail}}</td>
+<td>{{range .Gaps}}{{.}}<br>{{else}}none{{end}}</td><td>{{if .PreContract}}pre-contract{{else}}contract{{end}}</td></tr>
+{{else}}<tr><td colspan="6">No modules registered.</td></tr>{{end}}</tbody></table>
 <p><a href="/audit">Audit log</a></p>
 {{end}}

@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"sort"
 	"syscall"
+
+	_ "github.com/PurdueBlueTeam/phylax/internal/module/all" // registers every module package
 )
 
 var version = "dev"
