@@ -124,28 +124,6 @@ func TestSupervisorRateLimitDropsWithoutBlocking(t *testing.T) {
 	}
 }
 
-func TestSupervisorBudgetHookRestartsModule(t *testing.T) {
-	var starts atomic.Int32
-	var over atomic.Bool
-	over.Store(true)
-	s, _, _ := runSup(t, SupervisorOptions{BudgetInterval: 5 * time.Millisecond, Budget: func(name string) error {
-		if over.Load() && name == "hog" {
-			over.Store(false) // only the first run is over budget
-			return errors.New("rss 900MB > 80MB")
-		}
-		return nil
-	}}, ModuleSpec{Module: funcModule{"hog", func(ctx context.Context, _ Emit) error {
-		starts.Add(1)
-		<-ctx.Done()
-		return nil
-	}}})
-	eventually(t, 5*time.Second, "restart after budget", func() bool { return starts.Load() >= 2 })
-	st := s.Snapshot()["hog"]
-	if st.Restarts != 1 || st.LastError == "" {
-		t.Fatalf("%+v", st)
-	}
-}
-
 func TestHealthModuleReportsGapsAndState(t *testing.T) {
 	src := &fakeHealth{mods: map[string]ModuleStatus{"a": {State: StateRunning}}}
 	h := NewHealthModule(src, 10*time.Millisecond).(*healthModule)

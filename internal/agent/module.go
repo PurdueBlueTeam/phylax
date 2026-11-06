@@ -142,7 +142,6 @@ const (
 	StateRunning    = "ok"
 	StateRestarting = "restarting"
 	StateStopped    = "stopped"
-	StateOverBudget = "over_budget"
 )
 
 // ModuleStatus is a snapshot of one module.
@@ -170,20 +169,13 @@ type ModuleSpec struct {
 	Subscriber bool
 }
 
-// Budget is the memory/CPU budget hook. It is polled every SupervisorOptions.
-// BudgetInterval for each running module; a non-nil error stops the module,
-// which is then restarted after backoff (state over_budget meanwhile).
-type Budget func(module string) error
-
 // SupervisorOptions tune restart behaviour.
 type SupervisorOptions struct {
-	Emit           Emit // required: the unlimited underlying emitter
-	Logger         *slog.Logger
-	Backoff        link.Backoff  // default 1s..60s
-	StableAfter    time.Duration // a run this long resets the backoff (default 30s)
-	Budget         Budget
-	BudgetInterval time.Duration // default 5s
-	sleep          func(time.Duration) <-chan time.Time
+	Emit        Emit // required: the unlimited underlying emitter
+	Logger      *slog.Logger
+	Backoff     link.Backoff  // default 1s..60s
+	StableAfter time.Duration // a run this long resets the backoff (default 30s)
+	sleep       func(time.Duration) <-chan time.Time
 }
 
 // Supervisor runs modules as goroutines with panic recovery and exponential
@@ -222,9 +214,6 @@ func NewSupervisor(o SupervisorOptions) *Supervisor {
 	}
 	if o.StableAfter == 0 {
 		o.StableAfter = 30 * time.Second
-	}
-	if o.BudgetInterval == 0 {
-		o.BudgetInterval = 5 * time.Second
 	}
 	if o.sleep == nil {
 		o.sleep = time.After
@@ -337,8 +326,6 @@ func (s *Supervisor) Health(name string) (module.Health, bool) {
 		h.State, h.Detail = module.StateDegraded, "starting"
 	case StateRestarting:
 		h.State = module.StateRestarting
-	case StateOverBudget:
-		h.State = module.StateOverBudget
 	case StateStopped:
 		h.State = module.StateDisabled
 	default:
@@ -346,7 +333,7 @@ func (s *Supervisor) Health(name string) (module.Health, bool) {
 	}
 	if r, ok := mod.(HealthReporter); ok {
 		rep := clampHealth(r.Health())
-		if st.State != StateRestarting && st.State != StateOverBudget && rep.State != "" {
+		if st.State != StateRestarting && rep.State != "" {
 			h.State = rep.State
 		}
 		h.Detail, h.Gaps, h.Info = rep.Detail, rep.Gaps, rep.Info
@@ -410,24 +397,20 @@ func (s *Supervisor) supervise(ctx context.Context, m *modState) {
 	for ctx.Err() == nil {
 		started := time.Now()
 		s.update(m, func(m *modState) { m.status.State, m.status.DownSince = StateRunning, time.Time{} })
-		err, overBudget := s.runOnce(ctx, m, mod)
+		err := s.runOnce(ctx, m, mod)
 		if ctx.Err() != nil {
 			break
 		}
-		if err == nil && !overBudget {
+		if err == nil {
 			s.update(m, func(m *modState) { m.status.State = StateStopped })
 			return
 		}
 		if time.Since(started) >= s.o.StableAfter {
 			bo.Reset()
 		}
-		state := StateRestarting
-		if overBudget {
-			state = StateOverBudget
-		}
 		d := bo.Next()
 		s.update(m, func(m *modState) {
-			m.status.State, m.status.LastError = state, err.Error()
+			m.status.State, m.status.LastError = StateRestarting, err.Error()
 			m.status.Restarts++
 			m.status.DownSince = time.Now()
 		})
@@ -445,32 +428,10 @@ func (s *Supervisor) crashEvent(name string, err error, d time.Duration) {
 	_ = s.o.Emit(core("agent.module_crash", event.AgentModuleCrash{Module: name, Error: err.Error(), RestartInMS: d.Milliseconds()}))
 }
 
-// runOnce runs the module with panic recovery and the budget watcher.
-func (s *Supervisor) runOnce(ctx context.Context, m *modState, mod Module) (err error, overBudget bool) {
+// runOnce runs the module with panic recovery.
+func (s *Supervisor) runOnce(ctx context.Context, m *modState, mod Module) (err error) {
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var budgetErr error
-	var bmu sync.Mutex
-	if s.o.Budget != nil {
-		go func() {
-			t := time.NewTicker(s.o.BudgetInterval)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					if e := s.o.Budget(m.name); e != nil {
-						bmu.Lock()
-						budgetErr = e
-						bmu.Unlock()
-						cancel()
-						return
-					}
-				case <-rctx.Done():
-					return
-				}
-			}
-		}()
-	}
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -479,15 +440,10 @@ func (s *Supervisor) runOnce(ctx context.Context, m *modState, mod Module) (err 
 		}()
 		err = mod.Start(rctx, s.limited(m))
 	}()
-	bmu.Lock()
-	defer bmu.Unlock()
-	if budgetErr != nil && ctx.Err() == nil {
-		return fmt.Errorf("over budget: %w", budgetErr), true
-	}
 	if err == context.Canceled && ctx.Err() != nil {
 		err = nil
 	}
-	return err, false
+	return err
 }
 
 // ErrRateLimited is returned by Emit when a module exceeds its rate limit.

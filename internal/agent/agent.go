@@ -41,7 +41,7 @@ type Config struct {
 	HealthInterval    time.Duration
 	// Backoff for reconnects (default 1 s to 30 s).
 	Backoff link.Backoff
-	// Supervisor tuning (module restart backoff, budget hook).
+	// Supervisor tuning (module restart backoff).
 	Supervisor SupervisorOptions
 	// Spool overrides spool options (Agent is set from the bootstrap host).
 	Spool spool.Options
