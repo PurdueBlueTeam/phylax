@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -21,6 +22,10 @@ type moduleHost struct {
 	c    *Controller
 	m    module.ControllerModule
 	name string
+
+	subMu   sync.Mutex
+	subs    map[uint64]func()
+	nextSub uint64
 }
 
 var _ module.Host = (*moduleHost)(nil)
@@ -140,7 +145,34 @@ func (h *moduleHost) Subscribe(kinds []string, buf int) (<-chan event.Event, fun
 		}
 		h.Logger().Warn("module subscribe: kind is not in the manifest consumes", "kind", k)
 	}
-	return h.c.bus.subscribe(h.name, keep, buf)
+	ch, stop := h.c.bus.subscribe(h.name, keep, buf)
+	h.subMu.Lock()
+	if h.subs == nil {
+		h.subs = map[uint64]func(){}
+	}
+	h.nextSub++
+	id := h.nextSub
+	h.subs[id] = stop
+	h.subMu.Unlock()
+	return ch, func() {
+		h.subMu.Lock()
+		delete(h.subs, id)
+		h.subMu.Unlock()
+		stop()
+	}
+}
+
+// stopSubscriptions closes every subscription the module opened through this
+// Host. The runner calls it after each Start returns, so a restart cannot leak
+// a subscriber (and its buffered events).
+func (h *moduleHost) stopSubscriptions() {
+	h.subMu.Lock()
+	subs := h.subs
+	h.subs = nil
+	h.subMu.Unlock()
+	for _, stop := range subs {
+		stop()
+	}
 }
 
 func (h *moduleHost) Propose(p module.Proposal) error { panic("unimplemented: W1 Task 25") }

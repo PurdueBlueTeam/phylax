@@ -139,6 +139,7 @@ func (c *Controller) superviseModule(ctx context.Context, m module.ControllerMod
 		c.markRunning(st)
 		start := time.Now()
 		err := startModule(ctx, m, h)
+		h.stopSubscriptions()
 		if ctx.Err() != nil {
 			c.markState(st, module.StateUnavailable, "stopped")
 			return

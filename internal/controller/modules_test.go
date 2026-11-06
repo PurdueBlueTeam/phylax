@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -93,5 +94,51 @@ func TestModuleHealthRecoversPanic(t *testing.T) {
 			t.Fatalf("health panic not recovered: %+v running=%v", h, c.moduleRunning("ctltest"))
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type subscribingFailMod struct {
+	ctlMod
+	starts  atomic.Int32
+	started chan int
+}
+
+func (m *subscribingFailMod) Start(ctx context.Context, h module.Host) error {
+	n := int(m.starts.Add(1))
+	if n <= 3 {
+		h.Subscribe([]string{"agent.resumed"}, 8)
+		return errors.New("start failed")
+	}
+	m.started <- n
+	<-ctx.Done()
+	return nil
+}
+
+func TestModuleSubscriptionsStoppedAfterStart(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	c.modBackoffMin = 5 * time.Millisecond
+	m := &subscribingFailMod{ctlMod: testMod(), started: make(chan int, 1)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.RunModules(ctx, []module.ControllerModule{m}) }()
+	select {
+	case n := <-m.started:
+		if n != 4 {
+			t.Fatalf("start %d, want 4", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("module did not reach its fourth start")
+	}
+	c.bus.mu.Lock()
+	subs := len(c.bus.subs)
+	c.bus.mu.Unlock()
+	if subs != 0 {
+		t.Fatalf("%d bus subscribers leaked after three failed starts", subs)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("RunModules did not return")
 	}
 }
