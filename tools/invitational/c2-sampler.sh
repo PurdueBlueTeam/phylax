@@ -39,13 +39,13 @@ _sample_row() {
         if ($3 + $4 > 0) printf "%.0f", $3 * 100 / ($3 + $4)
         else print 0
     }')
-    set -- $(_cpu_jiffies)
-    idle1=$1
-    total1=$2
+    j=$(_cpu_jiffies)
+    idle1=${j% *}
+    total1=${j#* }
     sleep 1
-    set -- $(_cpu_jiffies)
-    didle=$(( $1 - idle1 ))
-    dtotal=$(( $2 - total1 ))
+    j=$(_cpu_jiffies)
+    didle=$(( ${j% *} - idle1 ))
+    dtotal=$(( ${j#* } - total1 ))
     if [ "$dtotal" -gt 0 ]; then
         cpu=$(( (dtotal - didle) * 100 / dtotal ))
     else
