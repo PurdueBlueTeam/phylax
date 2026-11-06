@@ -22,7 +22,6 @@ func (f *fakeSrc) QueryTimes(context.Context) map[string]float64 {
 }
 
 func TestRecorderDeltas(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 4")
 	p := filepath.Join(t.TempDir(), "b.jsonl")
 	l, _ := OpenLog(p, 1<<20)
 	src := &fakeSrc{ags: []AgentSample{{Host: "h1", Connected: true}, {Host: "h2"}}}
@@ -68,6 +67,36 @@ func TestRecorderDeltas(t *testing.T) {
 }
 
 func TestRecorderRunStopsAndFlushes(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 4")
-	// Run with interval 20 ms for ~100 ms, cancel: at least 3 ctl records, Run returns within 1 s.
+	p := filepath.Join(t.TempDir(), "b.jsonl")
+	l, err := OpenLog(p, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeSrc{ags: []AgentSample{{Host: "h1", Connected: true}}}
+	r := NewRecorder(src, l, 20*time.Millisecond)
+	r.proc = func() (uint64, uint64) { return 1, 1 << 20 }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); r.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return within 1 s of cancel")
+	}
+	l.Close()
+	recs, err := ReadFiles(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, x := range recs {
+		if x.Kind == KindCtl {
+			n++
+		}
+	}
+	if n < 3 {
+		t.Fatalf("%d ctl records after ~100 ms at 20 ms", n)
+	}
 }
