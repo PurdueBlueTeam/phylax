@@ -9,6 +9,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest/render"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -45,11 +46,12 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 		return nil, nil, fmt.Errorf("host %q is not in the manifest", host)
 	}
 	cfg = &plan.AgentConfig{Host: host, Roles: expandRoles(h.Roles)}
+	enabled := module.Common{Enabled: true} // every block the controller renders runs
 	lim := func(mod string) plan.ModuleLimits {
 		b := moduleBudgets[mod]
-		return plan.ModuleLimits{RatePerSec: b[0], Burst: b[1]}
+		return plan.ModuleLimits{Common: enabled, RatePerSec: float64(b[0]), Burst: b[1]}
 	}
-	cfg.Modules.Health = &plan.HealthSettings{IntervalSec: 60}
+	cfg.Modules.Health = &plan.HealthSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, IntervalSec: 60}
 
 	svcs := m.ServicesOn(host)
 	var webRoots, bins []string
@@ -100,7 +102,7 @@ func BuildAgentConfig(in ConfigInputs, host string) (cfg *plan.AgentConfig, warn
 	if h.IsWindows() {
 		cfg.Modules.Winevt = &plan.WinevtSettings{ModuleLimits: lim("winevt")}
 	} else {
-		cfg.Modules.Audit = &plan.AuditSettings{WebRoots: uniq(webRoots), ServiceBinaries: uniq(bins)}
+		cfg.Modules.Audit = &plan.AuditSettings{ModuleLimits: plan.ModuleLimits{Common: enabled}, WebRoots: uniq(webRoots), ServiceBinaries: uniq(bins)}
 		cfg.Modules.Net = &plan.NetSettings{ModuleLimits: lim("net"), Services: nilIfEmpty(netSvc), HashExe: true, IntervalMS: 2000}
 		hp, perr := render.BuildHostPolicy(m, host)
 		if perr != nil {

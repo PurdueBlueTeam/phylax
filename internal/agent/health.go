@@ -115,10 +115,14 @@ func init() {
 	RegisterFactory(Factory{
 		Name: "health",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			if h := c.Modules.Health; h != nil && h.IntervalSec > 0 {
-				return fmt.Sprintf("%d/%d/%d", h.IntervalSec, h.RatePerSec, h.Burst), true
+			h := c.Modules.Health
+			if h != nil && !h.Enabled {
+				return "", false
 			}
-			return healthDefaultFP, true
+			if h != nil && h.IntervalSec > 0 {
+				return fmt.Sprintf("%d/%v/%d", h.IntervalSec, h.RatePerSec, h.Burst), true
+			}
+			return healthDefaultFP, true // a core module: no block still runs it
 		},
 		Build: func(env Env, c *plan.AgentConfig) (ModuleSpec, error) {
 			iv := env.a.cfg.HealthInterval
@@ -127,7 +131,7 @@ func init() {
 				if h.IntervalSec > 0 {
 					iv = time.Duration(h.IntervalSec) * time.Second
 				}
-				spec.Rate, spec.Burst = float64(h.RatePerSec), h.Burst
+				spec.Rate, spec.Burst = h.RatePerSec, h.Burst
 			}
 			spec.Module = NewHealthModule(env.Health, iv)
 			return spec, nil

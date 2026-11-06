@@ -15,7 +15,7 @@ func init() {
 	agent.RegisterFactory(agent.Factory{
 		Name: "audit",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			if c.Modules.Audit == nil {
+			if c.Modules.Audit == nil || !c.Modules.Audit.Enabled {
 				return "", false
 			}
 			return fp(c.Modules.Audit), true

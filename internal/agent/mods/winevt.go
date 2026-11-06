@@ -14,7 +14,7 @@ func init() {
 	agent.RegisterFactory(agent.Factory{
 		Name: "winevt",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			if c.Modules.Winevt == nil {
+			if c.Modules.Winevt == nil || !c.Modules.Winevt.Enabled {
 				return "", false
 			}
 			return fp(c.Modules.Winevt), true

@@ -5,8 +5,3 @@ package plan
 func ExpandTemplate(p Plan, params map[string]string) (Plan, error) {
 	panic("unimplemented: W1 Task 22")
 }
-
-// BlockFor returns the agent config block for a module name.
-func BlockFor(cfg *AgentConfig, name string) (block any, ok bool) {
-	panic("unimplemented: W1 Task 12")
-}

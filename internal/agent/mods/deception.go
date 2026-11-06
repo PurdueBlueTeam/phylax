@@ -14,6 +14,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/decoys/sandbox"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -40,7 +41,7 @@ func decoysSection(c *plan.AgentConfig) (string, bool) {
 		return "", false
 	}
 	if c.Modules.Deception != nil {
-		return fp(c.Modules.Deception), true
+		return fp(c.Modules.Deception), c.Modules.Deception.Enabled
 	}
 	return fp([]any{c.Version, c.Epoch}), true
 }
@@ -87,7 +88,7 @@ func init() {
 	agent.RegisterFactory(agent.Factory{
 		Name: "akiascan",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			return "v1", c.Modules.Detect != nil
+			return "v1", c.Modules.Detect != nil && c.Modules.Detect.Enabled
 		},
 		Build: func(env agent.Env, _ *plan.AgentConfig) (agent.ModuleSpec, error) {
 			return spec(&honeytokens.AKIAScanner{Subscribe: func(buf int) (<-chan event.Event, func()) { return env.Subscribe(buf) }}, 20, 50), nil
@@ -108,7 +109,7 @@ func deceptionSettings(env agent.Env, c *plan.AgentConfig) (*plan.DeceptionSetti
 	if env.Logger != nil {
 		env.Logger.Warn("decoys: using the unsigned " + DeceptionFile + "; have the controller send a deception section")
 	}
-	d := &plan.DeceptionSettings{Bind: lc.Bind, ScoredPorts: lc.ScoredPorts, WatchPaths: lc.WatchPaths, InProcess: true}
+	d := &plan.DeceptionSettings{Common: module.Common{Enabled: true}, Bind: lc.Bind, ScoredPorts: lc.ScoredPorts, WatchPaths: lc.WatchPaths, InProcess: true}
 	for _, l := range lc.Listeners {
 		d.Listeners = append(d.Listeners, plan.DecoyListenerSettings{Kind: l.Kind, Port: l.Port})
 	}

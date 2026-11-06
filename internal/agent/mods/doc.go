@@ -24,8 +24,8 @@ func fp(v any) string {
 	return string(b)
 }
 
-func spec(m agent.Module, rate, burst int) agent.ModuleSpec {
-	return agent.ModuleSpec{Module: m, Rate: float64(rate), Burst: burst}
+func spec(m agent.Module, rate float64, burst int) agent.ModuleSpec {
+	return agent.ModuleSpec{Module: m, Rate: rate, Burst: burst}
 }
 
 func secs(n int, def time.Duration) time.Duration {
@@ -38,7 +38,7 @@ func secs(n int, def time.Duration) time.Duration {
 func unavailable(why string) error { return fmt.Errorf("%w: %s", agent.ErrUnavailable, why) }
 
 // subSpec is spec for a module that subscribes to the agent event stream.
-func subSpec(m agent.Module, rate, burst int) agent.ModuleSpec {
+func subSpec(m agent.Module, rate float64, burst int) agent.ModuleSpec {
 	sp := spec(m, rate, burst)
 	sp.Subscriber = true
 	return sp

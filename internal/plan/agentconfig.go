@@ -1,16 +1,19 @@
 package plan
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
 	"github.com/PurdueBlueTeam/phylax/internal/link"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 )
 
 // The agent configuration (which modules run and with what settings) is
@@ -35,10 +38,13 @@ var (
 	ErrConfigCurrent = errors.New("config: already applied")
 )
 
-// ModuleLimits is a module's event rate budget. Zero means the agent's default.
+// ModuleLimits is the generic part of every module's settings block (the
+// enablement block) plus the module's event rate budget. A zero budget means
+// the agent's default.
 type ModuleLimits struct {
-	RatePerSec int `json:"rate_per_sec,omitempty"`
-	Burst      int `json:"burst,omitempty"`
+	module.Common
+	RatePerSec float64 `json:"rate_per_sec,omitempty"`
+	Burst      int     `json:"burst,omitempty"`
 }
 
 // HealthSettings configures the health module.
@@ -140,11 +146,8 @@ type DetectSettings struct {
 	// Seeds are the manifest-derived static profiles (scored accounts,
 	// service comms, declared dependencies, ...), the behavioural scorer
 	// exemption: rules exempt by account/behaviour, never by address.
-	Seeds []ProfileSeed `json:"seeds,omitempty"`
-	// ActEnabled allows rules in mode "act" to trigger tier-0 responses. The
-	// controller leaves it false: alerts only, until a later task.
-	ActEnabled bool `json:"act_enabled,omitempty"`
-	MaxKeys    int  `json:"max_keys,omitempty"`
+	Seeds   []ProfileSeed `json:"seeds,omitempty"`
+	MaxKeys int           `json:"max_keys,omitempty"`
 }
 
 // DecoyListenerSettings is one decoy service port.
@@ -172,6 +175,7 @@ type HoneyToken struct {
 // supersedes the unsigned <state dir>/deception.json (still read when the
 // signed config carries no deception section, for migration).
 type DeceptionSettings struct {
+	module.Common
 	Bind      string                  `json:"bind,omitempty"`
 	Listeners []DecoyListenerSettings `json:"listeners,omitempty"`
 	// ScoredPorts are the ports of the scored services on this host: a decoy
@@ -219,6 +223,20 @@ type AgentConfig struct {
 	Roles   []string       `json:"roles,omitempty"`
 	Modules ModuleSettings `json:"modules"`
 	Budgets Budgets        `json:"budgets"`
+}
+
+// BlockFor returns the settings block for module name (a typed nil pointer when
+// the host does not run it) and whether name is a module at all.
+func BlockFor(cfg *AgentConfig, name string) (any, bool) {
+	v := reflect.ValueOf(&cfg.Modules).Elem()
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		tag, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if tag == name {
+			return v.Field(i).Interface(), true
+		}
+	}
+	return nil, false
 }
 
 // HasRole reports whether the host holds role.
@@ -318,7 +336,9 @@ func (v *ConfigVerifier) Parse(w *link.Config) (*AgentConfig, error) {
 		return nil, &StepError{ErrBadSignature, ""}
 	}
 	var c AgentConfig
-	if err := json.Unmarshal(canon, &c); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(canon))
+	dec.DisallowUnknownFields() // an unknown field is a config the agent must not half-apply
+	if err := dec.Decode(&c); err != nil {
 		return nil, &StepError{ErrMalformed, err.Error()}
 	}
 	switch {

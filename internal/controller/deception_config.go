@@ -5,6 +5,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/honeytokens"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
+	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -44,7 +45,7 @@ func deceptionSettings(in ConfigInputs, host string, h manifest.Host) *plan.Dece
 	if !h.HasRole(manifest.RoleDecoys) || !ok {
 		return nil
 	}
-	ds := &plan.DeceptionSettings{}
+	ds := &plan.DeceptionSettings{Common: module.Common{Enabled: true}}
 	for _, l := range d.Listeners {
 		ds.Listeners = append(ds.Listeners, plan.DecoyListenerSettings{Kind: l.Kind, Port: l.Port})
 	}

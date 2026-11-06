@@ -55,6 +55,7 @@ func TestDeceptionRoleGate(t *testing.T) {
 }
 
 func signedCfg(d *plan.DeceptionSettings) *plan.AgentConfig {
+	d.Enabled = true
 	return &plan.AgentConfig{Roles: []string{"decoys"}, Modules: plan.ModuleSettings{Deception: d}}
 }
 

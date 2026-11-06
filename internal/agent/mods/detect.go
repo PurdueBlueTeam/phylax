@@ -22,7 +22,7 @@ func init() {
 	agent.RegisterFactory(agent.Factory{
 		Name: "detect",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			if c.Modules.Detect == nil {
+			if c.Modules.Detect == nil || !c.Modules.Detect.Enabled {
 				return "", false
 			}
 			return fp(c.Modules.Detect), true
@@ -51,7 +51,7 @@ func (m *detectModule) Start(ctx context.Context, emit agent.Emit) error {
 	eng := detect.NewEngine(m.rs, detect.Options{
 		// Tier-0 responses stay disabled until a later task: every rule is
 		// forced to alert unless the signed config explicitly enables acting.
-		AlertOnly: !m.s.ActEnabled,
+		AlertOnly: !m.s.Common.ActEnabled,
 		MaxKeys:   m.s.MaxKeys,
 	})
 	if st, ok := m.env.Kept(keptProfiles).(map[string]map[string]detect.KeyState); ok {

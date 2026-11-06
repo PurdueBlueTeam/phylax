@@ -26,7 +26,7 @@ func init() {
 	agent.RegisterFactory(agent.Factory{
 		Name: "integrity",
 		Section: func(c *plan.AgentConfig) (string, bool) {
-			if c.Modules.Integrity == nil {
+			if c.Modules.Integrity == nil || !c.Modules.Integrity.Enabled {
 				return "", false
 			}
 			return fp(c.Modules.Integrity), true
