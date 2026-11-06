@@ -75,6 +75,12 @@ type Options struct {
 	Probe func(ctx context.Context, service string) error
 	// GatePoll is how often an auto gate is re-evaluated (default 1s).
 	GatePoll time.Duration
+	// MaxHostInflight bounds the steps in flight per host (default 6, below
+	// the agent's 8-step cap so a valid plan never sees a busy answer).
+	MaxHostInflight int
+	// BusyRetry is how long to wait before re-sending a step the agent
+	// answered busy (default 2s).
+	BusyRetry time.Duration
 	// EnrollTimer arms the enrollment window timer (WatchEnrollment); default
 	// time.AfterFunc. Tests drive it so no test waits a real window.
 	EnrollTimer func(d time.Duration, f func()) (stop func())
@@ -124,6 +130,9 @@ type Controller struct {
 	modBackoffMin    time.Duration
 	analysisDeadline time.Duration
 	bus              *eventBus
+
+	// probeRetry is the wait before one scorer-mimic probe retry (5s).
+	probeRetry time.Duration
 
 	// quota is the controller data disk's shed level (quota.go).
 	quota *store.Quota
@@ -179,10 +188,20 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	if opt.ResumeGrace <= 0 {
 		opt.ResumeGrace = opt.StepTimeout
 	}
+	if opt.GatePoll <= 0 {
+		opt.GatePoll = time.Second
+	}
+	if opt.MaxHostInflight <= 0 {
+		opt.MaxHostInflight = defaultMaxHostInflight
+	}
+	if opt.BusyRetry <= 0 {
+		opt.BusyRetry = defaultBusyRetry
+	}
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, now: time.Now, clk: realClock{},
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
-		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
+		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{},
+		probeRetry: 5 * time.Second}
 	enr, err := enroll.New(enroll.Options{
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
 		PlanKey:    pk.Public().(ed25519.PublicKey),

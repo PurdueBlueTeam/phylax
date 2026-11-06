@@ -128,3 +128,103 @@ func pathUnder(p, root string) bool {
 	root = path.Clean(strings.ReplaceAll(root, `\`, "/"))
 	return p == root || strings.HasPrefix(p, root+"/")
 }
+
+// ProbeGroup is a set of nodes of one plan on one host that share one
+// before-probe and one after-probe.
+type ProbeGroup struct {
+	Host     string
+	Services []string // scored services to probe, sorted
+	Nodes    []string // node ids in plan order
+}
+
+// ProbeGroups returns the groups: nodes that touch a scored service, target the
+// same host and have overlapping Locks (transitively) form one group; a node
+// with Deadman set is always its own group (its confirm waits for its own
+// after-probe).
+func ProbeGroups(p Plan, scored map[string][]string, locks map[string][]string) []ProbeGroup {
+	type cand struct {
+		id      string
+		host    string
+		deadman bool
+	}
+	var cands []cand
+	byID := map[string]int{}
+	for _, n := range p.Nodes {
+		if n.Gate || len(scored[n.ID]) == 0 {
+			continue
+		}
+		byID[n.ID] = len(cands)
+		cands = append(cands, cand{id: n.ID, host: n.Target, deadman: n.DeadmanSec != 0})
+	}
+	parent := make([]int, len(cands))
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parent[i] != i {
+			parent[i] = find(parent[i])
+		}
+		return parent[i]
+	}
+	union := func(a, b int) {
+		ra, rb := find(a), find(b)
+		if ra != rb {
+			parent[rb] = ra
+		}
+	}
+	for i := range cands {
+		if cands[i].deadman {
+			continue
+		}
+		for j := i + 1; j < len(cands); j++ {
+			if cands[j].deadman || cands[i].host != cands[j].host {
+				continue
+			}
+			if locksOverlap(locks[cands[i].id], locks[cands[j].id]) {
+				union(i, j)
+			}
+		}
+	}
+	var out []ProbeGroup
+	seen := map[int]bool{}
+	for i, c := range cands {
+		if c.deadman {
+			out = append(out, ProbeGroup{Host: c.host, Services: append([]string(nil), scored[c.id]...), Nodes: []string{c.id}})
+			continue
+		}
+		root := find(i)
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		g := ProbeGroup{Host: c.host}
+		svc := map[string]bool{}
+		for j := range cands {
+			if find(j) != root {
+				continue
+			}
+			g.Nodes = append(g.Nodes, cands[j].id)
+			for _, s := range scored[cands[j].id] {
+				svc[s] = true
+			}
+		}
+		for s := range svc {
+			g.Services = append(g.Services, s)
+		}
+		sort.Strings(g.Services)
+		out = append(out, g)
+	}
+	return out
+}
+
+func locksOverlap(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}

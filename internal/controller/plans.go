@@ -35,6 +35,12 @@ const (
 // plan has succeeded, so confirmation is deferred to plan completion.
 const RollbackWindowSec = 600
 
+// defaultMaxHostInflight keeps the controller below the agent's 8-step cap.
+const defaultMaxHostInflight = 6
+
+// defaultBusyRetry is the wait before a step answered busy is sent again.
+const defaultBusyRetry = 2 * time.Second
+
 var (
 	ErrPlanExists    = errors.New("controller: plan already exists")
 	ErrNoSuchPlan    = errors.New("controller: no such plan")
@@ -103,6 +109,36 @@ type planRT struct {
 	// holdUntil: after a controller restart, apply steps for hosts that have
 	// not reconnected yet wait (instead of failing) until this time.
 	holdUntil time.Time
+
+	// probes is the plan's scorer-mimic probe grouping (Task 27); gates is the
+	// gate: auto state; busyRetries counts consecutive busy answers per node.
+	probes      *probePlan
+	gates       map[string]*gateRT
+	busyRetries map[string]int
+}
+
+// probePlan is the probe grouping of one plan and its per-group progress.
+type probePlan struct {
+	groups []plan.ProbeGroup
+	of     map[string]int
+	st     []probeGroupRT
+}
+
+type probeGroupRT struct {
+	before, after         bool
+	beforeBusy, afterBusy bool
+	failed                bool
+}
+
+// gateRT is the evaluation state of one gate: auto node.
+type gateRT struct {
+	start    time.Time
+	timer    *time.Timer
+	waiting  bool
+	probing  bool
+	probeOK  bool
+	probeErr error
+	checked  bool
 }
 
 type stepKey struct {
@@ -183,7 +219,7 @@ func (c *Controller) CreatePlan(ctx context.Context, def plan.Plan, by string) e
 		return ErrPlanExists
 	}
 	rt := &planRT{c: c, p: &p, run: run, state: PlanDraft, by: by, nodes: map[string]*nodeRT{}, hash: hash,
-		created: c.now(), done: make(chan struct{})}
+		created: c.now(), done: make(chan struct{}), gates: map[string]*gateRT{}, busyRetries: map[string]int{}}
 	for _, n := range p.Nodes {
 		rt.nodes[n.ID] = &nodeRT{}
 	}
@@ -816,8 +852,10 @@ func (rt *planRT) advanceLocked() {
 	if rt.state != PlanRunning || rt.c.closed.Load() {
 		return
 	}
+	rt.initProbesLocked()
+	rt.evalAutoGatesLocked()
 	if !rt.draining {
-		for _, id := range rt.run.Next(plan.Limits{PerHost: 4}) {
+		for _, id := range rt.run.Next(plan.Limits{PerHost: rt.c.opt.MaxHostInflight}) {
 			rt.nodes[id].want = plan.PhaseApply
 		}
 	}
@@ -828,9 +866,17 @@ func (rt *planRT) advanceLocked() {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if nr := rt.nodes[id]; nr.want != "" && !nr.inflight {
-			rt.dispatchLocked(id, nr)
+		nr := rt.nodes[id]
+		if nr.want == "" || nr.inflight {
+			continue
 		}
+		if nr.want == plan.PhaseApply {
+			if idx, ok := rt.probes.of[id]; ok && !rt.probes.st[idx].before {
+				rt.startProbeLocked(idx, "before")
+				continue
+			}
+		}
+		rt.dispatchLocked(id, nr)
 	}
 	rt.maybeFinishLocked()
 }
@@ -873,6 +919,9 @@ func (rt *planRT) dispatchLocked(id string, nr *nodeRT) {
 	if c.isLocalNode(n) { // device / Splunk node: runs on the controller (devexec_run.go)
 		rt.dispatchLocalLocked(id, nr, n)
 		return
+	}
+	if c.inflightSteps(n.Target) >= c.opt.MaxHostInflight {
+		return // the slot frees on a result; onResultLocked advances again
 	}
 	ag := c.sessionFor(n.Target)
 	if ag != nil && !ag.reconciled.Load() {
@@ -938,8 +987,16 @@ func (rt *planRT) onResultLocked(id string, pr phaseRec) {
 	case plan.PhaseVerify:
 		if ok == plan.OutcomeVerified {
 			_ = rt.run.MarkVerified(id)
-			// Confirm now, unless the whole plan must succeed first.
-			if rt.policy() != plan.RollbackPlan {
+			if idx, ok := rt.probes.of[id]; ok {
+				if !rt.probes.st[idx].failed && rt.groupVerifiedLocked(idx) {
+					if !rt.probes.st[idx].after {
+						rt.startProbeLocked(idx, "after")
+					} else {
+						rt.confirmProbeGroupLocked(idx)
+					}
+				}
+			} else if rt.policy() != plan.RollbackPlan {
+				// Confirm now, unless the whole plan must succeed first.
 				rt.confirmLocked(id)
 			}
 		} else {
@@ -983,6 +1040,9 @@ func (rt *planRT) confirmLocked(id string) {
 	nr := rt.nodes[id]
 	if rt.c.isLocalNode(n) {
 		return // no dead-man on controller-side nodes
+	}
+	if idx, ok := rt.probes.of[id]; ok && !rt.probes.st[idx].after {
+		return // the confirm waits for the node's after-probe
 	}
 	if plan.EffectiveDeadmanSec(n, rt.run.Risk(id)) <= 0 {
 		return
@@ -1075,6 +1135,21 @@ func (rt *planRT) maybeFinishLocked() {
 	if rt.draining && (!rt.rbBuilt || len(rt.rbQueue) > 0 || rt.rbBusy) {
 		return
 	}
+	if rt.probes != nil {
+		for i := range rt.probes.groups {
+			st := &rt.probes.st[i]
+			if st.failed {
+				continue
+			}
+			if st.beforeBusy || st.afterBusy {
+				return
+			}
+			if rt.groupVerifiedLocked(i) && !st.after {
+				rt.startProbeLocked(i, "after")
+				return
+			}
+		}
+	}
 	switch {
 	case rt.draining && !rt.rbFailed:
 		rt.state = PlanRolledBack
@@ -1094,6 +1169,210 @@ func (rt *planRT) maybeFinishLocked() {
 	}
 	_ = rt.persistLocked(context.Background())
 	close(rt.done)
+}
+
+// ---- scorer-mimic probes (Task 27) ----
+
+// initProbesLocked groups the plan's nodes that touch a manifest-scored
+// service. It is lazy because the manifest may be loaded after the plan.
+func (rt *planRT) initProbesLocked() {
+	if rt.probes != nil {
+		return
+	}
+	rt.probes = &probePlan{of: map[string]int{}}
+	man, err := rt.c.currentManifest()
+	if err != nil || man == nil {
+		return
+	}
+	scored := map[string][]string{}
+	locks := map[string][]string{}
+	for _, n := range rt.p.Nodes {
+		if n.Gate {
+			continue
+		}
+		a, err := rt.c.reg.Get(n.Action)
+		if err != nil {
+			continue
+		}
+		params, err := a.Spec().Validate(n.Params)
+		if err != nil {
+			continue
+		}
+		if svc := plan.ScoredTouch(man, n, a.Touches(params)); len(svc) > 0 {
+			scored[n.ID] = svc
+		}
+		locks[n.ID] = a.Locks(params)
+	}
+	rt.probes.groups = plan.ProbeGroups(*rt.p, scored, locks)
+	rt.probes.st = make([]probeGroupRT, len(rt.probes.groups))
+	for i, g := range rt.probes.groups {
+		for _, id := range g.Nodes {
+			rt.probes.of[id] = i
+		}
+	}
+}
+
+// startProbeLocked runs one group's before or after probe off the plan lock.
+// One probe per group and phase: a second call while it is running is a no-op.
+func (rt *planRT) startProbeLocked(idx int, phase string) {
+	st := &rt.probes.st[idx]
+	switch phase {
+	case "before":
+		if st.before || st.beforeBusy {
+			return
+		}
+		st.beforeBusy = true
+	case "after":
+		if st.after || st.afterBusy {
+			return
+		}
+		st.afterBusy = true
+	default:
+		return
+	}
+	services := append([]string(nil), rt.probes.groups[idx].Services...)
+	c := rt.c
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err, svc := c.probeServices(ctx, services)
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		if phase == "before" {
+			st.beforeBusy = false
+		} else {
+			st.afterBusy = false
+		}
+		if err != nil {
+			rt.failProbeGroupLocked(idx, phase, svc, err)
+		} else if phase == "before" {
+			st.before = true
+		} else {
+			st.after = true
+			rt.confirmProbeGroupLocked(idx)
+		}
+		rt.advanceLocked()
+	}()
+}
+
+// probeServices runs the probe for every service, one retry after c.probeRetry.
+// It returns the failing service (empty when green).
+func (c *Controller) probeServices(ctx context.Context, services []string) (error, string) {
+	if len(services) == 0 {
+		return nil, ""
+	}
+	if c.opt.Probe == nil {
+		return errors.New("probe cannot run"), services[0]
+	}
+	for _, s := range services {
+		err := c.opt.Probe(ctx, s)
+		if err != nil && c.probeRetry > 0 {
+			select {
+			case <-time.After(c.probeRetry):
+			case <-ctx.Done():
+				return ctx.Err(), s
+			}
+			err = c.opt.Probe(ctx, s)
+		}
+		if err != nil {
+			return err, s
+		}
+	}
+	return nil, ""
+}
+
+// failProbeGroupLocked fails the node that owns a red probe. A red after-probe
+// rolls the group back through the plan's failure policy; a dead-man node
+// without rollback_plan keeps its own timer as the undo.
+func (rt *planRT) failProbeGroupLocked(idx int, phase, service string, err error) {
+	reason := phase + "-probe red: " + service
+	g := rt.probes.groups[idx]
+	st := &rt.probes.st[idx]
+	st.failed = true
+	if phase == "before" {
+		// The node is running but nothing was applied: fail it and leave the
+		// rest to the failure policy.
+		id := ""
+		for _, nid := range g.Nodes {
+			if s := rt.run.State(nid); s == plan.StateRunning || s == plan.StatePending || s == plan.StateApproved {
+				id = nid
+				break
+			}
+		}
+		if id == "" {
+			id = g.Nodes[0]
+		}
+		rt.failLocked(id, reason, phase)
+		rt.draining = false // nothing was applied: there is no rollback to run
+		_ = rt.persistLocked(context.Background())
+		_ = err
+		return
+	}
+	// A verified node cannot move to failed; the group's undo is the rollback,
+	// and the reason stays on the node that was last verified.
+	id := ""
+	for i := len(g.Nodes) - 1; i >= 0; i-- {
+		if rt.run.State(g.Nodes[i]) == plan.StateVerified {
+			id = g.Nodes[i]
+			break
+		}
+	}
+	if id == "" {
+		id = g.Nodes[0]
+	}
+	rt.nodes[id].reason = reason
+	rt.failed = true
+	if rt.policy() == plan.RollbackPlan {
+		rt.draining = true
+	} else {
+		for _, nid := range g.Nodes {
+			switch rt.run.State(nid) {
+			case plan.StateApplied, plan.StateVerified:
+				n := rt.node(nid)
+				if plan.EffectiveDeadmanSec(n, rt.run.Risk(nid)) == 0 {
+					rt.nodes[nid].want = plan.PhaseRollback
+				}
+			}
+		}
+	}
+	_ = rt.persistLocked(context.Background())
+	_ = err
+}
+
+// groupVerifiedLocked reports whether every node of the group has verified.
+func (rt *planRT) groupVerifiedLocked(idx int) bool {
+	for _, id := range rt.probes.groups[idx].Nodes {
+		if rt.run.State(id) != plan.StateVerified {
+			return false
+		}
+	}
+	return true
+}
+
+// confirmProbeGroupLocked confirms the dead-man entries of a group whose
+// after-probe passed. rollback_plan confirms at plan completion instead.
+func (rt *planRT) confirmProbeGroupLocked(idx int) {
+	if rt.policy() == plan.RollbackPlan {
+		return
+	}
+	for _, id := range rt.probes.groups[idx].Nodes {
+		if rt.run.State(id) == plan.StateVerified {
+			rt.confirmLocked(id)
+		}
+	}
+}
+
+// inflightSteps counts the steps in flight to a host.
+func (c *Controller) inflightSteps(host string) int {
+	c.pmu.Lock()
+	defer c.pmu.Unlock()
+	n := 0
+	for k := range c.pend {
+		if k.host == host {
+			n++
+		}
+	}
+	return n
 }
 
 // ---- persistence ----
@@ -1168,3 +1447,6 @@ func (rt *planRT) persistLocked(ctx context.Context) error {
 	}
 	return nil
 }
+
+// evalAutoGatesLocked evaluates ready gate: auto nodes. Task 27a fills it in.
+func (rt *planRT) evalAutoGatesLocked() {}
