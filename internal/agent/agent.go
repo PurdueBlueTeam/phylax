@@ -3,9 +3,13 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -70,6 +74,7 @@ type Agent struct {
 	ctlVer  *plan.ControlVerifier // nil when the bootstrap has no plan_key: every control is refused
 	cfgVer  *plan.ConfigVerifier  // likewise: a config is never accepted unsigned
 	planKey ed25519.PublicKey
+	binHash string // sha256 of this binary, "" when unreadable
 
 	// config handling (see config.go)
 	cfgKick chan struct{}
@@ -98,6 +103,25 @@ type Agent struct {
 	state    State
 	linkStat LinkStatus
 	attempt  int
+}
+
+// binarySHA256 is the hex sha256 of the running binary, "" when unreadable.
+// The controller compares it with the binaries it served (enrollment watch).
+func binarySHA256() string {
+	p, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // New loads the bootstrap, identity and state (generating the identity on
@@ -132,7 +156,7 @@ func New(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("agent: state: %w", err)
 	}
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
-		notify: make(chan struct{}, 1), runCtx: context.Background(),
+		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
 		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}}
 	if err := a.initExec(); err != nil {
 		return nil, err
@@ -373,7 +397,8 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	}})
 
 	hello := &link.Hello{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Deadman: a.deadmanReport(), Host: a.bundle.Host, Version: a.cfg.Version,
-		Roles: a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
+		BinarySHA256: a.binHash,
+		Roles:        a.bundle.Roles, Caps: map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "modules": a.moduleManifests()}}
 	hello.LastSeq, _ = a.sp.Head()
 	if !enrolled {
 		hello.Token = a.bundle.Token

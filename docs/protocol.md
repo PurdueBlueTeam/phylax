@@ -125,7 +125,7 @@ error and closes the connection.
 
 | Code | Name | Direction | Fields |
 | --- | --- | --- | --- |
-| 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
+| 0x01 | `hello` | agent to controller | `proto` (int, 1), `minor` (int, 1), `host`, `version`, `roles[]`, `caps{}`, `last_seq`, `token` (enrollment only), `binary_sha256` (sha256 hex of the running agent binary; absent when unreadable), `deadman[]` (`{id,node,state,deadline}` for journal entries belonging to a plan node, newest first, at most 256) |
 | 0x18 | `welcome` | controller to agent | `proto`, `minor`, `enrolled` (bool), `config` (optional signed config) |
 | 0x02 | `heartbeat` | agent to controller | `seq`, `host_clock` (RFC 3339), `spool_depth`, `congestion` (`ok`/`warning`/`full`/`flood`/`recovered`), `modules{name:status}`, `safe_mode`, `drops` |
 | 0x03 | `events` | agent to controller | `events[]`: `internal/event` records (`agent`, `seq`, `time`, `kind`, `prio`, `fields`, `prev`, `hash`), 1..5000 per batch |

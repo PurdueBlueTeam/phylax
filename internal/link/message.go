@@ -130,6 +130,10 @@ type Hello struct {
 	Token   string         `json:"token,omitempty"` // one-time enrollment token, first contact only
 	// Minor is the sender's protocol minor revision (absent = 0).
 	Minor int `json:"minor,omitempty"`
+	// BinarySHA256 is the sha256 hex of the running agent binary
+	// (os.Executable); "" when unreadable. The controller compares it with
+	// the binaries it served during enrollment.
+	BinarySHA256 string `json:"binary_sha256,omitempty"`
 	// Deadman reports the agent's dead-man journal entries that belong to a
 	// plan node (pending ones and recently finished), so a controller that
 	// restarted can reconcile what happened while it was away.
@@ -156,6 +160,9 @@ func (m *Hello) Validate() error {
 		return err
 	}
 	if err := checkStr("version", m.Version, 64, false); err != nil {
+		return err
+	}
+	if err := checkStr("binary_sha256", m.BinarySHA256, 64, false); err != nil {
 		return err
 	}
 	if len(m.Roles) > 32 || len(m.Caps) > 256 || len(m.Deadman) > MaxDeadmanEntries || m.Minor < 0 {
