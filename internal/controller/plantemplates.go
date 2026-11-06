@@ -152,3 +152,13 @@ func PlanIDFor(p plan.Plan, template, chosen string, now time.Time) string {
 	}
 	return id
 }
+
+// LoadModuleTemplate loads plansRoot/<mod>/<name>.
+func LoadModuleTemplate(plansRoot, mod, name string) (plan.Plan, error) {
+	panic("unimplemented: W1 Task 22")
+}
+
+// LoadModuleTemplateFor loads a module template, resolving label variables.
+func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) ([]string, error)) (plan.Plan, error) {
+	panic("unimplemented: W1 Task 22b")
+}

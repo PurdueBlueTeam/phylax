@@ -362,7 +362,7 @@ func (a *agentConn) drain(ctx context.Context) error {
 			st.acked = ack.Seq
 			progressed = true
 		}
-		c.captureObserve(ctx, run, ack.Seq)    // controller-scope rules over network events (capture_ingest.go)
+		c.captureObserve(ctx, run, ack.Seq) // controller-scope rules over network events (capture_ingest.go)
 		if err != nil {
 			st.buf = map[uint64]event.Event{}
 			st.gapFrom = map[uint64]uint64{}

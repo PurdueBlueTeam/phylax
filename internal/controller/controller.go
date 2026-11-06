@@ -65,6 +65,10 @@ type Options struct {
 	// Vault holds the honeytoken secret material (deception_registry.go).
 	// Nil disables honeytoken generation; plans never carry secrets either way.
 	Vault SecretVault
+	// Probe checks a scored service for auto plans and gate: auto.
+	Probe func(ctx context.Context, service string) error
+	// GatePoll is how often an auto gate is re-evaluated (default 1s).
+	GatePoll time.Duration
 }
 
 const alertRing = 256
@@ -97,6 +101,11 @@ type Controller struct {
 
 	honey    honeyState // honeytoken registry (deception_registry.go)
 	honeyGen sync.Mutex // serialises GenerateHoneytokens
+
+	// module seams (W1); later tasks fill these in.
+	modBackoffMin    time.Duration
+	analysisDeadline time.Duration
+	bus              *eventBus
 }
 
 // New creates the data dir, identity (first run), store and token file.
