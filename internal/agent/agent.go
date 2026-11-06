@@ -557,5 +557,8 @@ func (a *Agent) heartbeatHealth() map[string]module.Health {
 			out[name] = module.Health{State: module.StateUnavailable, Gaps: []module.Gap{{What: name, Why: why}}}
 		}
 	}
+	for name, h := range out {
+		out[name] = clampHealth(h)
+	}
 	return out
 }

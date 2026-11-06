@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"sort"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
@@ -22,6 +24,107 @@ type Emit func(event.Event) error
 
 // HealthReporter is implemented by a module with its own health detail.
 type HealthReporter interface{ Health() module.Health }
+
+// clampHealth fits a module health report inside the heartbeat limits, marking
+// a truncation with a trailing gap. The reporter owns the original slices and
+// maps, so everything is copied before it is changed.
+func clampHealth(h module.Health) module.Health {
+	truncated := false
+	if len(h.State) > link.MaxHealthState {
+		h.State = module.State(clipUTF8(string(h.State), link.MaxHealthState))
+		truncated = true
+	}
+	if len(h.Detail) > link.MaxHealthDetail {
+		h.Detail = clipUTF8(h.Detail, link.MaxHealthDetail)
+		truncated = true
+	}
+	h.Gaps = append([]module.Gap(nil), h.Gaps...)
+	if len(h.Gaps) > link.MaxHealthGaps {
+		truncated = true
+	}
+	for i := range h.Gaps {
+		if len(h.Gaps[i].What) > link.MaxHealthGapField {
+			h.Gaps[i].What = clipUTF8(h.Gaps[i].What, link.MaxHealthGapField)
+			truncated = true
+		}
+		if len(h.Gaps[i].Why) > link.MaxHealthGapField {
+			h.Gaps[i].Why = clipUTF8(h.Gaps[i].Why, link.MaxHealthGapField)
+			truncated = true
+		}
+	}
+	if h.Info != nil {
+		keys := make([]string, 0, len(h.Info))
+		for k := range h.Info {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) > link.MaxHealthInfo {
+			truncated = true
+		}
+		info := make(map[string]string, min(len(keys), link.MaxHealthInfo))
+		for _, k := range keys {
+			if len(info) >= link.MaxHealthInfo {
+				break
+			}
+			nk := k
+			if len(nk) > link.MaxHealthInfoKey {
+				nk = clipUTF8(nk, link.MaxHealthInfoKey)
+				truncated = true
+			}
+			if _, dup := info[nk]; dup {
+				var ok bool
+				if nk, ok = uniqueInfoKey(info, nk); !ok {
+					truncated = true
+					continue
+				}
+				truncated = true
+			}
+			v := h.Info[k]
+			if len(v) > link.MaxHealthInfoValue {
+				v = clipUTF8(v, link.MaxHealthInfoValue)
+				truncated = true
+			}
+			info[nk] = v
+		}
+		h.Info = info
+	}
+	limit := link.MaxHealthGaps
+	if truncated && limit > 0 {
+		limit--
+	}
+	if len(h.Gaps) > limit {
+		h.Gaps = h.Gaps[:limit]
+	}
+	if truncated {
+		h.Gaps = append(h.Gaps, module.Gap{What: "truncated", Why: "health report clamped to heartbeat limits"})
+	}
+	return h
+}
+
+func clipUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+func uniqueInfoKey(info map[string]string, k string) (string, bool) {
+	for i := 2; i < 1000; i++ {
+		suffix := fmt.Sprintf("~%d", i)
+		base := k
+		if len(base)+len(suffix) > link.MaxHealthInfoKey {
+			base = clipUTF8(base, link.MaxHealthInfoKey-len(suffix))
+		}
+		if _, ok := info[base+suffix]; !ok {
+			return base + suffix, true
+		}
+	}
+	return "", false
+}
 
 // Module is one supervised unit of agent functionality.
 type Module interface {
@@ -242,7 +345,7 @@ func (s *Supervisor) Health(name string) (module.Health, bool) {
 		h.State = module.StateError
 	}
 	if r, ok := mod.(HealthReporter); ok {
-		rep := r.Health()
+		rep := clampHealth(r.Health())
 		if st.State != StateRestarting && st.State != StateOverBudget && rep.State != "" {
 			h.State = rep.State
 		}

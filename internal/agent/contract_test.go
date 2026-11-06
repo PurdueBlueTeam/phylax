@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,23 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
+
+type hugeHealthMod struct{}
+
+func (hugeHealthMod) Name() string                               { return "huge" }
+func (hugeHealthMod) Start(ctx context.Context, emit Emit) error { <-ctx.Done(); return nil }
+func (hugeHealthMod) Health() module.Health {
+	gaps := make([]module.Gap, 100)
+	for i := range gaps {
+		gaps[i] = module.Gap{What: "gap", Why: "why"}
+	}
+	return module.Health{
+		State:  module.StateDegraded,
+		Detail: strings.Repeat("d", 2*link.MaxHealthDetail),
+		Gaps:   gaps,
+		Info:   map[string]string{strings.Repeat("k", 300): strings.Repeat("v", 300)},
+	}
+}
 
 type hrMod struct{}
 
@@ -36,6 +54,30 @@ func TestSupervisorHealthMergesReporter(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("health never reported")
+}
+
+func TestHeartbeatHealthClampedToWireLimits(t *testing.T) {
+	s := NewSupervisor(SupervisorOptions{Emit: func(event.Event) error { return nil }})
+	if err := s.Add(ModuleSpec{Module: hugeHealthMod{}}); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{sup: s}
+	hb := &link.Heartbeat{HostClock: time.Now(), Health: a.heartbeatHealth()}
+	if err := hb.Validate(); err != nil {
+		t.Fatalf("clamped health does not validate: %v", err)
+	}
+	h := hb.Health["huge"]
+	if len(h.Gaps) != link.MaxHealthGaps || h.Gaps[len(h.Gaps)-1].What != "truncated" {
+		t.Fatalf("truncation not marked: %+v", h.Gaps)
+	}
+	if len(h.Detail) > link.MaxHealthDetail || len(h.Info) != 1 {
+		t.Fatalf("health not clamped: %d detail, %d info", len(h.Detail), len(h.Info))
+	}
+	for k, v := range h.Info {
+		if len(k) > link.MaxHealthInfoKey || len(v) > link.MaxHealthInfoValue {
+			t.Fatalf("info not clamped: %d/%d", len(k), len(v))
+		}
+	}
 }
 
 func TestRegisterFactoryValidatesManifest(t *testing.T) {

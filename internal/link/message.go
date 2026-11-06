@@ -91,6 +91,18 @@ const (
 	maxHostLen        = 253
 )
 
+// Heartbeat health limits. Producers clamp to these; Heartbeat.Validate
+// rejects anything larger.
+const (
+	MaxHealthDetail    = 1024
+	MaxHealthGaps      = 32
+	MaxHealthInfo      = 32
+	MaxHealthGapField  = 256
+	MaxHealthInfoKey   = 64
+	MaxHealthInfoValue = 256
+	MaxHealthState     = 32
+)
+
 var ErrInvalid = errors.New("link: invalid message")
 
 func invalid(format string, a ...any) error {
@@ -210,22 +222,22 @@ func (m *Heartbeat) Validate() error {
 		if err := checkStr("health module", name, 64, true); err != nil {
 			return err
 		}
-		if len(h.Detail) > 1024 {
+		if len(h.Detail) > MaxHealthDetail {
 			return invalid("heartbeat: health %s detail too long", name)
 		}
-		if len(h.Gaps) > 32 {
+		if len(h.Gaps) > MaxHealthGaps {
 			return invalid("heartbeat: health %s has too many gaps", name)
 		}
 		for _, g := range h.Gaps {
-			if len(g.What) > 256 || len(g.Why) > 256 {
+			if len(g.What) > MaxHealthGapField || len(g.Why) > MaxHealthGapField {
 				return invalid("heartbeat: health %s gap too long", name)
 			}
 		}
-		if len(h.Info) > 32 {
+		if len(h.Info) > MaxHealthInfo {
 			return invalid("heartbeat: health %s has too many info entries", name)
 		}
 		for k, v := range h.Info {
-			if len(k) > 64 || len(v) > 256 {
+			if len(k) > MaxHealthInfoKey || len(v) > MaxHealthInfoValue {
 				return invalid("heartbeat: health %s info %q too long", name, k)
 			}
 		}
