@@ -191,6 +191,56 @@ func TestAutoProbeGroupingFailsClosed(t *testing.T) {
 	}
 }
 
+func TestBeforeProbeFailureRollsBackAppliedGroup(t *testing.T) {
+	files := map[string]string{"services.yml": `services:
+  web: { host: h1, kind: http, scored: true, listen: [{ proto: tcp, port: 80 }], content: { roots: [/etc/ssh] } }
+  db: { host: h1, kind: tcp, scored: true, listen: [{ proto: tcp, port: 5432 }], content: { roots: [/etc/audit] } }
+`}
+	x := newPlanCtl(t, files, nil, Options{Probe: func(_ context.Context, service string) error {
+		if service == "db" {
+			return errors.New("db is red")
+		}
+		return nil
+	}})
+	x.c.probeRetry = 10 * time.Millisecond
+	_, root := newPlanAgent(t, x, "h1")
+	writeAgentFile(t, root, "/etc/ssh/x", "original-ssh")
+	writeAgentFile(t, root, "/etc/audit/x", "original-audit")
+	p := plan.Plan{ID: "before-rollback", OnFailure: plan.RollbackPlan, Class: plan.ClassClick, Nodes: []plan.Node{
+		{ID: "a", Action: "file.write", Target: "h1", Risk: plan.RiskService,
+			Params: map[string]any{"path": "/etc/ssh/x", "content": "changed-ssh"}},
+		{ID: "b", Action: "file.write", Target: "h1", Risk: plan.RiskService, Needs: []string{"a"},
+			Params: map[string]any{"path": "/etc/audit/x", "content": "changed-audit"}},
+	}}
+	if err := x.c.CreatePlan(ctx, p, "driver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.c.approveNow(ctx, p.ID, "driver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.c.Apply(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	wctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := x.c.Wait(wctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	d, err := x.c.PlanDetail(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Nodes["a"].State != plan.StateRolledBack {
+		t.Fatalf("plan %s a %+v b %+v", d.State, d.Nodes["a"], d.Nodes["b"])
+	}
+	if got, _ := readFileString(filepath.Join(root, "etc/ssh/x")); got != "original-ssh" {
+		t.Fatalf("a's file is %q", got)
+	}
+	if d.Nodes["b"].State != plan.StateFailed {
+		t.Fatalf("b %+v", d.Nodes["b"])
+	}
+}
+
 func TestOneProbePerGroupAndPhase(t *testing.T) {
 	if n := probeGroupCalls(t, plan.StopDependents, false); n != 2 {
 		t.Fatalf("probes %d, want 2 (one before, one after)", n)

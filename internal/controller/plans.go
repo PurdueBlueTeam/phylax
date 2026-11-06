@@ -945,10 +945,12 @@ func (rt *planRT) rollbackStepLocked() {
 		id := rt.rbQueue[0]
 		rt.rbQueue = rt.rbQueue[1:]
 		nr := rt.nodes[id]
-		if rt.run.State(id) == plan.StateFailed && nr.failedIn == plan.PhaseApply {
-			// The agent's executor already rolled back a failed apply.
-			_ = rt.run.MarkRolledBack(id)
-			continue
+		if rt.run.State(id) == plan.StateFailed && nr.failedIn != plan.PhaseVerify {
+			if nr.failedIn == plan.PhaseApply {
+				// The agent's executor already rolled back a failed apply.
+				_ = rt.run.MarkRolledBack(id)
+			}
+			continue // a node that never applied has nothing to undo
 		}
 		nr.want, rt.rbBusy = plan.PhaseRollback, true
 	}
@@ -1395,8 +1397,12 @@ func (rt *planRT) failProbeGroupLocked(idx int, phase, service string, err error
 		if id == "" {
 			id = g.Nodes[0]
 		}
+		applied := rt.anyAppliedLocked()
 		rt.failLocked(id, reason, phase)
-		rt.draining = false // nothing was applied: there is no rollback to run
+		if !applied {
+			// Nothing was applied: there is no rollback to run.
+			rt.draining = false
+		}
 		_ = rt.persistLocked(context.Background())
 		_ = err
 		return

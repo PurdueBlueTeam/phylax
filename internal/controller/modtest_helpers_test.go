@@ -66,7 +66,9 @@ segments:
 `,
 	}
 	for name, body := range base {
-		files[name] = body
+		if _, ok := files[name]; !ok {
+			files[name] = body
+		}
 	}
 	for name, body := range files {
 		p := filepath.Join(dir, name)
