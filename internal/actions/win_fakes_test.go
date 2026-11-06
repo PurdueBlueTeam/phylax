@@ -419,7 +419,7 @@ func newWinFixture(t *testing.T) *winFixture {
 	f := &winFixture{fixture: newFixture(t),
 		reg: newFakeReg(), svc: &fakeSvcCfg{cfg: map[string]*SvcConfig{}}, aud: &fakeAudit{m: map[string]AuditSetting{}},
 		exe: &fakeExec{}, def: &fakeDefender{realtime: true}, fw: newFakeFW(), evts: &fakeEvents{}}
-	f.ad = newFakeAD(f.env.now)
+	f.ad = newFakeAD(f.env.Now)
 	f.svc.running = func(u string) bool {
 		st, _ := f.env.Services.State(context.Background(), u)
 		return st.Active

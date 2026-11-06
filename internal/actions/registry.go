@@ -62,7 +62,7 @@ func Core() *Registry {
 
 // extraActions are action sets contributed by other files in this package
 // (platform- or product-specific families), registered from init functions via
-// registerExtra so Core() stays the single source of the catalog.
+// Register so Core() stays the single source of the catalog.
 var extraActions []func() []Action
 
-func registerExtra(f func() []Action) { extraActions = append(extraActions, f) }
+func Register(f func() []Action) { extraActions = append(extraActions, f) }

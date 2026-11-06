@@ -89,7 +89,7 @@ func count5829(ctx context.Context, env *Env) (n int, latest time.Time, avail bo
 	if env.Win.Events == nil {
 		return 0, time.Time{}, false, nil
 	}
-	c, err := env.Win.Events.Count(ctx, "System", []int{5829}, env.now().Add(-lookbackDays*24*time.Hour))
+	c, err := env.Win.Events.Count(ctx, "System", []int{5829}, env.Now().Add(-lookbackDays*24*time.Hour))
 	return c.N, c.Latest, true, err
 }
 

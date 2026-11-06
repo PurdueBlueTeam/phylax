@@ -100,7 +100,7 @@ type regRollback struct {
 
 func regStore(env *Env) (RegistryStore, error) {
 	if env.Win.Reg == nil {
-		return nil, unsupported("registry")
+		return nil, Unsupported("registry")
 	}
 	return env.Win.Reg, nil
 }
@@ -183,7 +183,7 @@ func regRollbackOf(ctx context.Context, rs RegistryStore, edits []regEdit) (Roll
 }
 
 func init() {
-	registerUndo(kindRegistry, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindRegistry, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var r regRollback
 		if err := jsonUndo(e, &r); err != nil {
 			return err

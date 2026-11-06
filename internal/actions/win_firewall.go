@@ -27,15 +27,15 @@ var winServiceGroup = func() string {
 }()
 
 func init() {
-	registerUndo(kindWinFW, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindWinFW, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var s firewall.WinSnapshot
 		if err := json.Unmarshal(e.Data, &s); err != nil {
 			return err
 		}
 		if env.Win.Firewall == nil {
-			return unsupported("windows firewall")
+			return Unsupported("windows firewall")
 		}
-		return firewall.NewWindows(firewall.WinOptions{NewBackend: env.Win.Firewall, Now: env.now}).Restore(ctx, &s)
+		return firewall.NewWindows(firewall.WinOptions{NewBackend: env.Win.Firewall, Now: env.Now}).Restore(ctx, &s)
 	})
 }
 
@@ -84,9 +84,9 @@ func (winFirewall) rule(p Params) (firewall.WinRuleState, error) {
 
 func (a winFirewall) mgr(env *Env) (*firewall.WinManager, error) {
 	if env.Win.Firewall == nil {
-		return nil, unsupported("windows firewall")
+		return nil, Unsupported("windows firewall")
 	}
-	return firewall.NewWindows(firewall.WinOptions{NewBackend: env.Win.Firewall, Now: env.now}), nil
+	return firewall.NewWindows(firewall.WinOptions{NewBackend: env.Win.Firewall, Now: env.Now}), nil
 }
 
 // desired is the current Phylax state with the rule added, replaced or removed.

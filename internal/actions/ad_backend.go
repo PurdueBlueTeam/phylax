@@ -38,7 +38,7 @@ type ADBackend interface {
 
 func adOrErr(env *Env) (ADBackend, error) {
 	if env.Win.AD == nil {
-		return nil, unsupported("active directory")
+		return nil, Unsupported("active directory")
 	}
 	return env.Win.AD, nil
 }

@@ -2,9 +2,9 @@ package actions
 
 // Linux and application-level actions (linux_*.go, app_*.go).
 func init() {
-	registerExtra(linuxActions)
+	Register(linuxActions)
 	for k, fn := range linuxUndos {
-		registerUndo(k, fn)
+		RegisterUndo(k, fn)
 	}
 }
 

@@ -52,7 +52,7 @@ func (winHotfix) msu(env *Env, p Params) (kb, path string, err error) {
 
 func (winHotfix) installed(ctx context.Context, env *Env, kb string) (bool, error) {
 	if env.Win.Exec == nil {
-		return false, unsupported("exec")
+		return false, Unsupported("exec")
 	}
 	if !strings.HasPrefix(kb, "KB") || kb == "latest-cu" {
 		return false, nil

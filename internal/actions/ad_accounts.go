@@ -40,7 +40,7 @@ type adUndo struct {
 }
 
 func init() {
-	registerUndo(kindADUndo, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindADUndo, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var u adUndo
 		if err := jsonUndo(e, &u); err != nil {
 			return err
@@ -513,7 +513,7 @@ func (a adResetPassword) Verify(ctx context.Context, env *Env, p Params) error {
 	if o.PwdLastSet.IsZero() {
 		return nil
 	}
-	if env.now().Sub(o.PwdLastSet) > time.Hour && !p.Bool("must_change") {
+	if env.Now().Sub(o.PwdLastSet) > time.Hour && !p.Bool("must_change") {
 		return errors.New("pwdLastSet did not move after the reset")
 	}
 	return nil
@@ -715,7 +715,7 @@ func (adKrbtgt) check(ctx context.Context, env *Env, p Params) (ADObject, error)
 		return ADObject{}, errors.New("krbtgt not found")
 	}
 	gap, _ := p.Int("gap_minutes")
-	age := env.now().Sub(k.PwdLastSet)
+	age := env.Now().Sub(k.PwdLastSet)
 	switch p.Int2("step") {
 	case 1:
 		if !k.PwdLastSet.IsZero() && age < time.Duration(gap)*time.Minute {
@@ -757,7 +757,7 @@ func (adKrbtgt) Verify(ctx context.Context, env *Env, _ Params) error {
 	if err != nil || !ok {
 		return fmt.Errorf("krbtgt lookup: %v", err)
 	}
-	if !k.PwdLastSet.IsZero() && env.now().Sub(k.PwdLastSet) > 5*time.Minute {
+	if !k.PwdLastSet.IsZero() && env.Now().Sub(k.PwdLastSet) > 5*time.Minute {
 		return errors.New("krbtgt pwdLastSet did not move")
 	}
 	return nil

@@ -38,13 +38,13 @@ func init() {
 	} {
 		auditSubcategories[strings.ToLower(s)] = true
 	}
-	registerUndo(kindAudit, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindAudit, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var u auditUndo
 		if err := jsonUndo(e, &u); err != nil {
 			return err
 		}
 		if env.Win.Audit == nil {
-			return unsupported("audit policy")
+			return Unsupported("audit policy")
 		}
 		var errs []error
 		for name, s := range u.Prior {
@@ -229,7 +229,7 @@ func (a winAudit) Plan(ctx context.Context, env *Env, p Params) (Plan, error) {
 	var d []string
 	if len(want) > 0 {
 		if env.Win.Audit == nil {
-			return Plan{}, unsupported("audit policy")
+			return Plan{}, Unsupported("audit policy")
 		}
 		for _, k := range sortedKeys(want) {
 			cur, err := env.Win.Audit.Get(ctx, k)

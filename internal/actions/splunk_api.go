@@ -151,7 +151,7 @@ func contentStr(m map[string]any, k string) string {
 
 func splunkOrErr(ctx context.Context, env *Env) (SplunkAPI, error) {
 	if env.Win.Splunk == nil {
-		return nil, unsupported("splunk management API")
+		return nil, Unsupported("splunk management API")
 	}
 	return env.Win.Splunk.Client(ctx, env.Host)
 }

@@ -157,7 +157,7 @@ func (e *Env) requireWindow(ctx context.Context) (*PatchWindow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("package change refused: %w", err)
 	}
-	if w == nil || (!w.Until.IsZero() && !e.now().Before(w.Until)) {
+	if w == nil || (!w.Until.IsZero() && !e.Now().Before(w.Until)) {
 		return nil, errors.New("package change refused: no open patch window (it closed or never opened)")
 	}
 	return w, nil

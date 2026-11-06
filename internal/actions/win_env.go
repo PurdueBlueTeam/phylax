@@ -38,16 +38,16 @@ type WinEnv struct {
 
 var extraHandlers = map[string]func(ctx context.Context, env *Env, e deadman.Entry) error{}
 
-// registerUndo registers the dead-man handler for a rollback kind; the data is
+// RegisterUndo registers the dead-man handler for a rollback kind; the data is
 // decoded by the handler itself. Called from init functions.
-func registerUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) {
+func RegisterUndo(kind string, fn func(ctx context.Context, env *Env, e deadman.Entry) error) {
 	if _, dup := extraHandlers[kind]; dup {
 		panic("actions: duplicate undo kind " + kind)
 	}
 	extraHandlers[kind] = fn
 }
 
-func unsupported(what string) error { return fmt.Errorf("%s: %w", what, ErrUnsupported) }
+func Unsupported(what string) error { return fmt.Errorf("%s: %w", what, ErrUnsupported) }
 
 // ---- registry ----
 

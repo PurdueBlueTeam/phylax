@@ -41,14 +41,18 @@ type Env struct {
 	Linux *LinuxEnv
 	// Win carries the Windows, AD, network-device and Splunk backends (win_env.go).
 	Win WinEnv
+	// Ext holds module-owned backends keyed by module name; a nil map reads as absent.
+	Ext map[string]any
+	// Probe checks a scored service; nil means the probe cannot run.
+	Probe func(ctx context.Context, service string) error
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
 	QuarantineDir string
-	Now           func() time.Time
+	Clock         func() time.Time
 }
 
-func (e *Env) now() time.Time {
-	if e.Now != nil {
-		return e.Now()
+func (e *Env) Now() time.Time {
+	if e.Clock != nil {
+		return e.Clock()
 	}
 	return time.Now()
 }
@@ -251,7 +255,7 @@ func (e *Env) recordTags(a Action, p Params, tag Tag, name string) {
 		return
 	}
 	for _, t := range a.Touches(p) {
-		_ = e.Tags.Record(TagRecord{Time: e.now(), Tag: tag, Action: name, Resource: string(t.Kind) + ":" + t.Name})
+		_ = e.Tags.Record(TagRecord{Time: e.Now(), Tag: tag, Action: name, Resource: string(t.Kind) + ":" + t.Name})
 	}
 }
 

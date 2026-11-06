@@ -505,7 +505,7 @@ func (fileQuarantine) Apply(_ context.Context, env *Env, p Params) (Output, erro
 	id := quarantineID(src, st)
 	dst := filepath.Join(env.QuarantineDir, id)
 	meta := QuarantineMeta{OriginalPath: p.Str("path"), Mode: st.Mode(), ModTime: st.ModTime(), Size: st.Size(),
-		QuarantinedAt: env.now(), Reason: p.Str("reason"), IsDir: st.IsDir()}
+		QuarantinedAt: env.Now(), Reason: p.Str("reason"), IsDir: st.IsDir()}
 	meta.UID, meta.GID, _ = ownerOf(st)
 	if st.Mode()&fs.ModeSymlink != 0 {
 		meta.Symlink, _ = os.Readlink(src)
@@ -639,7 +639,7 @@ func (r fileRestore) Apply(_ context.Context, env *Env, p Params) (Output, error
 	}
 	dst := env.Resolve(r.target(env, p, m))
 	if _, err := os.Lstat(dst); err == nil { // force: never delete, set the current file aside
-		aside := dst + ".phylax-" + env.now().UTC().Format("20060102T150405")
+		aside := dst + ".phylax-" + env.Now().UTC().Format("20060102T150405")
 		if err := os.Rename(dst, aside); err != nil {
 			return nil, err
 		}

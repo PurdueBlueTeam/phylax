@@ -77,7 +77,7 @@ func newFixture(t *testing.T) *fixture {
 		Accounts:      &FileAccounts{Root: f.root, Now: func() time.Time { return fixedNow }},
 		Services:      newFakeServices(),
 		QuarantineDir: filepath.Join(t.TempDir(), "quarantine"),
-		Now:           func() time.Time { return fixedNow }}
+		Clock:         func() time.Time { return fixedNow }}
 	dm, err := deadman.Open(filepath.Join(t.TempDir(), "dm"), deadman.Options{
 		Handlers: DeadmanHandlers(env), RetryInterval: 20 * time.Millisecond})
 	if err != nil {

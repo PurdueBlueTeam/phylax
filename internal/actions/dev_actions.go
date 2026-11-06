@@ -36,7 +36,7 @@ func deviceName(env *Env, p Params) string {
 
 func devDir(env *Env) (DeviceDirectory, error) {
 	if env.Win.Devices == nil {
-		return nil, unsupported("network devices")
+		return nil, Unsupported("network devices")
 	}
 	return env.Win.Devices, nil
 }
@@ -430,7 +430,7 @@ func (s devSnapshot) Apply(ctx context.Context, env *Env, p Params) (Output, err
 	if err != nil {
 		return nil, err
 	}
-	snap, err := ad.Snapshot(ctx, "evidence-"+env.now().UTC().Format("20060102T150405Z"))
+	snap, err := ad.Snapshot(ctx, "evidence-"+env.Now().UTC().Format("20060102T150405Z"))
 	if err != nil {
 		return nil, err
 	}

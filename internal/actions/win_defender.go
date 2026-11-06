@@ -103,7 +103,7 @@ func (d ExecDefender) SetRealtime(ctx context.Context, on bool) error {
 
 func defenderOrErr(env *Env) (DefenderBackend, error) {
 	if env.Win.Defender == nil {
-		return nil, unsupported("windows defender")
+		return nil, Unsupported("windows defender")
 	}
 	return env.Win.Defender, nil
 }
@@ -114,7 +114,7 @@ type defUndo struct {
 }
 
 func init() {
-	registerUndo(kindDefender, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindDefender, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var u defUndo
 		if err := jsonUndo(e, &u); err != nil {
 			return err

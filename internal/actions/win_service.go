@@ -27,13 +27,13 @@ type svcCfgUndo struct {
 }
 
 func init() {
-	registerUndo(kindSvcCfg, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindSvcCfg, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var u svcCfgUndo
 		if err := jsonUndo(e, &u); err != nil {
 			return err
 		}
 		if env.Win.Svc == nil {
-			return unsupported("service configuration")
+			return Unsupported("service configuration")
 		}
 		var errs []error
 		errs = append(errs, env.Win.Svc.SetStart(ctx, u.Unit, u.Start))
@@ -92,7 +92,7 @@ func (a winServiceConfig) Plan(ctx context.Context, env *Env, p Params) (Plan, e
 		return Plan{}, err
 	}
 	if env.Win.Svc == nil {
-		return Plan{}, unsupported("service configuration")
+		return Plan{}, Unsupported("service configuration")
 	}
 	if p.Bool("dc_only") {
 		rs, err := regStore(env)
@@ -141,7 +141,7 @@ func (winServiceConfig) Apply(ctx context.Context, env *Env, p Params) (Output, 
 	}
 	if p.Bool("stop") {
 		if env.Services == nil {
-			return nil, unsupported("services")
+			return nil, Unsupported("services")
 		}
 		if err := env.Services.Stop(ctx, p.Str("unit")); err != nil {
 			return nil, fmt.Errorf("stop %s: %w", p.Str("unit"), err)

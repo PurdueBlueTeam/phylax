@@ -165,7 +165,7 @@ func (wazuhCapture) Apply(ctx context.Context, env *Env, p Params) (Output, erro
 		return nil, err
 	}
 	h, herr := c.Health(ctx)
-	hr := map[string]any{"time": env.now().UTC().Format(time.RFC3339), "agents": len(agents)}
+	hr := map[string]any{"time": env.Now().UTC().Format(time.RFC3339), "agents": len(agents)}
 	if h != nil {
 		hr["manager_version"], hr["active"] = h.ManagerVersion.String(), h.Active
 		hr["disconnected"], hr["never_connected"] = h.Disconnected, h.NeverConnected
@@ -220,7 +220,7 @@ func (wazuhTestAlert) Plan(_ context.Context, env *Env, p Params) (Plan, error) 
 }
 
 func markerLine(env *Env, p Params) string {
-	return env.now().UTC().Format(time.RFC3339) + " phylax " + p.Str("marker") + "\n"
+	return env.Now().UTC().Format(time.RFC3339) + " phylax " + p.Str("marker") + "\n"
 }
 
 func (wazuhTestAlert) Apply(_ context.Context, env *Env, p Params) (Output, error) {

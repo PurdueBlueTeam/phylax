@@ -278,8 +278,8 @@ func TestKrbtgtDoubleReset(t *testing.T) {
 		t.Fatal("a refused step changed the password")
 	}
 	// after the gap, step 2 proceeds
-	f.env.Now = func() time.Time { return fixedNow.Add(11 * time.Hour) }
-	f.ad.now = f.env.Now
+	f.env.Clock = func() time.Time { return fixedNow.Add(11 * time.Hour) }
+	f.ad.now = f.env.Clock
 	if _, err := step(2, nil); err != nil || len(ad.pwCalls) != 2 {
 		t.Fatalf("step 2: %v", err)
 	}

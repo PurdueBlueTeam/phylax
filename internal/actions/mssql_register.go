@@ -1,6 +1,6 @@
 package actions
 
 func init() {
-	registerExtra(func() []Action { return []Action{mssqlAudit{}, mssqlLock{}} })
-	registerUndo(kindMSSQLUndo, undoMSSQL)
+	Register(func() []Action { return []Action{mssqlAudit{}, mssqlLock{}} })
+	RegisterUndo(kindMSSQLUndo, undoMSSQL)
 }

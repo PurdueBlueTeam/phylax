@@ -6,7 +6,7 @@ import "github.com/PurdueBlueTeam/phylax/internal/devices"
 // action family in the core catalog. The specs exist on every platform (the
 // controller validates plans for Windows targets on Linux); the backends they
 // need come from Env.Win and are implemented per platform.
-func init() { registerExtra(winFamily) }
+func init() { Register(winFamily) }
 
 func winFamily() []Action {
 	return []Action{

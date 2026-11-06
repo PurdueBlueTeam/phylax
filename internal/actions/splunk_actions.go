@@ -33,7 +33,7 @@ var (
 )
 
 func init() {
-	registerUndo(kindSplunk, func(ctx context.Context, env *Env, e deadman.Entry) error {
+	RegisterUndo(kindSplunk, func(ctx context.Context, env *Env, e deadman.Entry) error {
 		var r hecUndo
 		if err := jsonUndo(e, &r); err != nil {
 			return err
