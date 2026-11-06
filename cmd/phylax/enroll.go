@@ -247,14 +247,6 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 	if len(b.planKey) == 0 {
 		return fmt.Errorf("enroll push: no plan key in %s (run phylax serve first)", b.cfg.DataDir)
 	}
-	name := filepath.Join(b.cfg.ReleaseDir, "phylax-linux-amd64")
-	bin, err := os.ReadFile(name)
-	if err != nil {
-		return fmt.Errorf("enroll push: release file %s: %w", name, err)
-	}
-	if len(bin) == 0 || len(bin) > 64<<20 {
-		return fmt.Errorf("enroll push: release file %s has %d bytes; want 1 to 64 MiB", name, len(bin))
-	}
 	e, err := b.enroller(nil)
 	if err != nil {
 		return err
@@ -288,19 +280,9 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 		targets = append(targets, enroll.Target{Host: host, Addr: enrollPushAddr(h), User: user,
 			Pass: vault.NewSecretString(pass), Hostname: host})
 	}
-	secrets := make(map[string][]byte, len(targets))
-	for _, t := range targets {
-		sec, err := e.HostNameSecret(t.Host)
-		if err != nil {
-			return err
-		}
-		secrets[t.Host] = sec
-	}
-	pusher := &enroll.SSHPusher{Binary: bin, Controller: *ctl, Timeout: 30 * time.Second}
+	pusher := &enroll.SSHPusher{Controller: *ctl, Timeout: 30 * time.Second}
 	results := enroll.PushAll(ctx, targets, *parallel, func(ctx context.Context, t enroll.Target) error {
-		p := *pusher
-		p.NameSecret = secrets[t.Host]
-		return p.Push(ctx, e, t)
+		return pusher.Push(ctx, e, t)
 	})
 	failed := 0
 	for _, r := range results {

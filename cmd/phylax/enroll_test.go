@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -20,7 +19,7 @@ import (
 
 const enrollRelease = "phylax-linux-amd64"
 
-// writeReleaseDir writes a fake linux release file the pusher uploads.
+// writeReleaseDir writes a fake linux release file the one-liner generator checks.
 func writeReleaseDir(t *testing.T, data []byte) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -182,33 +181,22 @@ func TestEnrollPushAgainstFakeSSH(t *testing.T) {
 	if strings.Contains(out, "root:pw") || strings.Contains(out, "root:bad") {
 		t.Errorf("stdout leaked a password:\n%s", out)
 	}
-	// The randomised-name secret must not be on any command line; the install
-	// step reads it from a 0600 file instead.
-	var secretHex string
+	// The push runs the console one-liner, not an upload: the host fetches the
+	// binary from the bootstrap handler itself.
+	var line string
 	for _, c := range fake.commands() {
-		if strings.Contains(c.cmd, "name.key") && strings.Contains(c.cmd, "base64 -d") {
-			secretHex = strings.TrimSpace(string(mustBase64(t, c.stdin)))
+		if strings.Contains(c, "|sh") {
+			line = c
 		}
 	}
-	if len(secretHex) != 64 {
-		t.Fatalf("no name-secret upload of a 32-byte hex secret: %q", secretHex)
+	if line == "" {
+		t.Fatalf("the push ran no one-liner: %+v", fake.commands())
 	}
-	for _, c := range fake.commands() {
-		if strings.Contains(c.cmd, secretHex) {
-			t.Errorf("a command line carries the name secret: %q", c.cmd)
-		}
-		if strings.Contains(c.cmd, "--secret ") {
-			t.Errorf("a command line carries --secret: %q", c.cmd)
-		}
+	if !strings.Contains(line, "--pinnedpubkey ") || !strings.HasPrefix(line, "curl -sk ") {
+		t.Errorf("the one-liner is not the pinned Linux line: %q", line)
 	}
-	var install string
-	for _, c := range fake.commands() {
-		if strings.Contains(c.cmd, "agent install") {
-			install = c.cmd
-		}
-	}
-	if !strings.Contains(install, "--secret-file") {
-		t.Errorf("the install command does not use --secret-file: %q", install)
+	if strings.Contains(line, "root:pw") {
+		t.Errorf("the one-liner carries the password: %q", line)
 	}
 }
 
@@ -260,15 +248,6 @@ func TestEnrollPushHostKeyChangedIsLoud(t *testing.T) {
 	if n := len(fake.commands()); n != 0 {
 		t.Errorf("the fake saw %d commands after a changed host key", n)
 	}
-}
-
-func mustBase64(t *testing.T, b []byte) []byte {
-	t.Helper()
-	out, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(b), "\n", ""))
-	if err != nil {
-		t.Fatalf("not base64: %v", err)
-	}
-	return out
 }
 
 func TestEnrollStatus(t *testing.T) {

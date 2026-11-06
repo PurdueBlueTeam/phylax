@@ -4,9 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"io"
 	"net"
 	"strings"
@@ -16,21 +13,15 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// sshFakeCmd is one exec request the fake server saw.
-type sshFakeCmd struct {
-	cmd   string
-	stdin []byte
-}
-
-// sshFake is a minimal in-process SSH server for the enroll pusher tests.
+// sshFake is a minimal in-process SSH server for the enroll pusher tests. It
+// answers the push's probes and the one-liner with exit 0.
 type sshFake struct {
 	user     string
 	pass     string
 	hostname string
 
-	mu       sync.Mutex
-	cmds     []sshFakeCmd
-	uploaded []byte
+	mu   sync.Mutex
+	cmds []string
 }
 
 func startSSHFake(t *testing.T, f *sshFake) string {
@@ -95,25 +86,10 @@ func (f *sshFake) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		var p struct{ Command string }
 		ssh.Unmarshal(r.Payload, &p)
 		r.Reply(true, nil)
-		var stdin []byte
-		var decoded []byte
-		if strings.Contains(p.Command, "base64 -d") {
-			stdin, _ = io.ReadAll(ch)
-			decoded, _ = base64.StdEncoding.DecodeString(strings.ReplaceAll(string(stdin), "\n", ""))
-		}
 		f.mu.Lock()
-		f.cmds = append(f.cmds, sshFakeCmd{cmd: p.Command, stdin: stdin})
-		if strings.Contains(p.Command, "base64 -d") && !strings.Contains(p.Command, "boot.json") && !strings.Contains(p.Command, "name.key") {
-			f.uploaded = decoded
-		}
+		f.cmds = append(f.cmds, p.Command)
 		f.mu.Unlock()
 		switch {
-		case strings.Contains(p.Command, "base64 -d"):
-		case strings.HasPrefix(p.Command, "sha256sum "):
-			f.mu.Lock()
-			sum := sha256.Sum256(f.uploaded)
-			f.mu.Unlock()
-			io.WriteString(ch, hex.EncodeToString(sum[:])+"  "+strings.TrimSpace(strings.TrimPrefix(p.Command, "sha256sum "))+"\n")
 		case p.Command == "echo PHYLAXOK":
 			io.WriteString(ch, "PHYLAXOK\n")
 		case p.Command == "hostname -s":
@@ -127,8 +103,8 @@ func (f *sshFake) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	}
 }
 
-func (f *sshFake) commands() []sshFakeCmd {
+func (f *sshFake) commands() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]sshFakeCmd(nil), f.cmds...)
+	return append([]string(nil), f.cmds...)
 }

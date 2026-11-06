@@ -4,7 +4,7 @@ import "testing"
 
 func TestClassNext(t *testing.T) {
 	classes := []Class{ClassAuth, ClassNoShell, ClassNoSpace, ClassSELinux, ClassTimeout,
-		ClassHostname, ClassWindowsSSH, ClassHostKey, ClassHashMismatch, ClassNoHeartbeat, ClassInstall}
+		ClassHostname, ClassWindowsSSH, ClassHostKey, ClassNoHeartbeat, ClassInstall}
 	for _, c := range classes {
 		if c.Next() == "" {
 			t.Errorf("class %s has no next step", c)

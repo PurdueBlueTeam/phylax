@@ -3,17 +3,11 @@ package enroll
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"
@@ -22,9 +16,12 @@ import (
 )
 
 const (
-	maxPushBinary = 64 << 20 // the release bound, same as the bootstrap handler
 	maxCommandOut = 64 << 10 // any single command's stdout/stderr
-	pushChunk     = 36 << 10 // binary bytes per base64 line (48 KiB encoded)
+	pushRoot      = "/opt"   // the Linux one-liner's default install root
+	// pushNeedBytes is the space the one-liner needs below pushRoot: the
+	// release (at most 64 MiB, the bootstrap handler's bound) plus the boot
+	// config and slack.
+	pushNeedBytes = 80 << 20
 )
 
 // Target is one host the SSH push installs the agent on.
@@ -36,13 +33,11 @@ type Target struct {
 	Hostname string // expected `hostname -s`, normally Host
 }
 
-// SSHPusher installs the Linux agent over SSH with password auth. It uploads
-// the binary and bundle base64 over stdin (no SFTP; shortcut: no SFTP
-// fallback, upgrade when a host refuses a shell command channel).
+// SSHPusher installs the Linux agent over SSH with password auth. It runs the
+// pinned console one-liner through the shell channel, so the host downloads
+// the binary and the bootstrap config itself (design S2: one install path).
 type SSHPusher struct {
-	Binary     []byte // linux/amd64 agent binary (<= 64 MiB)
-	Controller string // host:port the agent will dial (put into the bundle)
-	NameSecret []byte // derives the randomised service, binary and directory names
+	Controller string // host:port as the host sees the controller
 	HostKeys   *HostKeys
 	Timeout    time.Duration                                           // per host, default 30s
 	Dial       func(context.Context, string, string) (net.Conn, error) // tests; nil means net.Dialer
@@ -59,9 +54,6 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 	}
 	fail := func(class Class, detail string) error {
 		return &PushError{Host: t.Host, Class: class, Detail: vault.RedactString(detail, t.Pass)}
-	}
-	if len(p.Binary) > maxPushBinary {
-		return fail(ClassInstall, fmt.Sprintf("binary is larger than %d MiB", maxPushBinary>>20))
 	}
 	hk := p.HostKeys
 	if hk == nil {
@@ -113,7 +105,7 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		return fail(ClassWindowsSSH, string(sc.ServerVersion()))
 	}
 
-	out, errOut, code, err := runSSH(ctx, client, "echo PHYLAXOK", nil)
+	out, errOut, code, err := runSSH(ctx, client, "echo PHYLAXOK")
 	if ctx.Err() != nil {
 		return fail(ClassTimeout, "shell sentinel")
 	}
@@ -121,7 +113,7 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		return fail(ClassNoShell, strings.TrimSpace(out+" "+errOut))
 	}
 
-	out, errOut, code, err = runSSH(ctx, client, "hostname -s", nil)
+	out, errOut, code, err = runSSH(ctx, client, "hostname -s")
 	if ctx.Err() != nil {
 		return fail(ClassTimeout, "hostname")
 	}
@@ -132,104 +124,54 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		return fail(ClassHostname, fmt.Sprintf("host reports %q, manifest says %q", got, t.Hostname))
 	}
 
-	names := svcinstall.DeriveNames(p.NameSecret)
-	dir := "/opt/" + names.Dir
-	state := dir + "/state"
-	if _, errOut, code, err = runSSH(ctx, client, "mkdir -p '"+dir+"' '"+state+"'", nil); err != nil || code != 0 {
-		return fail(ClassNoShell, "cannot create the install directory: "+strings.TrimSpace(errOut))
+	// Room for the download the one-liner makes, before a token exists.
+	out, errOut, code, err = runSSH(ctx, client, "df -Pk "+pushRoot)
+	if ctx.Err() != nil {
+		return fail(ClassTimeout, "df")
 	}
-	// From here a failure removes the install dir (best effort, on its own
-	// short deadline since ctx may be the reason for the failure) so a retry
-	// starts clean, and the detail says whether that worked.
+	if err != nil || code != 0 {
+		return fail(ClassNoSpace, "df: "+strings.TrimSpace(errOut))
+	}
+	avail, ok := dfAvailableKiB(out)
+	if !ok || avail*1024 < pushNeedBytes {
+		return fail(ClassNoSpace, fmt.Sprintf("%d KiB available under %s, %d KiB needed", avail, pushRoot, pushNeedBytes>>10))
+	}
+
+	// Only now, after the hostname and space checks, does a token exist. The
+	// bootstrap handler names the install directory after the same token.
+	tok, err := e.MintToken(t.Host, DefaultTokenTTL)
+	if err != nil {
+		return err
+	}
+	dir := pushRoot + "/" + svcinstall.DeriveNames([]byte(tok)).Dir
+	line, err := e.OneLiner(OSLinux, p.Controller, tok)
+	if err != nil {
+		return err
+	}
+	// From here a failure removes the install directory the one-liner may have
+	// created (best effort, on its own short deadline since ctx may be the
+	// reason for the failure) so a retry starts clean, and the detail says
+	// whether that worked.
 	failClean := func(class Class, detail string) error {
 		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer rcancel()
-		_, rmErr, rmCode, err := runSSH(rctx, client, "rm -rf '"+dir+"'", nil)
+		_, rmErr, rmCode, err := runSSH(rctx, client, "rm -rf '"+dir+"'")
 		if err != nil || rmCode != 0 {
 			return fail(class, fmt.Sprintf("%s; install dir %s NOT removed: %v %s", detail, dir, err, strings.TrimSpace(rmErr)))
 		}
 		return fail(class, detail+"; install dir "+dir+" removed")
 	}
-	out, errOut, code, err = runSSH(ctx, client, "df -Pk '"+dir+"'", nil)
+	out, errOut, code, err = runSSH(ctx, client, line)
 	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "df")
-	}
-	if err != nil || code != 0 {
-		return failClean(ClassNoSpace, "df: "+strings.TrimSpace(errOut))
-	}
-	avail, ok := dfAvailableKiB(out)
-	need := int64(len(p.Binary))*2 + 16<<20
-	if !ok || avail*1024 < need {
-		return failClean(ClassNoSpace, fmt.Sprintf("%d KiB available, %d KiB needed", avail, need>>10))
-	}
-
-	// Only now, after the hostname and space checks, does a token exist.
-	b, err := e.Bundle(t.Host, BundleOptions{Controllers: []string{p.Controller}, TTL: DefaultTokenTTL})
-	if err != nil {
-		return err
-	}
-	boot, err := json.Marshal(b)
-	if err != nil {
-		return err
-	}
-	binCmd := fmt.Sprintf("base64 -d > '%[1]s/.%[2]s.tmp' && chmod 700 '%[1]s/.%[2]s.tmp' && mv '%[1]s/.%[2]s.tmp' '%[1]s/%[2]s'",
-		dir, names.Binary)
-	out, errOut, code, err = runSSH(ctx, client, binCmd, p.Binary)
-	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "binary upload")
-	}
-	if err != nil || code != 0 {
-		return failClean(ClassInstall, "binary upload: "+strings.TrimSpace(out+errOut))
-	}
-	// Verify the bytes that reached the host before anything executes there.
-	wantSum := sha256.Sum256(p.Binary)
-	out, errOut, code, err = runSSH(ctx, client, "sha256sum '"+dir+"/"+names.Binary+"'", nil)
-	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "remote hash")
-	}
-	got := ""
-	if f := strings.Fields(out); len(f) > 0 {
-		got = f[0]
-	}
-	if err != nil || code != 0 {
-		return failClean(ClassHashMismatch, "cannot hash the uploaded binary: "+strings.TrimSpace(errOut))
-	}
-	if want := hex.EncodeToString(wantSum[:]); !strings.EqualFold(got, want) {
-		return failClean(ClassHashMismatch, fmt.Sprintf("local %s, remote %s", want, got))
-	}
-
-	bootCmd := fmt.Sprintf("base64 -d > '%[1]s/boot.json.tmp' && chmod 600 '%[1]s/boot.json.tmp' && mv '%[1]s/boot.json.tmp' '%[1]s/boot.json'", state)
-	out, errOut, code, err = runSSH(ctx, client, bootCmd, boot)
-	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "bundle upload")
-	}
-	if err != nil || code != 0 {
-		return failClean(ClassInstall, "bundle upload: "+strings.TrimSpace(out+errOut))
-	}
-
-	secretHex := hex.EncodeToString(p.NameSecret)
-	secretCmd := fmt.Sprintf("base64 -d > '%[1]s/name.key.tmp' && chmod 600 '%[1]s/name.key.tmp' && mv '%[1]s/name.key.tmp' '%[1]s/name.key'", state)
-	out, errOut, code, err = runSSH(ctx, client, secretCmd, []byte(secretHex))
-	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "secret upload")
-	}
-	if err != nil || code != 0 {
-		return failClean(ClassInstall, "secret upload: "+strings.TrimSpace(out+errOut))
-	}
-
-	install := fmt.Sprintf("'%s/%s' agent install --bootstrap '%s/boot.json' --secret-file '%s/name.key'",
-		dir, names.Binary, state, state)
-	out, errOut, code, err = runSSH(ctx, client, install, nil)
-	if ctx.Err() != nil {
-		return failClean(ClassTimeout, "agent install")
+		return failClean(ClassTimeout, "one-liner")
 	}
 	if err != nil || code != 0 {
 		if strings.Contains(out+errOut, "Permission denied") {
-			if ge, _, _, gerr := runSSH(ctx, client, "getenforce", nil); gerr == nil && strings.TrimSpace(ge) == "Enforcing" {
+			if ge, _, _, gerr := runSSH(ctx, client, "getenforce"); gerr == nil && strings.TrimSpace(ge) == "Enforcing" {
 				return failClean(ClassSELinux, strings.TrimSpace(out+errOut))
 			}
 		}
-		return failClean(ClassInstall, fmt.Sprintf("agent install exited %d: %s", code, strings.TrimSpace(out+errOut)))
+		return failClean(ClassInstall, fmt.Sprintf("the one-liner exited %d: %s", code, strings.TrimSpace(out+errOut)))
 	}
 
 	// A fresh login proves the password still works after the install.
@@ -263,9 +205,9 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 	}
 }
 
-// runSSH runs one command on its own session. stdin is uploaded as base64 in
-// 48 KiB lines. Output is capped at 64 KiB per stream.
-func runSSH(ctx context.Context, client *ssh.Client, cmd string, stdin []byte) (stdout, stderr string, code int, err error) {
+// runSSH runs one command on its own session. Output is capped at 64 KiB per
+// stream.
+func runSSH(ctx context.Context, client *ssh.Client, cmd string) (stdout, stderr string, code int, err error) {
 	sess, err := client.NewSession()
 	if err != nil {
 		return "", "", 0, err
@@ -275,19 +217,6 @@ func runSSH(ctx context.Context, client *ssh.Client, cmd string, stdin []byte) (
 	ob.max, eb.max = maxCommandOut, maxCommandOut
 	sess.Stdout = &ob
 	sess.Stderr = &eb
-	var pw *io.PipeWriter
-	var wg sync.WaitGroup
-	if stdin != nil {
-		pr, lpw := io.Pipe()
-		pw = lpw
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = lpw.CloseWithError(writeBase64(lpw, stdin))
-		}()
-		sess.Stdin = pr
-		defer pr.Close()
-	}
 	done := make(chan error, 1)
 	go func() { done <- sess.Run(cmd) }()
 	select {
@@ -297,32 +226,10 @@ func runSSH(ctx context.Context, client *ssh.Client, cmd string, stdin []byte) (
 		<-done
 		err = ctx.Err()
 	}
-	if pw != nil {
-		_ = pw.Close()
-		wg.Wait()
-	}
 	if ee, ok := err.(*ssh.ExitError); ok {
 		code, err = ee.ExitStatus(), nil
 	}
 	return ob.String(), eb.String(), code, err
-}
-
-// writeBase64 writes data as base64 lines of 48 KiB.
-func writeBase64(w io.Writer, data []byte) error {
-	buf := make([]byte, base64.StdEncoding.EncodedLen(pushChunk)+1)
-	for off := 0; off < len(data); off += pushChunk {
-		end := off + pushChunk
-		if end > len(data) {
-			end = len(data)
-		}
-		n := base64.StdEncoding.EncodedLen(end - off)
-		base64.StdEncoding.Encode(buf, data[off:end])
-		buf[n] = '\n'
-		if _, err := w.Write(buf[:n+1]); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // boundedBuf keeps at most max bytes and discards the rest, so a chatty

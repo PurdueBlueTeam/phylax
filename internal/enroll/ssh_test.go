@@ -5,9 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -18,17 +15,10 @@ import (
 	"testing"
 	"time"
 
-	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
 	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 	"golang.org/x/crypto/ssh"
 )
-
-// sshCmd is one exec request a fake server saw.
-type sshCmd struct {
-	cmd   string
-	stdin []byte
-}
 
 // fakeSSH is an in-process SSH server that answers a fixed script. It is the
 // network edge the pusher does not own; everything below it is real code.
@@ -41,17 +31,15 @@ type fakeSSH struct {
 	dfOut    string
 	sentinel string
 	hang     bool // never answer the sentinel
-	corrupt  bool // flip a byte of the uploaded binary
-	install  int  // exit status of the install command
+	install  int  // exit status of the one-liner
 	installE string
 	enforce  string
 	onInstal func()
 	rmExit   int // exit status of the cleanup rm -rf
 
-	logins   int
-	fails    int
-	cmds     []sshCmd
-	uploaded []byte
+	logins int
+	fails  int
+	cmds   []string
 }
 
 func (s *fakeSSH) config() *ssh.ServerConfig {
@@ -140,20 +128,11 @@ func (s *fakeSSH) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 }
 
 func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
-	var stdin []byte
-	var decoded []byte
-	if strings.Contains(cmd, "base64 -d") {
-		stdin, _ = io.ReadAll(ch)
-		decoded, _ = base64.StdEncoding.DecodeString(strings.ReplaceAll(string(stdin), "\n", ""))
+	reply := func(code uint32) {
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{code}))
 	}
 	s.mu.Lock()
-	s.cmds = append(s.cmds, sshCmd{cmd: cmd, stdin: stdin})
-	if strings.Contains(cmd, "base64 -d") && !strings.Contains(cmd, "boot.json") && !strings.Contains(cmd, "name.key") {
-		if s.corrupt && len(decoded) > 0 {
-			decoded[0] ^= 0xff
-		}
-		s.uploaded = decoded
-	}
+	s.cmds = append(s.cmds, cmd)
 	switch {
 	case cmd == "echo PHYLAXOK" && s.hang:
 		s.mu.Unlock()
@@ -163,34 +142,27 @@ func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
 		out := s.sentinel
 		s.mu.Unlock()
 		io.WriteString(ch, out)
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		reply(0)
 		return
 	case cmd == "hostname -s":
 		out := s.hostname + "\n"
 		s.mu.Unlock()
 		io.WriteString(ch, out)
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
-		return
-	case strings.HasPrefix(cmd, "sha256sum "):
-		sum := sha256.Sum256(s.uploaded)
-		out := hex.EncodeToString(sum[:]) + "  " + strings.TrimSpace(strings.TrimPrefix(cmd, "sha256sum ")) + "\n"
-		s.mu.Unlock()
-		io.WriteString(ch, out)
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		reply(0)
 		return
 	case strings.HasPrefix(cmd, "df -Pk"):
 		out := s.dfOut
 		s.mu.Unlock()
 		io.WriteString(ch, out)
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		reply(0)
 		return
 	case cmd == "getenforce":
 		out := s.enforce + "\n"
 		s.mu.Unlock()
 		io.WriteString(ch, out)
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		reply(0)
 		return
-	case strings.Contains(cmd, "agent install"):
+	case strings.Contains(cmd, "|sh"):
 		code, stderr, fn := s.install, s.installE, s.onInstal
 		s.mu.Unlock()
 		if fn != nil {
@@ -199,24 +171,24 @@ func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
 		if stderr != "" {
 			io.WriteString(ch.Stderr(), stderr)
 		}
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(code)}))
+		reply(uint32(code))
 		return
 	case strings.HasPrefix(cmd, "rm -rf "):
 		code := s.rmExit
 		s.mu.Unlock()
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(code)}))
+		reply(uint32(code))
 		return
 	default:
 		s.mu.Unlock()
-		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		reply(0)
 		return
 	}
 }
 
-func (s *fakeSSH) commands() []sshCmd {
+func (s *fakeSSH) commands() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]sshCmd(nil), s.cmds...)
+	return append([]string(nil), s.cmds...)
 }
 
 func fakeSSHDefaults() *fakeSSH {
@@ -226,117 +198,80 @@ func fakeSSHDefaults() *fakeSSH {
 	}
 }
 
-func TestSSHPushInstalls(t *testing.T) {
-	f := newEnroller(t)
+// newPushEnroller is a fresh Enroller whose release dir holds the fake release
+// files the one-liner generator checks.
+func newPushEnroller(t *testing.T) *enrFixture {
+	t.Helper()
+	f := newEnrollerWith(t, func(o *Options) { o.ReleaseDir = t.TempDir() })
+	writeReleases(t, f.e.opt.ReleaseDir)
+	return f
+}
+
+// tokenFromOneLiner returns the enrollment token in a Linux one-liner.
+func tokenFromOneLiner(t *testing.T, line string) string {
+	t.Helper()
+	i, j := strings.Index(line, "/l/"), strings.LastIndex(line, "|sh")
+	if i < 0 || j < i {
+		t.Fatalf("not a Linux one-liner: %q", line)
+	}
+	return line[i+len("/l/") : j]
+}
+
+func pushTarget(addr string) Target {
+	return Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
+}
+
+func TestSSHPushRunsOneLiner(t *testing.T) {
+	f := newPushEnroller(t)
 	var connected atomic.Bool
 	srv := fakeSSHDefaults()
 	srv.onInstal = func() { connected.Store(true) }
 	addr := startFakeSSH(t, srv)
-	f.e.opt.Connected = func(h string) bool { return connected.Load() }
-
-	bin := []byte("#!/bin/sh\necho this is the agent binary\n")
-	secret := []byte("0123456789abcdef")
+	f.e.opt.Connected = func(h string) bool { return h == "h1" && connected.Load() }
 	hk, err := OpenHostKeys(filepath.Join(f.dir, "known_hosts.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &SSHPusher{Binary: bin, Controller: "10.0.0.5:7443", NameSecret: secret,
-		HostKeys: hk, Timeout: 5 * time.Second}
-	tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
-	if err := p.Push(context.Background(), f.e, tgt); err != nil {
+	const ctl = "10.0.0.5:7443"
+	p := &SSHPusher{Controller: ctl, HostKeys: hk, Timeout: 5 * time.Second}
+	if err := p.Push(context.Background(), f.e, pushTarget(addr)); err != nil {
 		t.Fatalf("Push: %v", err)
+	}
+	if !connected.Load() {
+		t.Fatal("the fake never ran the one-liner")
 	}
 
 	cmds := srv.commands()
-	var installCmd string
-	var bundle *phyagent.Bundle
-	foundBin := false
+	var line string
 	for _, c := range cmds {
-		if strings.Contains(c.cmd, "base64 -d") && strings.Contains(c.cmd, ".tmp") {
-			raw, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(c.stdin), "\n", ""))
-			if err != nil {
-				t.Fatalf("upload stdin is not base64: %v", err)
+		if strings.Contains(c, "|sh") {
+			if line != "" {
+				t.Fatalf("two one-liners: %q and %q", line, c)
 			}
-			if strings.Contains(c.cmd, "boot.json") {
-				bundle, err = phyagent.ParseBundle(raw)
-				if err != nil {
-					t.Fatalf("bundle upload does not parse: %v\n%s", err, raw)
-				}
-			} else if string(raw) == string(bin) {
-				foundBin = true
+			line = c
+		}
+		for _, gone := range []string{"base64", "agent install", "--bootstrap", "sha256sum", "rm -rf"} {
+			if strings.Contains(c, gone) {
+				t.Errorf("command %q contains %q, which the push no longer does", c, gone)
 			}
 		}
-		if strings.Contains(c.cmd, "agent install --bootstrap") {
-			installCmd = c.cmd
+		if strings.Contains(c, "pw") {
+			t.Errorf("a command line carries the password: %q", c)
 		}
 	}
-	if !foundBin {
-		t.Fatalf("no upload command carried the binary exactly: %+v", cmds)
+	if line == "" {
+		t.Fatalf("the push ran no one-liner: %q", cmds)
 	}
-	if bundle == nil || bundle.Host != "h1" || bundle.Token == "" {
-		t.Fatalf("uploaded bundle = %+v", bundle)
+	tok := tokenFromOneLiner(t, line)
+	if host, err := f.e.Tokens().Peek(tok); err != nil || host != "h1" {
+		t.Fatalf("the one-liner token: host %q, err %v; want the live h1 token", host, err)
 	}
-	if !strings.Contains(installCmd, "agent install --bootstrap") {
-		t.Fatalf("no install command: %+v", cmds)
-	}
-	if !strings.Contains(installCmd, "--secret-file") {
-		t.Errorf("install command does not use --secret-file: %q", installCmd)
-	}
-	if strings.Contains(installCmd, "--secret ") {
-		t.Errorf("install command carries --secret: %q", installCmd)
-	}
-	var secretHex string
-	for _, c := range cmds {
-		if strings.Contains(c.cmd, "name.key") && strings.Contains(c.cmd, "base64 -d") {
-			secretHex = strings.TrimSpace(string(mustDecode(t, c.stdin)))
-		}
-	}
-	if secretHex != hex.EncodeToString(secret) {
-		t.Errorf("secret upload = %q, want %q", secretHex, hex.EncodeToString(secret))
-	}
-	for _, c := range cmds {
-		if strings.Contains(c.cmd, "pw") {
-			t.Errorf("a command line carries the password: %q", c.cmd)
-		}
-		if strings.Contains(c.cmd, bundle.Token) {
-			t.Errorf("a command line carries the token: %q", c.cmd)
-		}
-		if strings.Contains(c.cmd, secretHex) {
-			t.Errorf("a command line carries the name secret: %q", c.cmd)
-		}
-	}
-}
-
-func mustDecode(t *testing.T, b []byte) []byte {
-	t.Helper()
-	out, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(string(b), "\n", ""))
-	if err != nil {
-		t.Fatalf("not base64: %v", err)
-	}
-	return out
-}
-
-func TestSSHPushHashMismatchExecutesNothing(t *testing.T) {
-	f := newEnroller(t)
-	srv := fakeSSHDefaults()
-	srv.corrupt = true
-	addr := startFakeSSH(t, srv)
-	hk, err := OpenHostKeys(filepath.Join(f.dir, "known_hosts.json"))
+	want, err := f.e.OneLiner(OSLinux, ctl, tok)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &SSHPusher{Binary: []byte("#!/bin/sh\necho the real agent\n"), Controller: "10.0.0.5:7443",
-		NameSecret: []byte("0123456789abcdef"), HostKeys: hk, Timeout: 5 * time.Second}
-	tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
-	err = p.Push(context.Background(), f.e, tgt)
-	var pe *PushError
-	if !errors.As(err, &pe) || pe.Class != ClassHashMismatch {
-		t.Fatalf("err = %v, want class %s", err, ClassHashMismatch)
-	}
-	for _, c := range srv.commands() {
-		if strings.Contains(c.cmd, "agent install") {
-			t.Fatalf("a corrupted binary was installed: %q", c.cmd)
-		}
+	if line != want {
+		t.Fatalf("push ran\n%q\nwant the console one-liner\n%q", line, want)
 	}
 }
 
@@ -345,22 +280,28 @@ func TestSSHPushFailedInstallRemovesDir(t *testing.T) {
 		rmExit int
 		want   string
 	}{{0, " removed"}, {1, " NOT removed"}} {
-		f := newEnroller(t)
+		f := newPushEnroller(t)
 		srv := fakeSSHDefaults()
 		srv.install, srv.installE, srv.rmExit = 1, "boom\n", tc.rmExit
 		addr := startFakeSSH(t, srv)
-		secret := []byte("0123456789abcdef")
-		p := &SSHPusher{Binary: []byte("bin"), Controller: "10.0.0.5:7443",
-			NameSecret: secret, Timeout: 5 * time.Second}
-		tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
-		err := p.Push(context.Background(), f.e, tgt)
+		p := &SSHPusher{Controller: "10.0.0.5:7443", Timeout: 5 * time.Second}
+		err := p.Push(context.Background(), f.e, pushTarget(addr))
 		var pe *PushError
 		if !errors.As(err, &pe) || pe.Class != ClassInstall {
 			t.Fatalf("err = %v, want class %s", err, ClassInstall)
 		}
-		dir := "/opt/" + svcinstall.DeriveNames(secret).Dir
 		cmds := srv.commands()
-		if last := cmds[len(cmds)-1].cmd; last != "rm -rf '"+dir+"'" {
+		var token string
+		for _, c := range cmds {
+			if strings.Contains(c, "|sh") {
+				token = tokenFromOneLiner(t, c)
+			}
+		}
+		if token == "" {
+			t.Fatalf("no one-liner ran: %q", cmds)
+		}
+		dir := "/opt/" + svcinstall.DeriveNames([]byte(token)).Dir
+		if last := cmds[len(cmds)-1]; last != "rm -rf '"+dir+"'" {
 			t.Fatalf("last command = %q, want the install dir removed", last)
 		}
 		if !strings.Contains(pe.Detail, "install dir "+dir+tc.want) {
@@ -369,8 +310,8 @@ func TestSSHPushFailedInstallRemovesDir(t *testing.T) {
 	}
 }
 
-func TestSSHPushHostnameMismatchUploadsNothing(t *testing.T) {
-	f := newEnroller(t)
+func TestSSHPushHostnameMismatchMintsNothing(t *testing.T) {
+	f := newPushEnroller(t)
 	srv := fakeSSHDefaults()
 	srv.hostname = "other"
 	addr := startFakeSSH(t, srv)
@@ -378,17 +319,15 @@ func TestSSHPushHostnameMismatchUploadsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &SSHPusher{Binary: []byte("bin"), Controller: "10.0.0.5:7443",
-		NameSecret: []byte("0123456789abcdef"), HostKeys: hk, Timeout: 5 * time.Second}
-	tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
-	err = p.Push(context.Background(), f.e, tgt)
+	p := &SSHPusher{Controller: "10.0.0.5:7443", HostKeys: hk, Timeout: 5 * time.Second}
+	err = p.Push(context.Background(), f.e, pushTarget(addr))
 	var pe *PushError
 	if !errors.As(err, &pe) || pe.Class != ClassHostname {
 		t.Fatalf("err = %v, want class %s", err, ClassHostname)
 	}
 	for _, c := range srv.commands() {
-		if strings.Contains(c.cmd, "base64 -d") {
-			t.Fatalf("a mismatched hostname still uploaded: %q", c.cmd)
+		if strings.Contains(c, "|sh") {
+			t.Fatalf("a mismatched hostname still ran the one-liner: %q", c)
 		}
 	}
 	if n := f.e.tokens.liveLocked(); n != 0 {
@@ -423,7 +362,7 @@ func TestSSHPushClasses(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newEnroller(t)
+			f := newPushEnroller(t)
 			srv := fakeSSHDefaults()
 			if tc.setup != nil {
 				tc.setup(srv)
@@ -436,9 +375,8 @@ func TestSSHPushClasses(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			p := &SSHPusher{Binary: []byte("bin"), Controller: "10.0.0.5:7443",
-				NameSecret: []byte("0123456789abcdef"), HostKeys: hk, Timeout: 300 * time.Millisecond}
-			tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
+			p := &SSHPusher{Controller: "10.0.0.5:7443", HostKeys: hk, Timeout: 300 * time.Millisecond}
+			tgt := pushTarget(addr)
 			if tc.tgt != nil {
 				tgt = tc.tgt(addr)
 			}

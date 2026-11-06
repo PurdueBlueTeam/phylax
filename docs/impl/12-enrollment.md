@@ -22,7 +22,7 @@
 1. **Re-enrollment restarts the event chain at seq 1, and the store forbids that.** A new reservation gives a fresh VM, so its spool starts at 1 while the store holds `last_seq = N` for the host (`ReplaceAgentKey` keeps the chain). Chosen: `Store.ArchiveAgent` moves the old chain to the id `<host>~<n>` (tables `events`, `gaps`, `alerts`) and the host starts a new chain under its own name (Task 3). `shortcut: archived rows are not re-verified under their new id, upgrade when a chain-verify command exists`.
 2. **The WinRM push cannot upload a 40 MB binary.** SOAP chunks are about 4 KB, so roughly 9,000 round trips. Chosen: the WinRM push runs the Windows one-liner (Task 4) through the shell, so the host downloads the binary from the bootstrap handler over the pinned connection; the host must reach the controller, which it must anyway (Task 9).
 3. **Stolen-key detection has no event kind.** The design lists the check but the kind table has none for it. Chosen: `enroll.key_reuse` (alert-class, already in the table) with detail "second live session from <addr>" (Task 14). W1's table is unchanged.
-4. **SFTP fallback** (design, SSH push) needs a library the module list does not have. `shortcut: no SFTP fallback (base64 over stdin only), upgrade when a host refuses a shell command channel` (Task 5).
+4. **SFTP fallback** is moot (design S2): the SSH push no longer uploads a binary, it runs the pinned console one-liner, so there is no file transfer to fall back from (Task 5).
 5. **A protected service DACL that denies the administrators group stop and delete would lock the operator out.** Chosen: deny stop, pause and delete to interactive, service and batch logons and to the `BA` group, but keep `WRITE_DAC` for `BA` so a console administrator can `sc sdset` it back (the break-glass path); the hardening and winevt content already alert on `sc sdset` (Task 16).
 6. **`agent.config`, `agent.rename` and `agent.safe_mode` have a name and no behaviour in the design.** Chosen: `agent.config{memory_limit_mb}` writes `options.json` and applies it live; `agent.rename{secret}` reinstalls under the names `svcinstall.DeriveNames(secret)` through the swap helper of Task 18; `agent.safe_mode{on: true}` only (turning it off stays a signed control from the UI, because the executor refuses every action while safe mode is on).
 7. **The first ack after a restore lowers the agent's ack, and the spool ignores lower acks** (`Spool.Ack` returns when `upTo <= s.ack`), so an agent never resends the events a restored controller lost. Chosen: `Spool.SetAck`, used for the first ack of a session only (Task 12).
@@ -50,7 +50,7 @@
 3. **A revoked key must stop working at once.** After `Revoke(host)` the old key's next hello is refused and its live session closed, while the new key with a fresh token enrolls and emits `agent.reenrolled` exactly once (Task 3 `TestRevokeThenReenroll`).
 4. **Restore resend must verify, not trust.** After a restore, events at or below the snapshot's recorded sequence are accepted only if the run reaches that sequence with the recorded hash; a forged history is refused and nothing is stored (Task 12 `TestRestoreResendForgedHistoryRefused`, on top of the store's own test).
 5. **Operator lockout.** A hardened service DACL, a Job Object memory cap that is too low, a `set-controller` to a wrong address and an `agent.replace_binary` of a binary that never connects must each have a recovery that does not need the agent: console `sc sdset`, a cap derived from the 80 MB base plus held budgets, the dead-man style rollback of the swap helper in 30 s, and `phylax set-controller` run again (Tasks 6, 16, 17, 18).
-6. **Push failure classes.** Auth refused, no shell, no space, SELinux denial, timeout, hostname mismatch and Windows OpenSSH each produce a distinct class and a next step; a hostname mismatch must stop before anything is uploaded (Task 5).
+6. **Push failure classes.** Auth refused, no shell, no space, SELinux denial, timeout, hostname mismatch and Windows OpenSSH each produce a distinct class and a next step; a hostname mismatch must stop before a token is minted and before the one-liner runs (Task 5).
 
 ---
 
@@ -313,7 +313,7 @@ func TestOneLinerInstallsWithRealCurlAndSh(t *testing.T) // Skips if curl or sh 
 - Test: those, using an in-process SSH server built with `golang.org/x/crypto/ssh` that implements `exec` requests by running a scripted responder (a map from command prefix to stdout, stderr, exit status). This is the same fake-server pattern as `internal/checks/probe/ssh_test.go`; read it first and copy its server setup.
 
 **Interfaces:**
-- Consumes: `vault.Secret`, `svcinstall.DeriveNames`, `Enroller.Bundle`, `Options.Connected`, `atomicfile`.
+- Consumes: `vault.Secret`, `svcinstall.DeriveNames`, `Enroller.MintToken`, `Enroller.OneLiner`, `Options.Connected`.
 - Produces:
 
 ```go
@@ -327,7 +327,8 @@ const (
 	ClassHostname    Class = "hostname_mismatch"
 	ClassWindowsSSH  Class = "windows_openssh"   // banner says Windows: use the console one-liner or WinRM
 	ClassHostKey     Class = "hostkey_changed"
-	ClassNoHeartbeat Class = "no_heartbeat"      // installed and fresh login worked, the agent never connected
+	ClassNoHeartbeat Class = "no_heartbeat"      // the one-liner ran and a fresh login worked, the agent never connected
+	ClassInstall     Class = "install_failed"    // the one-liner (download or install) exited non-zero
 )
 func (c Class) Next() string // the next step the UI names for each class (one sentence each)
 type PushError struct{ Host string; Class Class; Detail string }
@@ -341,9 +342,7 @@ type Target struct {
 	Hostname  string       // expected `hostname -s`, normally Host
 }
 type SSHPusher struct {
-	Binary     []byte       // linux/amd64 agent binary (<= 64 MiB)
-	Controller string       // host:port the agent will dial (put into the bundle)
-	NameSecret []byte       // derives the randomised service, binary and directory names
+	Controller string       // host:port as the host sees the controller; the one-liner fetches from it
 	HostKeys   *HostKeys
 	Timeout    time.Duration // per host, default 30s
 	Dial       func(ctx context.Context, network, addr string) (net.Conn, error) // tests; nil means net.Dialer
@@ -359,26 +358,28 @@ type PushResult struct{ Target Target; Err error }
 func PushAll(ctx context.Context, targets []Target, parallel int, push func(context.Context, Target) error) []PushResult
 ```
 
-Push steps, in order: connect (password auth, `HostKeys.Callback`); class `windows_openssh` if the server version string contains `Windows`; open an exec channel; sentinel `echo PHYLAXOK` must come back (else `no_shell`); `hostname -s` equals `Target.Hostname` (else `hostname_mismatch`, **before** anything is uploaded); free space on the install directory's filesystem at least `len(Binary)*2 + 16 MiB` from `df -Pk <dir>` (else `no_space`); upload the binary with `base64 -d > <dir>/.<name>.tmp && chmod 700 <dir>/.<name>.tmp && mv <dir>/.<name>.tmp <dir>/<name>` over stdin in 48 KiB lines; upload the bundle JSON the same way to `<state>/boot.json` (mode 600); run `<dir>/<name> agent install --bootstrap <state>/boot.json --secret <hex>`; on failure with `Permission denied` and `getenforce` printing `Enforcing`, class `selinux_denial`; a fresh second login must succeed (else `auth_refused`); finally wait up to the remaining timeout for `Options.Connected(host)` (else `no_heartbeat`). `shortcut: no SFTP fallback (base64 over stdin only), upgrade when a host refuses a shell command channel`.
+Push steps, in order: connect (password auth, `HostKeys.Callback`); class `windows_openssh` if the server version string contains `Windows`; open an exec channel; sentinel `echo PHYLAXOK` must come back (else `no_shell`); `hostname -s` equals `Target.Hostname` (else `hostname_mismatch`, **before** a token exists); at least 80 MiB free under `/opt` from `df -Pk /opt` (else `no_space`); mint the host's token with `e.MintToken(t.Host, DefaultTokenTTL)`; derive the install directory from that token (`/opt/` + `svcinstall.DeriveNames([]byte(token)).Dir`, the same derivation the bootstrap handler's served script uses); run `e.OneLiner(OSLinux, p.Controller, token)` — the pinned console line — through the shell channel; on failure with `Permission denied` and `getenforce` printing `Enforcing`, class `selinux_denial`, else `install_failed`, and in both cases remove the install directory the one-liner may have created (`rm -rf`, best effort, on its own 5 s deadline); a fresh second login must succeed (else `auth_refused`); finally wait up to the remaining timeout for `Options.Connected(host)` (else `no_heartbeat`). **The push uploads nothing (design S2):** the host downloads the binary and the bootstrap config from the bootstrap handler over the pinned connection and the one-liner checks the hash, so there is no base64 upload, no remote hash check over SSH and no name-secret file.
 
 - [ ] **Step 1: Write the failing tests.**
 
 ```go
-func TestSSHPushInstalls(t *testing.T)
-// fake server accepts user "root"/"pw", answers `echo PHYLAXOK`, `hostname -s` -> "h1", `df -Pk` -> plenty, records every exec command and its stdin.
-// Push succeeds; the recorded stdin of the upload command base64-decodes to Binary exactly; no command contains the password or the token on its command line (token only inside the stdin bundle);
-// the install command contains "agent install --bootstrap" and "--secret " + hex(NameSecret). Connected(h1) is made true by the fake after the install command.
-func TestSSHPushHostnameMismatchUploadsNothing(t *testing.T) // `hostname -s` -> "other": *PushError Class hostname_mismatch; zero upload commands recorded; no token minted (Tokens live count unchanged).
+func TestSSHPushRunsOneLiner(t *testing.T)
+// fake server accepts user "root"/"pw", answers `echo PHYLAXOK`, `hostname -s` -> "h1", `df -Pk` -> plenty, records every exec command. Push succeeds;
+// exactly one command contains "|sh" and it equals e.OneLiner(OSLinux, ctl, token) for the live h1 token in it (Peek). No command contains base64,
+// "agent install", "--bootstrap", sha256sum, rm -rf or the password. Connected(h1) is made true by the fake when it runs the one-liner.
+func TestSSHPushFailedInstallRemovesDir(t *testing.T) // the one-liner exits 1 ("boom"): class install_failed; the last command is `rm -rf '/opt/<DeriveNames(token).Dir>'`; detail says removed, or NOT removed when rm exits 1.
+func TestSSHPushHostnameMismatchMintsNothing(t *testing.T) // `hostname -s` -> "other": *PushError Class hostname_mismatch; no one-liner command recorded; no token minted (Tokens live count unchanged).
 func TestSSHPushClasses(t *testing.T) // table: wrong password -> auth_refused; server never answers the sentinel (Timeout 300ms) -> timeout; sentinel missing -> no_shell; df reports 1 MiB -> no_space;
-// install exits 1 with "Permission denied" and getenforce -> "Enforcing" -> selinux_denial; version string "SSH-2.0-OpenSSH_for_Windows_8.1" -> windows_openssh; Connected stays false -> no_heartbeat. Every class has a non-empty Next().
+// the one-liner exits 1 with "Permission denied" and getenforce -> "Enforcing" -> selinux_denial; version string "SSH-2.0-OpenSSH_for_Windows_8.1" -> windows_openssh; Connected stays false -> no_heartbeat. Every class has a non-empty Next().
 func TestHostKeysRecordThenCheck(t *testing.T) // first contact records; same key later passes; a different key later -> ErrHostKeyChanged and PushError Class hostkey_changed; the file is mode 0600 and survives reopen.
+func TestSSHPushHostKeyChanged(t *testing.T) // a key recorded at an earlier contact and a different one now: PushError Class hostkey_changed and one Alert("h1", "enroll.hostkey_changed", ...).
 func TestPushAllBounded(t *testing.T) // 20 targets, parallel 4, a push func that tracks max concurrency: max <= 4, results in input order, one failure does not stop the others.
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/enroll/ -run 'SSHPush|HostKeys|PushAll' -count=1`. Expected: FAIL (`undefined: SSHPusher`).
-- [ ] **Step 3: Implement** in the order of the push steps; one `ssh.Session` per command; stdin streamed with a bounded writer; every read of command output is capped at 64 KiB; the per-host deadline is `context.WithTimeout`. The token minted for the bundle comes from `e.Bundle(t.Host, BundleOptions{Controllers: []string{p.Controller}, TTL: 10 * time.Minute})` called only after the hostname and space checks pass.
+- [ ] **Step 3: Implement** in the order of the push steps; one `ssh.Session` per command; every read of command output is capped at 64 KiB; the per-host deadline is `context.WithTimeout`. The token is minted only after the hostname and free-space checks pass, and its value names the install directory the cleanup removes. `runSSH` has no stdin: nothing is uploaded.
 - [ ] **Step 4: Run, expect PASS.** Run: `make build build-windows vet test race`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "enroll: ssh push with failure classes and recorded host keys"`
+- [ ] **Step 5: Commit.** `git commit -am "enroll: ssh push runs the pinned console one-liner"`
 
 ---
 

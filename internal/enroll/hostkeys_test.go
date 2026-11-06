@@ -80,8 +80,7 @@ func TestSSHPushHostKeyChanged(t *testing.T) {
 	if err := hk.Callback("h1")("h1", nil, testPublicKey(t)); err != nil {
 		t.Fatal(err)
 	}
-	p := &SSHPusher{Binary: []byte("bin"), Controller: "10.0.0.5:7443",
-		NameSecret: []byte("0123456789abcdef"), HostKeys: hk, Timeout: 2 * time.Second}
+	p := &SSHPusher{Controller: "10.0.0.5:7443", HostKeys: hk, Timeout: 2 * time.Second}
 	tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
 	err = p.Push(context.Background(), f.e, tgt)
 	var pe *PushError
