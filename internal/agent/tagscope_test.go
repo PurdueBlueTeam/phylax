@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -100,6 +102,43 @@ func TestTagScopeRelease(t *testing.T) {
 	s.Release("plan:p1")
 	if s.Tag("file_change", map[string]any{"pid": 101, "pid_start": uint64(5001)}) != "" {
 		t.Fatal("descendant still tagged after the step ended")
+	}
+}
+
+func TestTagScopeProcessExitRemovesPID(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 5000)
+	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)})
+	if got := s.Tag("file_change", map[string]any{"pid": 101, "pid_start": uint64(5001)}); got != "plan:p1" {
+		t.Fatalf("descendant before exit: %q", got)
+	}
+	if got := s.Tag(event.KindProcessExit, map[string]any{"pid": 101, "start_ticks": uint64(5001)}); got != "plan:p1" {
+		t.Fatalf("the exit event itself: %q", got)
+	}
+	if got := s.Tag("file_change", map[string]any{"pid": 101, "pid_start": uint64(5001)}); got != "" {
+		t.Fatalf("descendant after exit: %q", got)
+	}
+}
+
+func TestTagScopeBounded(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewTagScope(slog.New(slog.NewTextHandler(&logs, nil)))
+	for i := 0; i < maxTagScopeProcs; i++ {
+		s.Register("plan:p1", 1000+i, uint64(i+1))
+	}
+	extra := 1000 + maxTagScopeProcs
+	s.Register("plan:p1", extra, uint64(maxTagScopeProcs+1))
+	if got := s.Tag("file_change", map[string]any{"pid": extra, "pid_start": uint64(maxTagScopeProcs + 1)}); got != "" {
+		t.Fatalf("a process beyond the cap was tagged: %q", got)
+	}
+	if got := s.Tag("file_change", map[string]any{"pid": 1000, "pid_start": uint64(1)}); got != "plan:p1" {
+		t.Fatalf("a registered process lost its tag at the cap: %q", got)
+	}
+	if got := s.Tag("process_start", map[string]any{"pid": extra + 1, "ppid": 1000, "ppid_start": uint64(1), "start_ticks": uint64(99)}); got != "" {
+		t.Fatalf("a descendant beyond the cap was tagged: %q", got)
+	}
+	if !strings.Contains(logs.String(), "full") {
+		t.Fatalf("overflow was not logged: %q", logs.String())
 	}
 }
 

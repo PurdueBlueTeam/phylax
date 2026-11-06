@@ -2,10 +2,15 @@ package agent
 
 import (
 	"encoding/json"
+	"log/slog"
 	"sync"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
+
+// maxTagScopeProcs bounds the process table the scope keeps. Past it the scope
+// stops adding processes (and says so in the log); their events stay untagged.
+const maxTagScopeProcs = 4096
 
 // TagScope answers which plan tag, if any, an event may carry. A plan tag
 // covers only our own activity: the step's own child process and everything it
@@ -18,6 +23,8 @@ import (
 type TagScope struct {
 	mu    sync.Mutex
 	procs map[int]taggedProc // pid -> start time and plan tag
+	log   *slog.Logger
+	full  bool // already logged that the cap was reached
 }
 
 type taggedProc struct {
@@ -25,7 +32,13 @@ type taggedProc struct {
 	tag   string
 }
 
-func NewTagScope() *TagScope { return &TagScope{procs: map[int]taggedProc{}} }
+func NewTagScope(loggers ...*slog.Logger) *TagScope {
+	s := &TagScope{procs: map[int]taggedProc{}, log: slog.Default()}
+	if len(loggers) > 0 && loggers[0] != nil {
+		s.log = loggers[0]
+	}
+	return s
+}
 
 // Register adds the step's own child process (pid and start time) under the
 // plan tag.
@@ -34,8 +47,31 @@ func (s *TagScope) Register(planTag string, pid int, startTime uint64) {
 		return
 	}
 	s.mu.Lock()
-	s.procs[pid] = taggedProc{start: startTime, tag: planTag}
+	s.addLocked(planTag, pid, startTime)
 	s.mu.Unlock()
+}
+
+// addLocked adds one process unless the table is full; the caller holds mu.
+func (s *TagScope) addLocked(tag string, pid int, start uint64) bool {
+	if _, ok := s.procs[pid]; !ok && len(s.procs) >= maxTagScopeProcs {
+		if !s.full {
+			s.full = true
+			if s.log != nil {
+				s.log.Warn("plan tag scope full: further processes are not tagged", "cap", maxTagScopeProcs)
+			}
+		}
+		return false
+	}
+	s.procs[pid] = taggedProc{start: start, tag: tag}
+	return true
+}
+
+// removeLocked drops one pid; the caller holds mu.
+func (s *TagScope) removeLocked(pid int) {
+	delete(s.procs, pid)
+	if s.full && len(s.procs) < maxTagScopeProcs {
+		s.full = false
+	}
 }
 
 // Release removes every process registered under planTag (called when the
@@ -47,7 +83,7 @@ func (s *TagScope) Release(planTag string) {
 	s.mu.Lock()
 	for pid, p := range s.procs {
 		if p.tag == planTag {
-			delete(s.procs, pid)
+			s.removeLocked(pid)
 		}
 	}
 	s.mu.Unlock()
@@ -57,20 +93,27 @@ func (s *TagScope) Release(planTag string) {
 // activity. A process_start whose parent is registered (and whose parent start
 // proves the same process) is tagged, and registered too when its own start
 // time is known; any other event is tagged when its own pid and start time
-// match a registration.
+// match a registration. A process_exit removes its pid from the scope.
 func (s *TagScope) Tag(kind string, fields map[string]any) string {
 	pid := intField(fields, "pid")
 	start := startField(fields)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if kind == event.KindProcessExit || kind == "process_end" {
+		if p, ok := s.procs[pid]; ok && sameProc(p, start) {
+			s.removeLocked(pid)
+			return p.tag
+		}
+		return ""
+	}
 	if kind == event.KindProcessStart {
 		ppid, pstart := parentOf(fields)
 		if p, ok := s.procs[ppid]; ok && sameProc(p, pstart) {
 			// Without the child's own start time the descent is only known for
 			// this one event; registering it would let a later pid reuse
 			// inherit the tag, so do not register it.
-			if pid > 0 && start != 0 {
-				s.procs[pid] = taggedProc{start: start, tag: p.tag}
+			if pid > 0 && start != 0 && !s.addLocked(p.tag, pid, start) {
+				return ""
 			}
 			return p.tag
 		}

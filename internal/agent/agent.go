@@ -171,7 +171,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
 		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now(),
-		tags: NewTagScope()}
+		tags: NewTagScope(cfg.Logger)}
 	a.window = newWindowState(cfg.Layout.Root, a.mono)
 	if err := a.initExec(); err != nil {
 		return nil, err

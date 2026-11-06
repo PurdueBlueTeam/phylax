@@ -47,7 +47,7 @@ func NewHarness(o HarnessOptions) (*Harness, error) {
 		planKey:       o.PlanKey,
 		managed:       map[string]string{},
 		started:       time.Now(),
-		tags:          NewTagScope(),
+		tags:          NewTagScope(log),
 		notify:        make(chan struct{}, 1),
 		cfgKick:       make(chan struct{}, 1),
 		factoriesOnly: true,
