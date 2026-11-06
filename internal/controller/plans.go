@@ -1248,12 +1248,18 @@ func (rt *planRT) initProbesLocked() {
 		a, err := rt.c.reg.Get(n.Action)
 		if err != nil {
 			rt.probeGroupingFailedLocked("probe grouping: node " + n.ID + ": " + err.Error())
-			return
+			if rt.p.Class == plan.ClassAuto {
+				return
+			}
+			continue
 		}
 		params, err := a.Spec().Validate(n.Params)
 		if err != nil {
 			rt.probeGroupingFailedLocked("probe grouping: node " + n.ID + ": " + err.Error())
-			return
+			if rt.p.Class == plan.ClassAuto {
+				return
+			}
+			continue
 		}
 		if svc := plan.ScoredTouch(man, n, a.Touches(params)); len(svc) > 0 {
 			scored[n.ID] = svc
