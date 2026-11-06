@@ -125,6 +125,8 @@ type Controller struct {
 	enrWatchMu sync.Mutex
 	enrWatch   *enrollWatch // the active enrollment watch (enrollwatch.go), nil when none
 
+	autoMu sync.Mutex // serialises attempt-ledger read-modify-write (auto.go)
+
 	honey    honeyState // honeytoken registry (deception_registry.go)
 	honeyGen sync.Mutex // serialises GenerateHoneytokens
 

@@ -176,7 +176,7 @@ func TestBusyOnAutoPlanDoesNotRollBack(t *testing.T) {
 	if d.State != PlanSucceeded || d.Nodes["a"].State != plan.StateVerified {
 		t.Fatalf("plan %s node %+v", d.State, d.Nodes["a"])
 	}
-	if halted, err := x.c.autoHalted(ctx, "h1", "/tmp/phylax-busy-auto", "t1"); halted || err != nil {
+	if halted, err := ledgerOpen(x.c, "h1", "/tmp/phylax-busy-auto", "t1"); halted || err != nil {
 		t.Fatalf("a busy answer opened the auto ledger: %v %v", halted, err)
 	}
 }

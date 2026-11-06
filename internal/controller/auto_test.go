@@ -51,7 +51,7 @@ func TestRunAutoShadowRecordsWithoutApplying(t *testing.T) {
 	if d.State != PlanDryRun || d.Plan.Class != plan.ClassAuto || d.Plan.Approver != "shadow:ctltest/t1" || d.DryRun == nil {
 		t.Fatalf("shadow plan %+v", d)
 	}
-	if halted, err := c.autoHalted(ctx, "h1", "/etc/hosts", "t1"); halted || err != nil {
+	if halted, err := ledgerOpen(c, "h1", "/etc/hosts", "t1"); halted || err != nil {
 		t.Fatalf("shadow opened the ledger: %v %v", halted, err)
 	}
 	if _, err := c.st.MetaGet(ctx, autoLedgerKey("h1", "/etc/hosts", "t1")); !errors.Is(err, store.ErrNoMeta) {

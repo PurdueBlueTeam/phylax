@@ -361,6 +361,8 @@ type autoLedger struct {
 // exactly once, when this attempt reaches the count and opens it. Only a
 // missing key means a closed breaker; every other store error fails closed.
 func (c *Controller) noteAutoAttempt(ctx context.Context, host, object, kind string, at time.Time) (allowed, opened bool, err error) {
+	c.autoMu.Lock()
+	defer c.autoMu.Unlock()
 	key := autoLedgerKey(host, object, kind)
 	var l autoLedger
 	raw, err := c.st.MetaGet(ctx, key)
@@ -412,29 +414,16 @@ func (c *Controller) emitAutoHalted(ctx context.Context, host, object, kind stri
 	}
 }
 
-// autoHalted reports whether the ledger's breaker is open for a key.
-func (c *Controller) autoHalted(ctx context.Context, host, object, kind string) (bool, error) {
-	raw, err := c.st.MetaGet(ctx, autoLedgerKey(host, object, kind))
-	if errors.Is(err, store.ErrNoMeta) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var l autoLedger
-	if err := json.Unmarshal([]byte(raw), &l); err != nil {
-		return false, err
-	}
-	return l.Open, nil
-}
-
 // ReenableAuto clears the ledger's breaker for one key and records the
 // operator in the audit log.
 func (c *Controller) ReenableAuto(ctx context.Context, host, object, kind, by string) error {
 	if err := requireOperator(by); err != nil {
 		return err
 	}
-	if err := c.st.MetaDelete(ctx, autoLedgerKey(host, object, kind)); err != nil {
+	c.autoMu.Lock()
+	err := c.st.MetaDelete(ctx, autoLedgerKey(host, object, kind))
+	c.autoMu.Unlock()
+	if err != nil {
 		return err
 	}
 	return c.st.AppendAudit(ctx, store.AuditRow{Time: c.now(), Actor: by, Action: "auto_reenable",
