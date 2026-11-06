@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
@@ -31,9 +31,9 @@ type VerifyRequest struct {
 // ServiceVerdict is one login attempt.
 type ServiceVerdict struct {
 	ID    string
-	Type  checks.Type
+	Type  probe.Type
 	OK    bool
-	Class checks.Class
+	Class probe.Class
 	Err   string
 }
 
@@ -84,8 +84,8 @@ type VerifyConfig struct {
 	Allow Allowlist
 	// Targets returns the public services the account is scored on (the Specs
 	// carry the host and port; credentials are supplied by the request).
-	Targets func(account string) []checks.Spec
-	Probe   checks.Options
+	Targets func(account string) []probe.Spec
+	Probe   probe.Options
 	clock
 }
 
@@ -132,10 +132,10 @@ func (s *VerifyService) emitter() agent.Emit {
 func (s *VerifyService) Handle(ctx context.Context, req VerifyRequest) VerifyResult {
 	res := VerifyResult{ID: req.ID, Account: req.Account}
 	specs := s.cfg.Targets(req.Account)
-	var run []checks.Spec
+	var run []probe.Spec
 	for _, sp := range specs {
 		if !s.cfg.Allow.Allows(sp.Host) {
-			res.Services = append(res.Services, ServiceVerdict{ID: sp.ID, Type: sp.Type, Class: checks.ClassConfig, Err: "target is not allowlisted"})
+			res.Services = append(res.Services, ServiceVerdict{ID: sp.ID, Type: sp.Type, Class: probe.ClassConfig, Err: "target is not allowlisted"})
 			continue
 		}
 		run = append(run, sp)
@@ -144,14 +144,14 @@ func (s *VerifyService) Handle(ctx context.Context, req VerifyRequest) VerifyRes
 	case len(run) == 0:
 		res.Err = ErrNoPublicPath.Error()
 	default:
-		cr := checks.Cred{User: req.Account, Pass: req.Pass}
+		cr := probe.Cred{User: req.Account, Pass: req.Pass}
 		var bad []string
 		for _, sp := range run {
 			if ctx.Err() != nil {
 				bad = append(bad, "cancelled")
 				break
 			}
-			r := checks.AuthOnly(ctx, sp, cr, s.cfg.Probe)
+			r := probe.AuthOnly(ctx, sp, cr, s.cfg.Probe)
 			res.Services = append(res.Services, ServiceVerdict{ID: sp.ID, Type: sp.Type, OK: r.OK, Class: r.Class, Err: r.Err})
 			if !r.OK {
 				bad = append(bad, fmt.Sprintf("%s(%s): %s", sp.Type, sp.Host, r.Err))

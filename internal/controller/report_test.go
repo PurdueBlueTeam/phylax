@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/detect"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/report"
@@ -435,8 +435,8 @@ func TestUIChecksFeedScorer(t *testing.T) {
 			cn.Close()
 		}
 	}()
-	spec := checks.Spec{ID: "web:tcp", Type: checks.TCP, Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port}
-	res, err := c.Checks().RunProbe(ctx, spec, checks.Options{Timeout: 2 * time.Second})
+	spec := probe.Spec{ID: "web:tcp", Type: probe.TCP, Host: "127.0.0.1", Port: ln.Addr().(*net.TCPAddr).Port}
+	res, err := c.Checks().RunProbe(ctx, spec, probe.Options{Timeout: 2 * time.Second})
 	if err != nil || !res.OK {
 		t.Fatalf("probe: %+v %v", res, err)
 	}
@@ -446,7 +446,7 @@ func TestUIChecksFeedScorer(t *testing.T) {
 	}
 	ln.Close()
 	for i := 0; i < 4; i++ {
-		res, err = c.Checks().RunProbe(ctx, spec, checks.Options{Timeout: time.Second})
+		res, err = c.Checks().RunProbe(ctx, spec, probe.Options{Timeout: time.Second})
 		if err != nil || res.OK {
 			t.Fatalf("probe against a closed port: %+v %v", res, err)
 		}

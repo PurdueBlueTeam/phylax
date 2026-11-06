@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
@@ -17,14 +17,14 @@ import (
 // unions per service, delivered by the controller. Credentials live in memory
 // only, inside the returned Specs.
 type CheckSource interface {
-	Specs(ctx context.Context) []checks.Spec
+	Specs(ctx context.Context) []probe.Spec
 }
 
 // CheckSourceFunc adapts a function to CheckSource.
-type CheckSourceFunc func(ctx context.Context) []checks.Spec
+type CheckSourceFunc func(ctx context.Context) []probe.Spec
 
 // Specs implements CheckSource.
-func (f CheckSourceFunc) Specs(ctx context.Context) []checks.Spec { return f(ctx) }
+func (f CheckSourceFunc) Specs(ctx context.Context) []probe.Spec { return f(ctx) }
 
 // CheckRunnerConfig tunes the external check runner.
 type CheckRunnerConfig struct {
@@ -42,7 +42,7 @@ type CheckRunnerConfig struct {
 	// stay below knife-edge volume (default 250ms, 2 in flight).
 	MinGap        time.Duration
 	MaxConcurrent int
-	Probe         checks.Options // Timeout, Strict, BadAttempts, ...
+	Probe         probe.Options // Timeout, Strict, BadAttempts, ...
 	Rand          *rand.Rand
 	clock
 }
@@ -171,10 +171,10 @@ func (r *CheckRunner) RunOnce(ctx context.Context, emit agent.Emit) {
 			opts := r.cfg.Probe
 			opts.Rand = nil
 			r.probes.Add(1)
-			res := checks.Faithful(ctx, spec, opts)
+			res := probe.Faithful(ctx, spec, opts)
 			_ = emit(CheckEvent(res, r.cfg.Now()))
 			if r.cfg.SweepEvery > 0 && n%r.cfg.SweepEvery == 0 && len(spec.Items) > 1 {
-				for _, sr := range checks.Sweep(ctx, spec, opts, r.cfg.MinGap) {
+				for _, sr := range probe.Sweep(ctx, spec, opts, r.cfg.MinGap) {
 					r.probes.Add(1)
 					_ = emit(CheckEvent(sr, r.cfg.Now()))
 				}
@@ -184,7 +184,7 @@ func (r *CheckRunner) RunOnce(ctx context.Context, emit agent.Emit) {
 	wg.Wait()
 }
 
-func (r *CheckRunner) refuse(emit agent.Emit, spec checks.Spec) {
+func (r *CheckRunner) refuse(emit agent.Emit, spec probe.Spec) {
 	r.refused.Add(1)
 	if _, dup := r.refusedSeen.LoadOrStore(spec.ID+"|"+spec.Host, true); dup {
 		return
@@ -195,7 +195,7 @@ func (r *CheckRunner) refuse(emit agent.Emit, spec checks.Spec) {
 
 // CheckEvent renders a result as a vantage.check event. It carries no
 // credential; Debug is capped.
-func CheckEvent(res checks.Result, now time.Time) event.Event {
+func CheckEvent(res probe.Result, now time.Time) event.Event {
 	steps := make(map[string]any, len(res.Steps))
 	for _, s := range res.Steps {
 		steps[s.Name] = s.Elapsed.Milliseconds()

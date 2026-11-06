@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -107,7 +107,7 @@ func (h *ChecksHub) feed() {
 
 // RecordResult stores a probe-library result from the given vantage ("controller"
 // for probes run here) and, for faithful runs, advances the service's SLA streak.
-func (h *ChecksHub) RecordResult(ctx context.Context, vantage string, res checks.Result) error {
+func (h *ChecksHub) RecordResult(ctx context.Context, vantage string, res probe.Result) error {
 	at := res.Start
 	if at.IsZero() {
 		at = h.c.now()
@@ -128,8 +128,8 @@ func (h *ChecksHub) RecordResult(ctx context.Context, vantage string, res checks
 }
 
 // RunProbe runs one faithful probe with the probe library and records it.
-func (h *ChecksHub) RunProbe(ctx context.Context, spec checks.Spec, opts checks.Options) (checks.Result, error) {
-	res := checks.Faithful(ctx, spec, opts)
+func (h *ChecksHub) RunProbe(ctx context.Context, spec probe.Spec, opts probe.Options) (probe.Result, error) {
+	res := probe.Faithful(ctx, spec, opts)
 	return res, h.RecordResult(ctx, "controller", res)
 }
 

@@ -1,4 +1,4 @@
-// Package checks is the probe library shared by the in-LAN check_runner and
+// Package probe is the probe library shared by the in-LAN check_runner and
 // the Kali vantage point. Each probe reproduces the client behaviour of
 // Quotient (the competition scorer) for one check type, byte for byte where
 // that is observable, so "the probe is green" means "the scorer would pass".
@@ -11,7 +11,7 @@
 //
 // Nothing here scans: a probe talks to exactly the Host in its Spec. The
 // caller (internal/vantage) enforces which hosts may be targeted.
-package checks
+package probe
 
 import (
 	"context"
@@ -49,11 +49,14 @@ const (
 	LDAP   Type = "ldap"
 	MSSQL  Type = "mssql"
 	Splunk Type = "splunk"
+	// TFTP and NTP are declared; their probes arrive with W7 Tasks 8 and 9.
+	TFTP Type = "tftp"
+	NTP  Type = "ntp"
 )
 
 // Types lists every supported type.
 func Types() []Type {
-	return []Type{HTTP, HTTPS, DNS, Ping, TCP, RDP, SSH, FTP, SMB, SMTP, IMAP, POP3, WinRM, LDAP, MSSQL, Splunk}
+	return []Type{HTTP, HTTPS, DNS, Ping, TCP, RDP, SSH, FTP, SMB, SMTP, IMAP, POP3, WinRM, LDAP, MSSQL, Splunk, TFTP, NTP}
 }
 
 // NeedsCreds reports whether the type authenticates with a credential.
@@ -141,6 +144,8 @@ type Item struct {
 	File   string
 	Share  string // smb
 	SHA256 string // hex, case-insensitive
+	// NTP
+	Skew time.Duration // ntp: largest accepted |reply time - local time|; 0 means 2s
 }
 
 // Label is a short, credential-free description of the item for logs.
@@ -195,6 +200,9 @@ type Options struct {
 	Rand *mrand.Rand // sampling and banner choice; default is randomly seeded
 	// Sleep is used for the SSH Timeout/8 wait; default honours ctx.
 	Sleep func(ctx context.Context, d time.Duration)
+	// RDPAuth runs the Kali-only xfreerdp /auth-only wrapper; nil: an rdp
+	// AuthOnly run reports class config.
+	RDPAuth func(ctx context.Context, host string, port int, user, pass string) error
 }
 
 func (o Options) timeout() time.Duration {
@@ -350,7 +358,7 @@ func (p *probe) dialWithin(ctx context.Context, connect time.Duration, network, 
 		_ = c.SetDeadline(dl)
 	}
 	// Close on cancellation so a blocked read cannot outlive the probe.
-	go func() { <-ctx.Done(); _ = c.Close() }()
+	context.AfterFunc(ctx, func() { _ = c.Close() })
 	return c, nil
 }
 
@@ -380,6 +388,13 @@ var probes = map[Type]probeFunc{
 	HTTP: probeWeb, HTTPS: probeWeb, DNS: probeDNS, Ping: probePing, TCP: probeTCP, RDP: probeRDP,
 	SSH: probeSSH, FTP: probeFTP, SMB: probeSMB, SMTP: probeSMTP, IMAP: probeIMAP, POP3: probePOP3,
 	WinRM: probeWinRM, LDAP: probeLDAP, MSSQL: probeMSSQL, Splunk: probeSplunk,
+	TFTP: probePending, NTP: probePending,
+}
+
+// probePending is the dispatcher stub for a declared type whose probe has not
+// landed yet; the spec cannot be run, which is a configuration problem.
+func probePending(ctx context.Context, p *probe) error {
+	return fail(ClassConfig, "%s probe is not implemented", p.spec.Type)
 }
 
 // Run executes one probe with an explicit item and credential (either may be

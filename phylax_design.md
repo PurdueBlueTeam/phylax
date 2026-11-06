@@ -5433,7 +5433,7 @@ Evidence that it matters for points:
 
 **2. Status and code.**
 
-Probe library: built (`internal/checks`, 16 check types, unit tests against local fake servers: `ssh_test.go`, `smb_test.go`, `web_dns_test.go`, `ntlmserver_test.go`, `lineproto_test.go`). Controller side: partial. `internal/controller/checks_hub.go` stores results (`check_results`) and advances SLA streaks; `checks_ops.go` renders the per-service view. The agent module that runs checks on a schedule is `CheckRunner` in `internal/vantage/checkrunner.go` (built). Missing:
+Probe library: built (`internal/checks/probe`, 16 check types; `tftp` and `ntp` are declared with a `config`-class stub until W7 Tasks 8 and 9, and its package-level state and goroutines are checked by `nosched_test.go`, unit tests against local fake servers: `ssh_test.go`, `smb_test.go`, `web_dns_test.go`, `ntlmserver_test.go`, `lineproto_test.go`). Controller side: partial. `internal/controller/checks_hub.go` stores results (`check_results`) and advances SLA streaks; `checks_ops.go` renders the per-service view. The agent module that runs checks on a schedule is `CheckRunner` in `internal/vantage/checkrunner.go` (built). Missing:
 
 - No controller scheduler (docs/ui.md), and none is built: the controller process runs no probes of its own. The in-LAN vantage is the `check_runner` agent on the controller host (builder check).
 - TFTP and NTP check types, Orange flows, the service doctor, the check lifecycle in the UI (add, edit, pause, retire, accept current response), and the proposal records.

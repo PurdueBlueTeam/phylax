@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/scorer"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
 
 // pop3 starts a fake POP3 server that accepts user:pass.
-func pop3(t *testing.T, user, pass string) checks.Spec {
+func pop3(t *testing.T, user, pass string) probe.Spec {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -64,16 +64,16 @@ func pop3(t *testing.T, user, pass string) checks.Spec {
 		}
 	}()
 	a := l.Addr().(*net.TCPAddr)
-	return checks.Spec{ID: fmt.Sprintf("pop3-%d", a.Port), Type: checks.POP3, Host: "127.0.0.1", Port: a.Port}
+	return probe.Spec{ID: fmt.Sprintf("pop3-%d", a.Port), Type: probe.POP3, Host: "127.0.0.1", Port: a.Port}
 }
 
 func TestVerifyServiceAndRemoteVerifier(t *testing.T) {
 	allow, _ := ParseAllowlist("127.0.0.1")
 	okA, okB := pop3(t, "alice", "NewPass-1"), pop3(t, "alice", "NewPass-1")
 	bobOK, bobStale := pop3(t, "bob", "NewPass-1"), pop3(t, "bob", "OldPass-0") // a host where the change did not land
-	byAcct := map[string][]checks.Spec{"alice": {okA, okB}, "bob": {bobOK, bobStale}, "ghost": nil}
-	vs, err := NewVerifyService(VerifyConfig{Allow: allow, Probe: checks.Options{Timeout: 2 * time.Second},
-		Targets: func(a string) []checks.Spec { return byAcct[a] }})
+	byAcct := map[string][]probe.Spec{"alice": {okA, okB}, "bob": {bobOK, bobStale}, "ghost": nil}
+	vs, err := NewVerifyService(VerifyConfig{Allow: allow, Probe: probe.Options{Timeout: 2 * time.Second},
+		Targets: func(a string) []probe.Spec { return byAcct[a] }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestVerifyServiceAndRemoteVerifier(t *testing.T) {
 	}
 
 	// a non-allowlisted target is never contacted
-	byAcct["evil"] = []checks.Spec{{ID: "x", Type: checks.POP3, Host: "198.51.100.9", Port: 110}}
+	byAcct["evil"] = []probe.Spec{{ID: "x", Type: probe.POP3, Host: "198.51.100.9", Port: 110}}
 	if res := vs.Handle(ctx, VerifyRequest{Account: "evil", Pass: vault.NewSecretString("x")}); res.OK || res.Services[0].Err != "target is not allowlisted" {
 		t.Fatalf("%+v", res)
 	}

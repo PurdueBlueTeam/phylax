@@ -1,6 +1,6 @@
 package vantage
 
-import "github.com/PurdueBlueTeam/phylax/internal/checks"
+import "github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 
 // Verdict is the V1 comparison of the external probe with the in-LAN probe of
 // the same check.
@@ -17,14 +17,14 @@ const (
 
 // Compare classifies a pair of results for the same check (V1). A red external
 // probe with a green in-LAN probe localizes the fault to the public path.
-func Compare(external, lan checks.Result) Verdict {
+func Compare(external, lan probe.Result) Verdict {
 	switch {
 	case external.OK && lan.OK:
 		return VerdictAgree
 	case !external.OK && !lan.OK:
 		return VerdictServiceDown
 	case !external.OK && lan.OK:
-		if external.Class == checks.ClassContent {
+		if external.Class == probe.ClassContent {
 			return VerdictContent
 		}
 		return VerdictPathBroken

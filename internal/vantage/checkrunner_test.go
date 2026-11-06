@@ -12,13 +12,13 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
-	"github.com/PurdueBlueTeam/phylax/internal/checks"
+	"github.com/PurdueBlueTeam/phylax/internal/checks/probe"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
-func webSpec(t *testing.T, srv *httptest.Server, id string, items ...checks.Item) checks.Spec {
+func webSpec(t *testing.T, srv *httptest.Server, id string, items ...probe.Item) probe.Spec {
 	ap := netip.MustParseAddrPort(srv.Listener.Addr().String())
-	return checks.Spec{ID: id, Type: checks.HTTP, Host: ap.Addr().String(), Port: int(ap.Port()), Items: items}
+	return probe.Spec{ID: id, Type: probe.HTTP, Host: ap.Addr().String(), Port: int(ap.Port()), Items: items}
 }
 
 func TestCheckRunnerFaithfulSweepRefusalAndGate(t *testing.T) {
@@ -35,17 +35,17 @@ func TestCheckRunnerFaithfulSweepRefusalAndGate(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	good := webSpec(t, srv, "web", checks.Item{Path: "/a", Status: 200}, checks.Item{Path: "/b", Status: 200}, checks.Item{Path: "/bad", Status: 200})
+	good := webSpec(t, srv, "web", probe.Item{Path: "/a", Status: 200}, probe.Item{Path: "/b", Status: 200}, probe.Item{Path: "/bad", Status: 200})
 	// a spec aimed at an address outside the allowlist must never be contacted
-	outside := checks.Spec{ID: "evil", Type: checks.HTTP, Host: "198.51.100.7", Port: 80}
+	outside := probe.Spec{ID: "evil", Type: probe.HTTP, Host: "198.51.100.7", Port: 80}
 	allow, _ := ParseAllowlist("127.0.0.0/8")
 
 	fc := newFakeClock()
 	gate := &fakeGate{clk: fc, opensAt: fc.Now().Add(2 * time.Second)}
 	r, err := NewCheckRunner(CheckRunnerConfig{
-		Allow: allow, Source: CheckSourceFunc(func(context.Context) []checks.Spec { return []checks.Spec{good, outside} }),
+		Allow: allow, Source: CheckSourceFunc(func(context.Context) []probe.Spec { return []probe.Spec{good, outside} }),
 		SweepEvery: 2, Gate: gate, MinGap: time.Millisecond, MaxConcurrent: 1,
-		Probe: checks.Options{Timeout: 2 * time.Second}, clock: fc.clock(),
+		Probe: probe.Options{Timeout: 2 * time.Second}, clock: fc.clock(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestCheckRunnerDefersWhenNoWindow(t *testing.T) {
 	fc := newFakeClock()
 	gate := &fakeGate{clk: fc, opensAt: fc.Now().Add(time.Hour)}
 	r, _ := NewCheckRunner(CheckRunnerConfig{Allow: allow, Gate: gate, MaxDefer: 3 * time.Second, clock: fc.clock(),
-		Source: CheckSourceFunc(func(context.Context) []checks.Spec { return []checks.Spec{webSpec(t, srv, "w")} })})
+		Source: CheckSourceFunc(func(context.Context) []probe.Spec { return []probe.Spec{webSpec(t, srv, "w")} })})
 	s := &sink{}
 	r.RunOnce(context.Background(), s.emit)
 	if n != 0 {
@@ -129,7 +129,7 @@ func TestCheckRunnerAsAgentModule(t *testing.T) {
 	defer srv.Close()
 	allow, _ := ParseAllowlist("127.0.0.1")
 	r, err := NewCheckRunner(CheckRunnerConfig{Allow: allow, Interval: 30 * time.Millisecond, MinGap: time.Millisecond,
-		Source: CheckSourceFunc(func(context.Context) []checks.Spec { return []checks.Spec{webSpec(t, srv, "w")} })})
+		Source: CheckSourceFunc(func(context.Context) []probe.Spec { return []probe.Spec{webSpec(t, srv, "w")} })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,11 +161,11 @@ func TestCheckRunnerConfigValidation(t *testing.T) {
 }
 
 func TestCompare(t *testing.T) {
-	ok := checks.Result{OK: true}
-	down := checks.Result{OK: false, Class: checks.ClassUnreachable}
-	content := checks.Result{OK: false, Class: checks.ClassContent}
+	ok := probe.Result{OK: true}
+	down := probe.Result{OK: false, Class: probe.ClassUnreachable}
+	content := probe.Result{OK: false, Class: probe.ClassContent}
 	for _, c := range []struct {
-		ext, lan checks.Result
+		ext, lan probe.Result
 		want     Verdict
 	}{{ok, ok, VerdictAgree}, {down, down, VerdictServiceDown}, {down, ok, VerdictPathBroken}, {content, ok, VerdictContent}, {ok, down, VerdictInternalOnly}} {
 		if got := Compare(c.ext, c.lan); got != c.want {
