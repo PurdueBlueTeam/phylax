@@ -112,7 +112,11 @@ type planRT struct {
 
 	// probes is the plan's scorer-mimic probe grouping (Task 27); gates is the
 	// gate: auto state; busyRetries counts consecutive busy answers per node.
-	probes      *probePlan
+	probes *probePlan
+	// probeSrc is the plan before CreatePlan adds the plan-wide rollback
+	// window; it keeps that window from splitting probe groups. Nil after a
+	// restart, where the extra probes are safe.
+	probeSrc    *plan.Plan
 	gates       map[string]*gateRT
 	busyRetries map[string]int
 }
@@ -218,7 +222,9 @@ func (c *Controller) CreatePlan(ctx context.Context, def plan.Plan, by string) e
 		c.pmu.Unlock()
 		return ErrPlanExists
 	}
-	rt := &planRT{c: c, p: &p, run: run, state: PlanDraft, by: by, nodes: map[string]*nodeRT{}, hash: hash,
+	probeSrc := def
+	probeSrc.Nodes = append([]plan.Node(nil), def.Nodes...)
+	rt := &planRT{c: c, p: &p, probeSrc: &probeSrc, run: run, state: PlanDraft, by: by, nodes: map[string]*nodeRT{}, hash: hash,
 		created: c.now(), done: make(chan struct{}), gates: map[string]*gateRT{}, busyRetries: map[string]int{}}
 	for _, n := range p.Nodes {
 		rt.nodes[n.ID] = &nodeRT{}
@@ -1241,7 +1247,11 @@ func (rt *planRT) initProbesLocked() {
 		}
 		locks[n.ID] = a.Locks(params)
 	}
-	rt.probes.groups = plan.ProbeGroups(*rt.p, scored, locks)
+	src := rt.p
+	if rt.probeSrc != nil {
+		src = rt.probeSrc
+	}
+	rt.probes.groups = plan.ProbeGroups(*src, scored, locks)
 	rt.probes.st = make([]probeGroupRT, len(rt.probes.groups))
 	for i, g := range rt.probes.groups {
 		for _, id := range g.Nodes {

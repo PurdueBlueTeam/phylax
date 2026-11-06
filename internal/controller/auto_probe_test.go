@@ -102,7 +102,7 @@ func TestAutoBeforeProbeStops(t *testing.T) {
 
 // groupPlan builds five chained writes to the same path, optionally giving one
 // of them its own dead-man window.
-func groupPlan(deadman bool) plan.Plan {
+func groupPlan(policy plan.FailurePolicy, deadman bool) plan.Plan {
 	path := "/etc/ssh/phylax-probe-group"
 	nodes := make([]plan.Node, 0, 5)
 	for i := 0; i < 5; i++ {
@@ -116,10 +116,10 @@ func groupPlan(deadman bool) plan.Plan {
 		}
 		nodes = append(nodes, n)
 	}
-	return plan.Plan{ID: "probe-groups", OnFailure: plan.StopDependents, Class: plan.ClassClick, Nodes: nodes}
+	return plan.Plan{ID: "probe-groups", OnFailure: policy, Class: plan.ClassClick, Nodes: nodes}
 }
 
-func probeGroupCalls(t *testing.T, deadman bool) int32 {
+func probeGroupCalls(t *testing.T, policy plan.FailurePolicy, deadman bool) int32 {
 	t.Helper()
 	var calls atomic.Int32
 	x := newPlanCtl(t, nil, nil, Options{Probe: func(context.Context, string) error {
@@ -127,7 +127,7 @@ func probeGroupCalls(t *testing.T, deadman bool) int32 {
 		return nil
 	}})
 	_, _ = newPlanAgent(t, x, "h1")
-	p := groupPlan(deadman)
+	p := groupPlan(policy, deadman)
 	if err := x.c.CreatePlan(ctx, p, "driver"); err != nil {
 		t.Fatal(err)
 	}
@@ -146,11 +146,16 @@ func probeGroupCalls(t *testing.T, deadman bool) int32 {
 }
 
 func TestOneProbePerGroupAndPhase(t *testing.T) {
-	if n := probeGroupCalls(t, false); n != 2 {
+	if n := probeGroupCalls(t, plan.StopDependents, false); n != 2 {
 		t.Fatalf("probes %d, want 2 (one before, one after)", n)
 	}
-	if n := probeGroupCalls(t, true); n != 4 {
+	if n := probeGroupCalls(t, plan.StopDependents, true); n != 4 {
 		t.Fatalf("probes %d, want 4 (the dead-man node is its own group)", n)
+	}
+	// rollback_plan adds the plan-wide rollback window to every node; that is
+	// not a node's own dead-man window, so the group still shares one probe.
+	if n := probeGroupCalls(t, plan.RollbackPlan, false); n != 2 {
+		t.Fatalf("rollback_plan probes %d, want 2", n)
 	}
 }
 
