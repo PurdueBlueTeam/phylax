@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -266,4 +267,37 @@ func getWithHost(t *testing.T, client *http.Client, url, host string) ([]byte, i
 		t.Fatal(err)
 	}
 	return body, resp.StatusCode
+}
+
+func TestBootstrapFailureMapBounded(t *testing.T) {
+	now := time.Now()
+	f := newEnrollerWith(t, func(o *Options) { o.Now = func() time.Time { return now } })
+	key := func(i int) string {
+		return fmt.Sprintf("10.%d.%d.%d", (i/65536)%256, (i/256)%256, i%256)
+	}
+	total := maxFailAddrs + 123
+	for i := 0; i < total; i++ {
+		f.e.noteFailure(key(i))
+		now = now.Add(time.Nanosecond)
+	}
+	if got := len(f.e.fails); got != maxFailAddrs {
+		t.Fatalf("failure map holds %d addresses, want %d", got, maxFailAddrs)
+	}
+	if _, ok := f.e.fails[key(0)]; ok {
+		t.Fatalf("oldest address %s was not evicted", key(0))
+	}
+	if _, ok := f.e.fails[key(total-1)]; !ok {
+		t.Fatalf("newest address %s is missing", key(total-1))
+	}
+
+	const recent = "192.0.2.1"
+	for i := 0; i < 20; i++ {
+		f.e.noteFailure(recent)
+	}
+	if !f.e.limited(recent) {
+		t.Fatal("a recently failing address is not rate limited")
+	}
+	if got := len(f.e.fails); got != maxFailAddrs {
+		t.Fatalf("failure map grew to %d, want %d", got, maxFailAddrs)
+	}
 }
