@@ -74,7 +74,6 @@ func Summarize(recs []Record, f Filter) Summary {
 	s := Summary{CatchUpS: -1, QueryMs: map[string]Quantiles{}, ReconnectsPerAgent: map[string]uint64{}, Module: map[string]ModuleSummary{}}
 
 	var (
-		ctls       []Ctl
 		agents     []timedAgent
 		marks      []Record
 		intervalMs int64
@@ -104,7 +103,6 @@ func Summarize(recs []Record, f Filter) Summary {
 				continue
 			}
 			c := *r.Ctl
-			ctls = append(ctls, c)
 			s.Samples++
 			intervalMs += c.IntervalMS
 			for i := 0; i < NumClasses; i++ {
@@ -117,13 +115,13 @@ func Summarize(recs []Record, f Filter) Summary {
 			s.GapRecords += c.GapRecords
 			s.GapEvents += c.GapEvents
 			s.Connects += c.Connects
-			if c.CPUMs > 0 || c.IntervalMS > 0 {
+			if c.IntervalMS > 0 {
 				cpuPct = append(cpuPct, float64(c.CPUMs)/float64(c.IntervalMS)*100)
 			}
 			if c.RSSBytes > s.RSSMaxBytes {
 				s.RSSMaxBytes = c.RSSBytes
 			}
-			if len(ctls) == 1 {
+			if s.Samples == 1 {
 				s.StoreStart = c.StoreBytes
 			}
 			s.StoreEnd = c.StoreBytes
@@ -219,13 +217,15 @@ func reconnect(agents []timedAgent, marks []Record) (perAgent map[string]uint64,
 	for _, ta := range agents {
 		byHost[ta.a.Host] = append(byHost[ta.a.Host], ta)
 	}
+	for _, samples := range byHost {
+		sort.SliceStable(samples, func(i, j int) bool { return samples[i].t.Before(samples[j].t) })
+	}
 	var secs []float64
 	for _, m := range marks {
 		if m.Mark != "partition_end" {
 			continue
 		}
 		for _, samples := range byHost {
-			sort.SliceStable(samples, func(i, j int) bool { return samples[i].t.Before(samples[j].t) })
 			found := false
 			for _, ta := range samples {
 				if ta.a.ConnectedAt.After(m.T) {
@@ -240,7 +240,6 @@ func reconnect(agents []timedAgent, marks []Record) (perAgent map[string]uint64,
 		}
 	}
 	for host, samples := range byHost {
-		sort.SliceStable(samples, func(i, j int) bool { return samples[i].t.Before(samples[j].t) })
 		first, last := samples[0].a.Connects, samples[len(samples)-1].a.Connects
 		if last >= first {
 			perAgent[host] = last - first
