@@ -138,6 +138,12 @@ func TestSandboxedDecoysFromSignedConfig(t *testing.T) {
 	}()
 	var c net.Conn
 	for i := 0; i < 200 && c == nil; i++ {
+		select {
+		case err := <-done:
+			// Surface why the child stopped instead of only "never listened".
+			t.Fatalf("decoy module stopped before listening: %v", err)
+		default:
+		}
 		if cc, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil {
 			c = cc
 		} else {
