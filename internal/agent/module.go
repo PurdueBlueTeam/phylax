@@ -215,11 +215,44 @@ func (s *Supervisor) Run(ctx context.Context) {
 	s.wg.Wait()
 }
 
-// Snapshot returns every module's status.
 // Health returns a module's merged supervisor and reporter health.
 func (s *Supervisor) Health(name string) (module.Health, bool) {
-	panic("unimplemented: W1 Task 13")
+	s.mu.Lock()
+	m, ok := s.ms[name]
+	if !ok {
+		s.mu.Unlock()
+		return module.Health{}, false
+	}
+	st, mod := m.status, m.spec.Module
+	s.mu.Unlock()
+
+	h := module.Health{Usage: module.Usage{Events: st.Emitted, Dropped: st.RateDropped + st.SpoolDrops}}
+	switch st.State {
+	case StateRunning:
+		h.State = module.StateOK
+	case StateStarting:
+		h.State, h.Detail = module.StateDegraded, "starting"
+	case StateRestarting:
+		h.State = module.StateRestarting
+	case StateOverBudget:
+		h.State = module.StateOverBudget
+	case StateStopped:
+		h.State = module.StateDisabled
+	default:
+		h.State = module.StateError
+	}
+	if r, ok := mod.(HealthReporter); ok {
+		rep := r.Health()
+		if st.State != StateRestarting && st.State != StateOverBudget && rep.State != "" {
+			h.State = rep.State
+		}
+		h.Detail, h.Gaps, h.Info = rep.Detail, rep.Gaps, rep.Info
+		h.Usage.CPUMillis, h.Usage.HeldBytes, h.Usage.BytesOut = rep.Usage.CPUMillis, rep.Usage.HeldBytes, rep.Usage.BytesOut
+	}
+	return h, true
 }
+
+// Snapshot returns every module's status.
 
 func (s *Supervisor) Snapshot() map[string]ModuleStatus {
 	s.mu.Lock()

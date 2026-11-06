@@ -29,15 +29,43 @@ type Env struct {
 	PlanKey ed25519.PublicKey
 	// Health is the agent as the health module's data source.
 	Health HealthSource
+	// Name is the factory name and Consumes its manifest's kind list. The
+	// reconciler fills both for a contract module.
+	Name     string
+	Consumes []string
 
-	a *Agent
+	a           *Agent
+	hasManifest bool
 }
 
 // Subscribe returns a bounded stream of the agent's module events. With kinds,
-// only those kinds are delivered. A full channel drops events rather than
-// blocking the emitter. Call the returned function to unsubscribe.
+// only those kinds are delivered. A kind outside a contract module's
+// Manifest.Consumes is dropped from the filter. A full channel drops events
+// rather than blocking the emitter. Call the returned function to unsubscribe.
 func (e Env) Subscribe(buf int, kinds ...string) (<-chan event.Event, func()) {
-	return e.a.subscribe(buf)
+	if len(kinds) == 0 {
+		return e.a.subscribe(buf)
+	}
+	if e.hasManifest {
+		allowed := make(map[string]bool, len(e.Consumes))
+		for _, k := range e.Consumes {
+			allowed[k] = true
+		}
+		kept := make([]string, 0, len(kinds))
+		var dropped []string
+		for _, k := range kinds {
+			if allowed[k] {
+				kept = append(kept, k)
+			} else {
+				dropped = append(dropped, k)
+			}
+		}
+		if len(dropped) > 0 && e.Logger != nil {
+			e.Logger.Warn("module subscribed to kinds outside its manifest", "module", e.Name, "kinds", dropped)
+		}
+		kinds = kept
+	}
+	return e.a.subscribe(buf, kinds...)
 }
 
 // Fact returns a controller fact by id; false when never received or expired.
@@ -81,6 +109,14 @@ func RegisterFactory(f Factory) {
 	if _, dup := factories[f.Name]; dup {
 		panic(fmt.Sprintf("agent: duplicate factory %q", f.Name))
 	}
+	if f.Manifest.Name != "" {
+		if f.Manifest.Name != f.Name {
+			panic(fmt.Sprintf("agent: factory %q manifest names %q", f.Name, f.Manifest.Name))
+		}
+		if err := f.Manifest.Validate(); err != nil {
+			panic(fmt.Sprintf("agent: factory %q: %v", f.Name, err))
+		}
+	}
 	factories[f.Name] = f
 }
 
@@ -110,14 +146,25 @@ func registered(extra []Factory) []Factory {
 
 type tap struct {
 	ch      chan event.Event
+	kinds   map[string]bool // nil: every kind
 	dropped uint64
 }
 
-func (a *Agent) subscribe(buf int) (<-chan event.Event, func()) {
+func (t *tap) wants(e event.Event) bool {
+	return t.kinds == nil || t.kinds[e.Kind]
+}
+
+func (a *Agent) subscribe(buf int, kinds ...string) (<-chan event.Event, func()) {
 	if buf <= 0 {
 		buf = 1024
 	}
 	t := &tap{ch: make(chan event.Event, buf)}
+	if kinds != nil {
+		t.kinds = make(map[string]bool, len(kinds))
+		for _, k := range kinds {
+			t.kinds[k] = true
+		}
+	}
 	a.tapMu.Lock()
 	if a.subWait > 0 {
 		a.subWait--
@@ -129,7 +176,9 @@ func (a *Agent) subscribe(buf int) (<-chan event.Event, func()) {
 		h = h[len(h)-buf:]
 	}
 	for _, e := range h {
-		t.ch <- e
+		if t.wants(e) {
+			t.ch <- e
+		}
 	}
 	a.taps = append(a.taps, t)
 	a.settleLocked()
@@ -234,6 +283,9 @@ func (a *Agent) publish(e event.Event) {
 		a.held = append(a.held, e)
 	}
 	for _, t := range a.taps {
+		if !t.wants(e) {
+			continue
+		}
 		select {
 		case t.ch <- e:
 		default:

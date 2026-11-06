@@ -164,11 +164,22 @@ func (a *Agent) moduleEnv() Env {
 	return Env{Host: a.bundle.Host, StateDir: a.cfg.Layout.Root, Logger: a.log, PlanKey: a.planKey, Health: a, a: a}
 }
 
+// factoryEnv is the module environment for one factory, carrying its name and
+// manifest Consumes so Env.Subscribe can enforce them.
+func (a *Agent) factoryEnv(f Factory) Env {
+	env := a.moduleEnv()
+	env.Name = f.Name
+	if f.Manifest.Name != "" {
+		env.hasManifest = true
+		env.Consumes = append([]string(nil), f.Manifest.Consumes...)
+	}
+	return env
+}
+
 // reconcile starts, stops and reconfigures modules so that they match cfg.
 func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 	a.holdBegin()
 	defer a.holdEnd()
-	env := a.moduleEnv()
 	res := map[string]string{}
 	degraded := false
 	for _, f := range registered(a.cfg.Factories) {
@@ -194,7 +205,7 @@ func (a *Agent) reconcile(ctx context.Context, cfg *plan.AgentConfig) {
 			res[f.Name] = "running (static)"
 			continue
 		}
-		spec, err := f.Build(env, cfg)
+		spec, err := f.Build(a.factoryEnv(f), cfg)
 		switch {
 		case errors.Is(err, ErrUnavailable):
 			a.sup.Remove(f.Name)

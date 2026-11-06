@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
@@ -19,7 +20,6 @@ func (hrMod) Health() module.Health {
 }
 
 func TestSupervisorHealthMergesReporter(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 13")
 	s := NewSupervisor(SupervisorOptions{Emit: func(event.Event) error { return nil }})
 	_ = s.Add(ModuleSpec{Module: hrMod{}})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -39,7 +39,6 @@ func TestSupervisorHealthMergesReporter(t *testing.T) {
 }
 
 func TestRegisterFactoryValidatesManifest(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 13")
 	defer func() {
 		if recover() == nil {
 			t.Fatal("name mismatch accepted")
@@ -50,9 +49,42 @@ func TestRegisterFactoryValidatesManifest(t *testing.T) {
 }
 
 func TestSubscribeKindFilter(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 13")
-	// build a test agent (testutil_test.go); env := agent env for a factory whose Manifest.Consumes = ["k1"]
-	// ch, stop := env.Subscribe(8, "k1", "k2")
-	// publish events of kind k1, k2, k3
-	// want: ch yields exactly one event, kind k1
+	ctl := newFakeController(t, "h", "tok", 0)
+	l := Layout{Root: t.TempDir()}
+	writeBundle(t, l, ctl, "tok")
+	envc := make(chan Env, 1)
+	f := Factory{Name: "sub", Manifest: module.Manifest{Name: "sub", Sides: []module.Side{module.SideAgent},
+		Privilege: "user", Consumes: []string{"k1"}},
+		Section: func(*plan.AgentConfig) (string, bool) { return "v1", true },
+		Build: func(env Env, _ *plan.AgentConfig) (ModuleSpec, error) {
+			envc <- env
+			return ModuleSpec{Module: funcModule{"sub", func(ctx context.Context, _ Emit) error { <-ctx.Done(); return nil }}}, nil
+		}}
+	r := startAgent(t, Config{Layout: l, HeartbeatInterval: 20 * time.Millisecond, Factories: []Factory{f}})
+	eventually(t, 5*time.Second, "connected", func() bool { return ctl.send(&link.Ack{}) == nil })
+	r.a.reconcile(context.Background(), &plan.AgentConfig{Host: "h"})
+	var env Env
+	select {
+	case env = <-envc:
+	case <-time.After(2 * time.Second):
+		t.Fatal("factory was not built")
+	}
+	ch, stop := env.Subscribe(8, "k1", "k2")
+	defer stop()
+	r.a.publish(event.Event{Kind: "k1"})
+	r.a.publish(event.Event{Kind: "k2"})
+	r.a.publish(event.Event{Kind: "k3"})
+	select {
+	case e := <-ch:
+		if e.Kind != "k1" {
+			t.Fatalf("got %s, want k1", e.Kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no k1 event")
+	}
+	select {
+	case e := <-ch:
+		t.Fatalf("unexpected %s", e.Kind)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
