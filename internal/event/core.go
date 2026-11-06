@@ -183,3 +183,39 @@ type PlanAutoHalted struct {
 	Host      string `json:"host"`
 	Rollbacks int    `json:"rollbacks,omitempty"`
 }
+
+// The core kinds: what the agent, the spool and the controller emit about
+// themselves rather than about the host. A module that emits core kinds is a
+// core module (health, exec). Alert is a rule's verdict for the common kinds;
+// for these the design's kind table marks the failures a human must see.
+func init() {
+	Declare(Type{Kind: "agent.start", Schema: 1, Priority: PriorityHigh, Fields: AgentStart{}})
+	Declare(Type{Kind: "agent.health", Schema: 1, Priority: PriorityNormal, Fields: AgentHealth{}})
+	Declare(Type{Kind: "agent.step", Schema: 1, Priority: PriorityHigh, Fields: AgentStep{}})
+	Declare(Type{Kind: "agent.step_result", Schema: 1, Priority: PriorityHigh, Fields: AgentStepResult{}})
+	Declare(Type{Kind: "agent.step_refused", Schema: 1, Priority: PriorityHigh, Fields: AgentStepRefused{}})
+	Declare(Type{Kind: "evidence.blob", Schema: 1, Priority: PriorityHigh, Fields: EvidenceBlob{}})
+	Declare(Type{Kind: "agent.config_applied", Schema: 1, Priority: PriorityHigh, Fields: AgentConfigApplied{}})
+	Declare(Type{Kind: "agent.config_rejected", Schema: 1, Priority: PriorityHigh, Fields: AgentConfigRejected{}})
+	Declare(Type{Kind: "agent.control_refused", Schema: 1, Priority: PriorityHigh, Fields: AgentControlRefused{}})
+	Declare(Type{Kind: "agent.module_crash", Schema: 1, Priority: PriorityHigh, Fields: AgentModuleCrash{}})
+	Declare(Type{Kind: "controller.fact", Schema: 1, Priority: PriorityHigh, Fields: ControllerFact{}})
+	Declare(Type{Kind: "agent.deadman_fired", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: AgentDeadmanFired{}})
+	Declare(Type{Kind: "agent.deadman_recovered", Schema: 1, Priority: PriorityHigh, Fields: AgentDeadmanRecovered{}})
+	Declare(Type{Kind: "agent.deadman_recovery_error", Schema: 1, Priority: PriorityHigh, Fields: AgentDeadmanRecoveryError{}})
+	Declare(Type{Kind: "agent.enrolled", Schema: 1, Priority: PriorityHigh, Fields: AgentEnrolled{}})
+	Declare(Type{Kind: "agent.reenrolled", Schema: 1, Priority: PriorityHigh, Fields: AgentReenrolled{}})
+	Declare(Type{Kind: "agent.silent", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: AgentSilent{}})
+	Declare(Type{Kind: "agent.resumed", Schema: 1, Priority: PriorityHigh, Fields: AgentResumed{}})
+	Declare(Type{Kind: "spool.gap", Schema: 1, Priority: PriorityHigh, Fields: SpoolGap{}})
+	Declare(Type{Kind: "enroll.refused", Schema: 1, Priority: PriorityHigh, Fields: EnrollRefused{}})
+	Declare(Type{Kind: "enroll.key_mismatch", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyMismatch{}})
+	Declare(Type{Kind: "enroll.key_reuse", Schema: 1, Priority: PriorityHigh, Alert: true, Fields: EnrollKeyReuse{}})
+	Declare(Type{Kind: "plan.step_timeout", Schema: 1, Priority: PriorityHigh, Fields: PlanStepTimeout{}})
+	Declare(Type{Kind: "plan.bad_result", Schema: 1, Priority: PriorityHigh, Fields: PlanBadResult{}})
+	Declare(Type{Kind: "plan.deadman_fired", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanDeadmanFired{}})
+	Declare(Type{Kind: "plan.rollback_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanRollbackFailed{}})
+	Declare(Type{Kind: "plan.restore_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanRestoreFailed{}})
+	Declare(Type{Kind: "plan.confirm_failed", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanConfirmFailed{}})
+	Declare(Type{Kind: "plan.auto_halted", Schema: 1, Priority: PriorityCritical, Alert: true, Fields: PlanAutoHalted{}})
+}

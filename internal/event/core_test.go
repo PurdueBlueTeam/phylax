@@ -7,7 +7,6 @@ var coreAlert = map[string]bool{"agent.deadman_fired": true, "agent.silent": tru
 	"plan.confirm_failed": true, "plan.auto_halted": true}
 
 func TestCoreKindsDeclared(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 5")
 	kinds := []string{"agent.start", "agent.health", "agent.step", "agent.step_result", "agent.step_refused", "evidence.blob",
 		"agent.config_applied", "agent.config_rejected", "agent.control_refused", "agent.module_crash", "controller.fact",
 		"agent.deadman_fired", "agent.deadman_recovered", "agent.deadman_recovery_error", "agent.enrolled", "agent.reenrolled",
@@ -26,7 +25,6 @@ func TestCoreKindsDeclared(t *testing.T) {
 }
 
 func TestSpoolGapShapeValidates(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 5")
 	// the spool builds gap records as a map; it must decode against SpoolGap
 	e := Event{Kind: "spool.gap", Schema: 1, Fields: map[string]any{"from": uint64(3), "to": uint64(9), "count": uint64(7), "class": "bulk"}}
 	if err := Validate(e); err != nil {
