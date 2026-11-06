@@ -54,9 +54,10 @@ func (s *TagScope) Release(planTag string) {
 }
 
 // Tag returns the plan tag for an event, or "" when the event is not our own
-// activity. A process_start whose parent is registered is registered too (the
-// descent) and tagged; any other event is tagged when its own pid is
-// registered.
+// activity. A process_start whose parent is registered (and whose parent start
+// proves the same process) is tagged, and registered too when its own start
+// time is known; any other event is tagged when its own pid and start time
+// match a registration.
 func (s *TagScope) Tag(kind string, fields map[string]any) string {
 	pid := intField(fields, "pid")
 	start := startField(fields)
@@ -65,7 +66,10 @@ func (s *TagScope) Tag(kind string, fields map[string]any) string {
 	if kind == event.KindProcessStart {
 		ppid, pstart := parentOf(fields)
 		if p, ok := s.procs[ppid]; ok && sameProc(p, pstart) {
-			if pid > 0 {
+			// Without the child's own start time the descent is only known for
+			// this one event; registering it would let a later pid reuse
+			// inherit the tag, so do not register it.
+			if pid > 0 && start != 0 {
 				s.procs[pid] = taggedProc{start: start, tag: p.tag}
 			}
 			return p.tag
@@ -77,13 +81,17 @@ func (s *TagScope) Tag(kind string, fields map[string]any) string {
 	return ""
 }
 
-// sameProc matches a pid's registration against an event's start time. An
-// event or registration without a start time matches on the pid alone.
+// sameProc matches a pid's registration against an event's start time. A
+// registration without a start time matches on the pid alone; otherwise the
+// event must carry the same start time, so a reused pid is never tagged.
 //
-// shortcut: a reused pid whose start time the event does not carry is still
-// tagged, upgrade when every sensor emits start_ticks (audit and winevt do).
+// shortcut: an event whose sensor does not report start_ticks is untagged,
+// upgrade when every sensor emits start_ticks (audit and winevt do).
 func sameProc(p taggedProc, start uint64) bool {
-	return start == 0 || p.start == 0 || start == p.start
+	if p.start == 0 {
+		return true
+	}
+	return start != 0 && start == p.start
 }
 
 // parentOf returns the parent pid and its start time when the event carries

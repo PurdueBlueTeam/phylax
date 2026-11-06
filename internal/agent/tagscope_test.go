@@ -16,14 +16,70 @@ import (
 func TestTagScopeChildAndDescendants(t *testing.T) {
 	s := NewTagScope()
 	s.Register("plan:p1", 100, 5000)
-	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "pid_start": uint64(5001)}); got != "plan:p1" {
+	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)}); got != "plan:p1" {
 		t.Fatalf("child: %q", got)
 	}
-	if got := s.Tag("process_start", map[string]any{"pid": 102, "ppid": 101}); got != "plan:p1" {
+	if got := s.Tag("process_start", map[string]any{"pid": 102, "ppid": 101, "ppid_start": uint64(5001), "start_ticks": uint64(5002)}); got != "plan:p1" {
 		t.Fatalf("grandchild: %q", got)
 	}
-	if got := s.Tag("file_change", map[string]any{"pid": 102}); got != "plan:p1" {
+	if got := s.Tag("file_change", map[string]any{"pid": 102, "pid_start": uint64(5002)}); got != "plan:p1" {
 		t.Fatalf("file_change from a descendant: %q", got)
+	}
+}
+
+// TestTagScopePidReuseIsNotTagged is the fail-closed side of R6: when the
+// registration has a start time, an event that cannot prove the same process
+// (missing or different start) is not tagged.
+func TestTagScopePidReuseIsNotTagged(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 5000)
+	for _, f := range []map[string]any{
+		{"pid": 100},
+		{"pid": 100, "pid_start": uint64(9999)},
+	} {
+		if got := s.Tag("file_change", f); got != "" {
+			t.Errorf("%v tagged %q", f, got)
+		}
+	}
+	// A process_start whose parent event carries no start cannot prove the
+	// descent, so neither it nor its later events are tagged.
+	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100}); got != "" {
+		t.Fatalf("unproven child: %q", got)
+	}
+	if got := s.Tag("file_change", map[string]any{"pid": 101}); got != "" {
+		t.Fatalf("event from an unregistered child: %q", got)
+	}
+	// The step's own process, with its matching start, is still tagged.
+	if got := s.Tag("file_change", map[string]any{"pid": 100, "pid_start": uint64(5000)}); got != "plan:p1" {
+		t.Fatalf("the step's own process: %q", got)
+	}
+}
+
+// A registration without a start time is the only case where a pid-only event
+// matches: the platform could not read the start time when the step started.
+func TestTagScopePidOnlyRegistration(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p0", 200, 0)
+	for _, f := range []map[string]any{
+		{"pid": 200},
+		{"pid": 200, "pid_start": uint64(7)},
+	} {
+		if got := s.Tag("file_change", f); got != "plan:p0" {
+			t.Errorf("%v: %q", f, got)
+		}
+	}
+}
+
+// A descendant whose own start time is unknown is tagged on its process_start
+// event but not registered, so its later events cannot be mistaken for ours.
+func TestTagScopeUnstartedDescendantNotRegistered(t *testing.T) {
+	s := NewTagScope()
+	s.Register("plan:p1", 100, 0)
+	if got := s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100}); got != "plan:p1" {
+		t.Fatalf("the process_start itself: %q", got)
+	}
+	if got := s.Tag("file_change", map[string]any{"pid": 101}); got != "" {
+		t.Fatalf("an unstarted descendant stayed registered: %q", got)
 	}
 }
 
@@ -40,11 +96,34 @@ func TestTagScopeIgnoresOtherProcesses(t *testing.T) {
 func TestTagScopeRelease(t *testing.T) {
 	s := NewTagScope()
 	s.Register("plan:p1", 100, 5000)
-	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100})
+	s.Tag("process_start", map[string]any{"pid": 101, "ppid": 100, "ppid_start": uint64(5000), "start_ticks": uint64(5001)})
 	s.Release("plan:p1")
-	if s.Tag("file_change", map[string]any{"pid": 101}) != "" {
+	if s.Tag("file_change", map[string]any{"pid": 101, "pid_start": uint64(5001)}) != "" {
 		t.Fatal("descendant still tagged after the step ended")
 	}
+}
+
+// procStartTicks reads a Linux process's start time, so a test event can carry
+// the same start time the executor registered for the step's child.
+func procStartTicks(t *testing.T, pid int) uint64 {
+	t.Helper()
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.LastIndexByte(string(b), ')')
+	if i < 0 {
+		t.Fatalf("bad /proc/%d/stat", pid)
+	}
+	f := strings.Fields(string(b[i+2:]))
+	if len(f) < 20 {
+		t.Fatalf("short /proc/%d/stat", pid)
+	}
+	v, err := strconv.ParseUint(f[19], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
 }
 
 // eventPID reads a process event's pid as the link receiver decoded it (a
@@ -121,13 +200,14 @@ func TestEmitStampsOnlyTheStepTree(t *testing.T) {
 		return err == nil && child > 0
 	})
 	unrelated := child + 1000000
-	emit := func(pid int) {
-		if err := r.a.emit(core(event.KindProcessStart, event.ProcessStart{PID: pid, PPID: 1, Exe: "/bin/sh", Source: "audit"})); err != nil {
+	childStart := procStartTicks(t, child)
+	emit := func(pid int, start uint64) {
+		if err := r.a.emit(core(event.KindProcessStart, event.ProcessStart{PID: pid, PPID: 1, Exe: "/bin/sh", Source: "audit", StartTicks: start})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	emit(child)
-	emit(unrelated)
+	emit(child, childStart)
+	emit(unrelated, 1)
 
 	wantTag := "plan:" + planID
 	eventually(t, 10*time.Second, "the step's child to reach the controller", func() bool {
@@ -146,7 +226,7 @@ func TestEmitStampsOnlyTheStepTree(t *testing.T) {
 	eventually(t, 10*time.Second, "the step's tag scope to be released", func() bool {
 		return r.a.tags.Tag(event.KindProcessStart, map[string]any{"pid": child}) == ""
 	})
-	emit(child)
+	emit(child, childStart)
 	eventually(t, 10*time.Second, "the descendant after the step ended", func() bool {
 		tags := tagsForPID(ctl, child)
 		return len(tags) == 2 && tags[1] == ""
