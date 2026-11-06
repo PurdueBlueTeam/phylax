@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -29,30 +30,73 @@ type Hist [HistBuckets]uint64
 
 // Observe records d in the bucket of its millisecond value.
 func (h *Hist) Observe(d time.Duration) {
-	panic("unimplemented: W14 Task 2")
+	h[bucketIndex(d)]++
+}
+
+// bucketIndex is the first bucket whose bound is at least d's millisecond
+// value, else the overflow bucket. A negative duration lands in bucket 0.
+func bucketIndex(d time.Duration) int {
+	ms := float64(d) / float64(time.Millisecond)
+	for i, ub := range HistBoundsMs {
+		if ms <= ub {
+			return i
+		}
+	}
+	return HistBuckets - 1
 }
 
 // Count is the number of observations in the histogram.
 func (h Hist) Count() uint64 {
-	panic("unimplemented: W14 Task 2")
+	var n uint64
+	for _, c := range h {
+		n += c
+	}
+	return n
 }
 
 // Add adds o to h bucket by bucket.
 func (h *Hist) Add(o Hist) {
-	panic("unimplemented: W14 Task 2")
+	for i := range h {
+		h[i] += o[i]
+	}
 }
 
 // Sub returns h - o, saturating at 0 per bucket, so a counter reset cannot
 // produce a huge delta.
 func (h Hist) Sub(o Hist) Hist {
-	panic("unimplemented: W14 Task 2")
+	var d Hist
+	for i := range h {
+		if h[i] > o[i] {
+			d[i] = h[i] - o[i]
+		}
+	}
+	return d
 }
 
 // QuantileMs is the upper bound of the bucket holding the q-quantile (0 < q <=
 // 1): the nearest-rank observation. It is math.Inf(1) for the overflow bucket
 // and 0 for an empty histogram.
 func (h Hist) QuantileMs(q float64) float64 {
-	panic("unimplemented: W14 Task 2")
+	n := h.Count()
+	if n == 0 || q <= 0 {
+		return 0
+	}
+	if q > 1 {
+		q = 1
+	}
+	rank := uint64(math.Ceil(q * float64(n)))
+	var cum uint64
+	for i, c := range h {
+		cum += c
+		if cum < rank {
+			continue
+		}
+		if i == HistBuckets-1 {
+			return math.Inf(1)
+		}
+		return HistBoundsMs[i]
+	}
+	return math.Inf(1) // rank above Count: unreachable while Count matches
 }
 
 // AtomicHist is a Hist that any goroutine may observe without a lock; Snapshot
@@ -63,10 +107,14 @@ type AtomicHist struct{ b [HistBuckets]atomic.Uint64 }
 
 // Observe records d in the bucket of its millisecond value.
 func (h *AtomicHist) Observe(d time.Duration) {
-	panic("unimplemented: W14 Task 2")
+	h.b[bucketIndex(d)].Add(1)
 }
 
 // Snapshot returns the current bucket counts.
 func (h *AtomicHist) Snapshot() Hist {
-	panic("unimplemented: W14 Task 2")
+	var out Hist
+	for i := range h.b {
+		out[i] = h.b[i].Load()
+	}
+	return out
 }

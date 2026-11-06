@@ -8,7 +8,6 @@ import (
 )
 
 func TestHistBuckets(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 2")
 	var h Hist
 	h.Observe(500 * time.Microsecond)          // 0.5 ms -> bucket 0 (<= 1)
 	h.Observe(10 * time.Millisecond)           // bucket 3 (<= 10)
@@ -20,7 +19,6 @@ func TestHistBuckets(t *testing.T) {
 }
 
 func TestHistQuantile(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 2")
 	var h Hist
 	for i := 0; i < 99; i++ {
 		h.Observe(8 * time.Millisecond) // bucket <= 10
@@ -46,7 +44,6 @@ func TestHistQuantile(t *testing.T) {
 }
 
 func TestHistSubAdd(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 2")
 	a, b := Hist{3, 2}, Hist{1, 5}
 	d := a.Sub(b)
 	if d[0] != 2 || d[1] != 0 {
@@ -59,7 +56,6 @@ func TestHistSubAdd(t *testing.T) {
 }
 
 func TestAtomicHistConcurrent(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 2")
 	var h AtomicHist
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
