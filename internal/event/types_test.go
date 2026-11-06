@@ -20,7 +20,6 @@ func init() {
 }
 
 func TestNewSetsTypeDefaults(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	e, err := New("ttest.one", tPayload{A: "x", N: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -34,21 +33,18 @@ func TestNewSetsTypeDefaults(t *testing.T) {
 }
 
 func TestNewUndeclared(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	if _, err := New("ttest.none", tPayload{}); !errors.Is(err, ErrUndeclared) {
 		t.Fatalf("want ErrUndeclared, got %v", err)
 	}
 }
 
 func TestNewWrongPayloadType(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	if _, err := New("ttest.two", struct{ B int }{1}); !errors.Is(err, ErrKindMismatch) {
 		t.Fatalf("want ErrKindMismatch, got %v", err)
 	}
 }
 
 func TestDecodeStrict(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	e, _ := New("ttest.one", tPayload{A: "x", N: 3})
 	got, err := Decode[tPayload](e, "ttest.one")
 	if err != nil || got != (tPayload{A: "x", N: 3}) {
@@ -70,7 +66,6 @@ func TestDecodeStrict(t *testing.T) {
 }
 
 func TestDecodeIgnoresXPrefix(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	e, _ := New("ttest.one", tPayload{A: "x"})
 	e.Fields["x_serial"] = "7"
 	if _, err := Decode[tPayload](e, "ttest.one"); err != nil {
@@ -79,7 +74,6 @@ func TestDecodeIgnoresXPrefix(t *testing.T) {
 }
 
 func TestDeclareDuplicatePanics(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	defer func() {
 		if recover() == nil {
 			t.Fatal("no panic")
@@ -89,7 +83,6 @@ func TestDeclareDuplicatePanics(t *testing.T) {
 }
 
 func TestDeclaredSortedAndLookup(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	ts := Declared()
 	if !sort.SliceIsSorted(ts, func(i, j int) bool { return ts[i].Kind < ts[j].Kind }) {
 		t.Fatal("not sorted")
@@ -100,7 +93,6 @@ func TestDeclaredSortedAndLookup(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	e, _ := New("ttest.one", tPayload{A: "x"})
 	if err := Validate(e); err != nil {
 		t.Fatal(err)
@@ -115,7 +107,6 @@ func TestValidate(t *testing.T) {
 }
 
 func TestNewMatchesStoreRoundTrip(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 3")
 	e, _ := New("ttest.one", tPayload{A: "x", N: 3})
 	raw, _ := json.Marshal(e.Fields)
 	dec := json.NewDecoder(bytes.NewReader(raw))
