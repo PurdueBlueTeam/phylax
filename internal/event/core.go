@@ -150,11 +150,12 @@ const (
 	ReasonStepTimeout    = "step_timeout"
 	ReasonBadResult      = "bad_result"
 
-	ReasonRefused      = "refused"
-	ReasonHashMismatch = "hash_mismatch"
-	ReasonNoShow       = "no_show"
-	ReasonKeyMismatch  = "key_mismatch"
-	ReasonKeyReuse     = "key_reuse"
+	ReasonRefused           = "refused"
+	ReasonHashMismatch      = "hash_mismatch"
+	ReasonNoShow            = "no_show"
+	ReasonKeyMismatch       = "key_mismatch"
+	ReasonKeyReuse          = "key_reuse"
+	ReasonSSHHostkeyChanged = "ssh_hostkey_changed"
 )
 
 // PlanFailed is the one failure kind of a plan node or an automatic action
@@ -175,8 +176,9 @@ type PlanFailed struct {
 }
 
 // EnrollAlert is the one enrollment-alert kind (design: Event kinds). Reason
-// is refused, hash_mismatch, no_show, key_mismatch or key_reuse; the served
-// and reported hashes belong to hash_mismatch, the window to no_show.
+// is refused, hash_mismatch, no_show, key_mismatch, key_reuse or
+// ssh_hostkey_changed; the served and reported hashes belong to hash_mismatch,
+// the window to no_show, and the push refusal to ssh_hostkey_changed.
 type EnrollAlert struct {
 	Reason    string `json:"reason"`
 	Host      string `json:"host"`

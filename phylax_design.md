@@ -443,7 +443,7 @@ One table lists every event kind, who emits it and who consumes it. It is the si
 | `agent.silent` | core | 1 | yes | controller (link monitor) | `teamfeed`, `notify` |
 | `agent.resumed` | core | 1 | - | controller (link monitor) | none (stored, shown in the UI) |
 | `spool.gap` | core | 1 | - | agent spool (a shed run); controller store (reasons `controller_quota`, `controller_restored`) | `traceback` |
-| `enroll.alert` | core | 1 | yes | controller (enrollment; `reason` is `refused`, `hash_mismatch`, `no_show`, `key_mismatch` or `key_reuse`; critical for `hash_mismatch`, high for the others) | `notify` |
+| `enroll.alert` | core | 1 | yes | controller (enrollment; `reason` is `refused`, `hash_mismatch`, `no_show`, `key_mismatch`, `key_reuse` or `ssh_hostkey_changed` (the SSH push refused a changed host key); critical for `hash_mismatch`, high for the others) | `notify` |
 | `controller.locked` | core | 1 | yes | controller (restart safety; critical while plan signing is locked after a restart) | `notify` |
 | `store.quota` | core | 1 | yes | controller (store; high when a class starts being refused, critical when the high class is refused) | `notify` |
 | `audit.module_load` | module | 1 | - | `audit` | `detect` |

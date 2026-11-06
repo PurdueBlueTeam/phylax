@@ -87,7 +87,7 @@ func TestSSHPushHostKeyChanged(t *testing.T) {
 	if !errors.As(err, &pe) || pe.Class != ClassHostKey {
 		t.Fatalf("err = %v, want class %s", err, ClassHostKey)
 	}
-	if len(alerts) != 1 || alerts[0] != "h1 key_mismatch" {
-		t.Fatalf("alerts = %v, want one key_mismatch for h1", alerts)
+	if len(alerts) != 1 || alerts[0] != "h1 ssh_hostkey_changed" {
+		t.Fatalf("alerts = %v, want one ssh_hostkey_changed for h1", alerts)
 	}
 }

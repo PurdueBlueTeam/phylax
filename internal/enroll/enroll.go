@@ -99,7 +99,7 @@ type Result struct {
 }
 
 // Authorize decides whether pin may act as h.Host. Refusals call Options.Alert
-// with the enroll.alert reason (refused, key_mismatch or key_reuse).
+// with the enroll.alert reason (refused, key_mismatch, key_reuse or ssh_hostkey_changed).
 func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (Result, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

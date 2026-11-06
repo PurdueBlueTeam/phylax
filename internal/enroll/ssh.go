@@ -92,7 +92,7 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		case errors.Is(err, ErrHostKeyChanged):
 			// Refused hard: a changed key may be a man in the middle.
 			if e.opt.Alert != nil {
-				e.opt.Alert(t.Host, event.ReasonKeyMismatch, err.Error())
+				e.opt.Alert(t.Host, event.ReasonSSHHostkeyChanged, err.Error())
 			}
 			return fail(ClassHostKey, err.Error())
 		case ctx.Err() != nil:
