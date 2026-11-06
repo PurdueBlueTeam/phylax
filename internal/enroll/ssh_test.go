@@ -19,6 +19,7 @@ import (
 	"time"
 
 	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 	"golang.org/x/crypto/ssh"
 )
@@ -45,6 +46,7 @@ type fakeSSH struct {
 	installE string
 	enforce  string
 	onInstal func()
+	rmExit   int // exit status of the cleanup rm -rf
 
 	logins   int
 	fails    int
@@ -199,6 +201,11 @@ func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
 		}
 		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(code)}))
 		return
+	case strings.HasPrefix(cmd, "rm -rf "):
+		code := s.rmExit
+		s.mu.Unlock()
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(code)}))
+		return
 	default:
 		s.mu.Unlock()
 		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
@@ -329,6 +336,35 @@ func TestSSHPushHashMismatchExecutesNothing(t *testing.T) {
 	for _, c := range srv.commands() {
 		if strings.Contains(c.cmd, "agent install") {
 			t.Fatalf("a corrupted binary was installed: %q", c.cmd)
+		}
+	}
+}
+
+func TestSSHPushFailedInstallRemovesDir(t *testing.T) {
+	for _, tc := range []struct {
+		rmExit int
+		want   string
+	}{{0, " removed"}, {1, " NOT removed"}} {
+		f := newEnroller(t)
+		srv := fakeSSHDefaults()
+		srv.install, srv.installE, srv.rmExit = 1, "boom\n", tc.rmExit
+		addr := startFakeSSH(t, srv)
+		secret := []byte("0123456789abcdef")
+		p := &SSHPusher{Binary: []byte("bin"), Controller: "10.0.0.5:7443",
+			NameSecret: secret, Timeout: 5 * time.Second}
+		tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
+		err := p.Push(context.Background(), f.e, tgt)
+		var pe *PushError
+		if !errors.As(err, &pe) || pe.Class != ClassInstall {
+			t.Fatalf("err = %v, want class %s", err, ClassInstall)
+		}
+		dir := "/opt/" + svcinstall.DeriveNames(secret).Dir
+		cmds := srv.commands()
+		if last := cmds[len(cmds)-1].cmd; last != "rm -rf '"+dir+"'" {
+			t.Fatalf("last command = %q, want the install dir removed", last)
+		}
+		if !strings.Contains(pe.Detail, "install dir "+dir+tc.want) {
+			t.Errorf("rm exit %d: detail = %q, want %q", tc.rmExit, pe.Detail, tc.want)
 		}
 	}
 }

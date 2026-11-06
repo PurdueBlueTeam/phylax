@@ -138,17 +138,29 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 	if _, errOut, code, err = runSSH(ctx, client, "mkdir -p '"+dir+"' '"+state+"'", nil); err != nil || code != 0 {
 		return fail(ClassNoShell, "cannot create the install directory: "+strings.TrimSpace(errOut))
 	}
+	// From here a failure removes the install dir (best effort, on its own
+	// short deadline since ctx may be the reason for the failure) so a retry
+	// starts clean, and the detail says whether that worked.
+	failClean := func(class Class, detail string) error {
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+		_, rmErr, rmCode, err := runSSH(rctx, client, "rm -rf '"+dir+"'", nil)
+		if err != nil || rmCode != 0 {
+			return fail(class, fmt.Sprintf("%s; install dir %s NOT removed: %v %s", detail, dir, err, strings.TrimSpace(rmErr)))
+		}
+		return fail(class, detail+"; install dir "+dir+" removed")
+	}
 	out, errOut, code, err = runSSH(ctx, client, "df -Pk '"+dir+"'", nil)
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "df")
+		return failClean(ClassTimeout, "df")
 	}
 	if err != nil || code != 0 {
-		return fail(ClassNoSpace, "df: "+strings.TrimSpace(errOut))
+		return failClean(ClassNoSpace, "df: "+strings.TrimSpace(errOut))
 	}
 	avail, ok := dfAvailableKiB(out)
 	need := int64(len(p.Binary))*2 + 16<<20
 	if !ok || avail*1024 < need {
-		return fail(ClassNoSpace, fmt.Sprintf("%d KiB available, %d KiB needed", avail, need>>10))
+		return failClean(ClassNoSpace, fmt.Sprintf("%d KiB available, %d KiB needed", avail, need>>10))
 	}
 
 	// Only now, after the hostname and space checks, does a token exist.
@@ -164,60 +176,60 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		dir, names.Binary)
 	out, errOut, code, err = runSSH(ctx, client, binCmd, p.Binary)
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "binary upload")
+		return failClean(ClassTimeout, "binary upload")
 	}
 	if err != nil || code != 0 {
-		return fail(ClassInstall, "binary upload: "+strings.TrimSpace(out+errOut))
+		return failClean(ClassInstall, "binary upload: "+strings.TrimSpace(out+errOut))
 	}
 	// Verify the bytes that reached the host before anything executes there.
 	wantSum := sha256.Sum256(p.Binary)
 	out, errOut, code, err = runSSH(ctx, client, "sha256sum '"+dir+"/"+names.Binary+"'", nil)
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "remote hash")
+		return failClean(ClassTimeout, "remote hash")
 	}
 	got := ""
 	if f := strings.Fields(out); len(f) > 0 {
 		got = f[0]
 	}
 	if err != nil || code != 0 {
-		return fail(ClassHashMismatch, "cannot hash the uploaded binary: "+strings.TrimSpace(errOut))
+		return failClean(ClassHashMismatch, "cannot hash the uploaded binary: "+strings.TrimSpace(errOut))
 	}
 	if want := hex.EncodeToString(wantSum[:]); !strings.EqualFold(got, want) {
-		return fail(ClassHashMismatch, fmt.Sprintf("local %s, remote %s", want, got))
+		return failClean(ClassHashMismatch, fmt.Sprintf("local %s, remote %s", want, got))
 	}
 
 	bootCmd := fmt.Sprintf("base64 -d > '%[1]s/boot.json.tmp' && chmod 600 '%[1]s/boot.json.tmp' && mv '%[1]s/boot.json.tmp' '%[1]s/boot.json'", state)
 	out, errOut, code, err = runSSH(ctx, client, bootCmd, boot)
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "bundle upload")
+		return failClean(ClassTimeout, "bundle upload")
 	}
 	if err != nil || code != 0 {
-		return fail(ClassInstall, "bundle upload: "+strings.TrimSpace(out+errOut))
+		return failClean(ClassInstall, "bundle upload: "+strings.TrimSpace(out+errOut))
 	}
 
 	secretHex := hex.EncodeToString(p.NameSecret)
 	secretCmd := fmt.Sprintf("base64 -d > '%[1]s/name.key.tmp' && chmod 600 '%[1]s/name.key.tmp' && mv '%[1]s/name.key.tmp' '%[1]s/name.key'", state)
 	out, errOut, code, err = runSSH(ctx, client, secretCmd, []byte(secretHex))
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "secret upload")
+		return failClean(ClassTimeout, "secret upload")
 	}
 	if err != nil || code != 0 {
-		return fail(ClassInstall, "secret upload: "+strings.TrimSpace(out+errOut))
+		return failClean(ClassInstall, "secret upload: "+strings.TrimSpace(out+errOut))
 	}
 
 	install := fmt.Sprintf("'%s/%s' agent install --bootstrap '%s/boot.json' --secret-file '%s/name.key'",
 		dir, names.Binary, state, state)
 	out, errOut, code, err = runSSH(ctx, client, install, nil)
 	if ctx.Err() != nil {
-		return fail(ClassTimeout, "agent install")
+		return failClean(ClassTimeout, "agent install")
 	}
 	if err != nil || code != 0 {
 		if strings.Contains(out+errOut, "Permission denied") {
 			if ge, _, _, gerr := runSSH(ctx, client, "getenforce", nil); gerr == nil && strings.TrimSpace(ge) == "Enforcing" {
-				return fail(ClassSELinux, strings.TrimSpace(out+errOut))
+				return failClean(ClassSELinux, strings.TrimSpace(out+errOut))
 			}
 		}
-		return fail(ClassInstall, fmt.Sprintf("agent install exited %d: %s", code, strings.TrimSpace(out+errOut)))
+		return failClean(ClassInstall, fmt.Sprintf("agent install exited %d: %s", code, strings.TrimSpace(out+errOut)))
 	}
 
 	// A fresh login proves the password still works after the install.
