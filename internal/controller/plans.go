@@ -273,7 +273,7 @@ func (c *Controller) DryRun(ctx context.Context, planID string) (plan.DryRun, er
 			checks = append(checks, plan.NodeCheck{NodeID: n.ID, LintReject: why})
 			continue
 		}
-		if nc, ok := c.localCheck(ctx, p.ID, n); ok { // device / Splunk node: checked on the controller (devexec_run.go)
+		if nc, ok := c.localCheck(ctx, p.ID, p.Class, n); ok { // device / Splunk node: checked on the controller (devexec_run.go)
 			checks = append(checks, nc)
 			continue
 		}

@@ -196,6 +196,9 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		return nil, err
 	}
 	c.enr = enr
+	// The controller-side executor exists from the start, so a module action
+	// runs without EnableDeviceExec; that call only adds the device directory.
+	c.dx.Store(newDevExec(c, opt))
 	used := opt.QuotaUsed
 	if used == nil {
 		used = func() (float64, error) { return diskUsedPct(cfg.DataDir) }
