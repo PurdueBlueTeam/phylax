@@ -8,6 +8,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/detect"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
@@ -34,12 +35,14 @@ type captureState struct {
 	c *Controller
 
 	mu      sync.Mutex
-	gen     uint64 // config-inputs generation the engine was built from
+	in      *ConfigInputs
+	man     *manifest.Manifest
 	eng     *detect.Engine
 	learned map[string]bool
 	noRules bool
-	// errs counts rule load failures, to log once per generation.
-	lastErrGen uint64
+	// lastErrIn is the inputs whose rules failed to load, so the error is
+	// logged once per change.
+	lastErrIn *ConfigInputs
 }
 
 var (
@@ -65,25 +68,25 @@ func (c *Controller) capture() *captureState {
 func (s *captureState) engine() *detect.Engine {
 	c := s.c
 	c.cfgs.mu.Lock()
-	in, gen := c.cfgs.in, c.cfgs.gen
+	in := c.cfgs.in
 	c.cfgs.mu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if in == nil {
 		return nil
 	}
-	if s.gen == gen && (s.eng != nil || s.noRules) {
+	if s.in == in && s.man == in.Manifest && (s.eng != nil || s.noRules) {
 		return s.eng
 	}
-	s.gen, s.eng, s.noRules = gen, nil, true
+	s.in, s.man, s.eng, s.noRules = in, in.Manifest, nil, true
 	if len(in.Rules) == 0 {
 		return nil
 	}
 	d := &plan.DetectSettings{Rules: in.Rules}
 	rs, err := detect.Parse("controller", d.RuleStream(), detect.LoadOptions{AllowUntested: true})
 	if err != nil {
-		if s.lastErrGen != gen {
-			s.lastErrGen = gen
+		if s.lastErrIn != in {
+			s.lastErrIn = in
 			c.log.Error("controller-scope rules", "err", err)
 		}
 		return nil

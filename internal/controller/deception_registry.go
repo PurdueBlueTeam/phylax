@@ -224,9 +224,6 @@ func (c *Controller) AttributeHoneytoken(fields map[string]any) (honeytokens.Tok
 
 // honeyChanged invalidates the generated configs and pushes the new ones.
 func (c *Controller) honeyChanged(ctx context.Context) {
-	c.cfgs.mu.Lock()
-	c.cfgs.gen++
-	c.cfgs.mu.Unlock()
 	c.pushAll(ctx)
 }
 
