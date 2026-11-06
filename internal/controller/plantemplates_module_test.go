@@ -7,7 +7,6 @@ import (
 )
 
 func TestLoadModuleTemplateChecksModule(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22")
 	root := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(root, "demo"), 0o755)
 	_ = os.WriteFile(filepath.Join(root, "demo", "ok.yml"), []byte("id: ok\nmodule: demo\non_failure: stop_dependents\nnodes: []\n"), 0o644)

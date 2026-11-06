@@ -153,9 +153,23 @@ func PlanIDFor(p plan.Plan, template, chosen string, now time.Time) string {
 	return id
 }
 
-// LoadModuleTemplate loads plansRoot/<mod>/<name>.
+var moduleNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// LoadModuleTemplate loads plansRoot/<mod>/<name> and refuses a template whose
+// `module:` names another module.
 func LoadModuleTemplate(plansRoot, mod, name string) (plan.Plan, error) {
-	panic("unimplemented: W1 Task 22")
+	var p plan.Plan
+	if !moduleNameRE.MatchString(mod) {
+		return p, fmt.Errorf("bad module name %q", mod)
+	}
+	p, err := LoadTemplate(filepath.Join(plansRoot, mod), name)
+	if err != nil {
+		return p, err
+	}
+	if p.Module != mod {
+		return p, fmt.Errorf("%s/%s: template is for module %q, not %q", mod, name, p.Module, mod)
+	}
+	return p, nil
 }
 
 // LoadModuleTemplateFor loads a module template, resolving label variables.

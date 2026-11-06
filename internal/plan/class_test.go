@@ -3,7 +3,6 @@ package plan
 import "testing"
 
 func TestStepSignatureCoversClass(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 22")
 	f := newFixture(t)
 	s := f.issue(t, "fw_shadow", IssueOpts{})
 	if s.Class != ClassAuto {
