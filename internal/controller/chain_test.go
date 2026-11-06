@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -72,5 +73,28 @@ func TestDeclaredAlertBecomesEvent(t *testing.T) {
 	}
 	if n := len(c.Alerts()); n != 2 {
 		t.Fatalf("ring holds %d alerts, want 2", n)
+	}
+}
+
+// A controller-origin emit must not queue behind a control send: sendControl
+// holds ctlMu across a blocking session send, and EmitController is called from
+// paths (alerts, analysers) that must keep making progress meanwhile.
+func TestEmitControllerDoesNotTakeControlLock(t *testing.T) {
+	c := newTestController(t)
+	c.ctlMu.Lock()
+	defer c.ctlMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller emit blocked while ctlMu is held")
 	}
 }

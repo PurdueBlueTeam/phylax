@@ -15,7 +15,9 @@ const ControllerAgent = "controller"
 // validated against its declared kind, addressed to agent "controller" and
 // stamped with the controller clock when it carries no time; the chain
 // continues from the stored head, so a restart never restarts at seq 1 (which
-// the store refuses as a replay). One mutex serialises head read and ingest.
+// the store refuses as a replay). chainMu serialises the head read and the
+// ingest, and is deliberately separate from ctlMu: a control send may block in
+// the session while controller-origin alerts keep being emitted.
 func (c *Controller) EmitController(ctx context.Context, e event.Event) (event.Event, error) {
 	if err := event.Validate(e); err != nil {
 		return event.Event{}, err
@@ -24,8 +26,8 @@ func (c *Controller) EmitController(ctx context.Context, e event.Event) (event.E
 	if e.Time.IsZero() {
 		e.Time = c.now().UTC()
 	}
-	c.ctlMu.Lock()
-	defer c.ctlMu.Unlock()
+	c.chainMu.Lock()
+	defer c.chainMu.Unlock()
 	head, err := c.st.Agent(ctx, ControllerAgent)
 	if err != nil {
 		return event.Event{}, fmt.Errorf("controller chain: %w", err)
