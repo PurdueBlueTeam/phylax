@@ -45,6 +45,8 @@ type UIOptions struct {
 	// Argon2 overrides the password hashing cost (tests only).
 	Argon2 ui.Argon2Params
 	Now    func() time.Time
+	// Audit overrides the store-backed audit log (tests only).
+	Audit ui.AuditLog
 }
 
 // NewUI builds the operator web UI on this controller: store-backed accounts
@@ -57,9 +59,14 @@ func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 	if opt.Logger == nil {
 		opt.Logger = c.log
 	}
+	audit := ui.AuditLog(storeAudit{c.st})
+	if opt.Audit != nil {
+		audit = opt.Audit
+	}
 	srv, err := ui.New(ui.Config{
-		Accounts: storeAccounts{c.st}, Audit: storeAudit{c.st}, Agents: c, Ops: ops,
-		Addr: opt.Addr, Logger: opt.Logger, Argon2: opt.Argon2, Now: opt.Now,
+		Accounts: storeAccounts{c.st}, Audit: audit, Agents: c, Ops: ops,
+		AuditExempt: []string{"POST /agents/{host}/safemode"},
+		Addr:        opt.Addr, Logger: opt.Logger, Argon2: opt.Argon2, Now: opt.Now,
 	})
 	if err != nil {
 		return nil, nil, err
