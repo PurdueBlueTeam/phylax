@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
 func TestCommunityIDVector(t *testing.T) {
@@ -32,13 +34,17 @@ func TestReadEVE(t *testing.T) {
 	if len(evs) != 2 || st.Bad != 1 || st.Skipped != 2 {
 		t.Fatalf("%d events, %+v", len(evs), st)
 	}
-	if !evs[0].Time.Before(evs[1].Time) || evs[0].Fields["signature_id"] != 2001219 || evs[0].Kind != KindAlert {
+	a, err := event.Decode[Alert](evs[0], KindAlert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !evs[0].Time.Before(evs[1].Time) || a.SignatureID != 2001219 || evs[0].Kind != KindAlert {
 		t.Fatalf("not time-sorted or wrong parse: %+v", evs[0])
 	}
 	if evs[0].Priority >= evs[1].Priority { // severity 1 outranks 2
 		t.Fatalf("priorities %v %v", evs[0].Priority, evs[1].Priority)
 	}
-	if evs[0].Fields["community_id"] == "" { // computed when Suricata omitted it
+	if a.CommunityID == "" { // computed when Suricata omitted it
 		t.Fatal("community id not derived")
 	}
 	f.Seek(0, 0)
@@ -61,8 +67,12 @@ func TestZeekAndJoin(t *testing.T) {
 	}
 	df, _ := os.Open("testdata/dns.jsonl")
 	dns, _, _ := ReadZeek(df, KindZeekDNS)
-	if len(dns) != 1 || dns[0].Fields["query"] != "evil.example" {
+	if len(dns) != 1 {
 		t.Fatalf("%+v", dns)
+	}
+	d, err := event.Decode[ZeekDNS](dns[0], KindZeekDNS)
+	if err != nil || d.Query != "evil.example" {
+		t.Fatalf("%+v %v", dns, err)
 	}
 	j := Join(alerts, conns, dns)
 	g := j["1:LQU9qZlK+B5F3KDmev6m5PMibrg="]
@@ -70,7 +80,7 @@ func TestZeekAndJoin(t *testing.T) {
 		t.Fatalf("suricata alert and zeek conn not joined by community id: %+v", g)
 	}
 	kinds := g[0].Kind + "," + g[1].Kind
-	if !strings.Contains(kinds, "suricata.alert") || !strings.Contains(kinds, "zeek.conn") {
+	if !strings.Contains(kinds, "suricata.alert") || !strings.Contains(kinds, "suricata.zeek_conn") {
 		t.Fatal(kinds)
 	}
 }

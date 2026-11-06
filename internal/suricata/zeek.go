@@ -2,6 +2,7 @@ package suricata
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"strconv"
@@ -14,10 +15,17 @@ import (
 // ReadZeek reads a Zeek conn.log or dns.log in either JSON-lines or default TSV
 // form. kind selects the event kind (KindZeekConn or KindZeekDNS); the log type
 // is taken from the file, so pass the matching reader for each file. Community
-// IDs absent from the log are computed from the 5-tuple.
+// IDs absent from the log are computed from the 5-tuple. The agent is left
+// empty: the Host that emits these stores them under "controller".
 func ReadZeek(r io.Reader, kind string) ([]event.Event, ReadStats, error) {
 	var st ReadStats
 	var out []event.Event
+	var newErr error
+	switch kind {
+	case KindZeekConn, KindZeekDNS:
+	default:
+		return nil, st, errors.New("suricata: unknown Zeek kind " + kind)
+	}
 	var fields []string
 	emit := func(m map[string]any) {
 		ts, ok := num(m["ts"])
@@ -34,16 +42,29 @@ func ReadZeek(r io.Reader, kind string) ([]event.Event, ReadStats, error) {
 		if cid == "" {
 			cid = CommunityID(src, dst, uint16(sp), uint16(dp), proto)
 		}
-		f := map[string]any{"src_ip": src, "src_port": int(sp), "dest_ip": dst, "dest_port": int(dp),
-			"proto": proto, "community_id": cid, "uid": m["uid"]}
-		for _, k := range []string{"service", "conn_state", "duration", "orig_bytes", "resp_bytes", "query", "qtype_name", "rcode_name", "answers"} {
-			if v, ok := m[k]; ok && v != "-" && v != nil {
-				f[k] = v
-			}
-		}
+		uid, _ := m["uid"].(string)
 		sec := math.Floor(ts)
-		out = append(out, event.Event{Agent: "zeek", Kind: kind, Priority: event.PriorityBulk, Fields: f,
-			Time: time.Unix(int64(sec), int64((ts-sec)*1e9)).UTC()})
+		t := time.Unix(int64(sec), int64((ts-sec)*1e9)).UTC()
+		var e event.Event
+		if kind == KindZeekDNS {
+			e, newErr = event.New(KindZeekDNS, ZeekDNS{
+				SrcIP: src, SrcPort: int(sp), DestIP: dst, DestPort: int(dp),
+				Proto: proto, CommunityID: cid, UID: uid,
+				Query: present(m, "query"), QTypeName: present(m, "qtype_name"),
+				RCodeName: present(m, "rcode_name"), Answers: present(m, "answers")})
+		} else {
+			e, newErr = event.New(KindZeekConn, ZeekConn{
+				SrcIP: src, SrcPort: int(sp), DestIP: dst, DestPort: int(dp),
+				Proto: proto, CommunityID: cid, UID: uid,
+				Service: present(m, "service"), ConnState: present(m, "conn_state"),
+				Duration: present(m, "duration"), OrigBytes: present(m, "orig_bytes"),
+				RespBytes: present(m, "resp_bytes")})
+		}
+		if newErr != nil {
+			return
+		}
+		e.Time = t
+		out = append(out, e)
 	}
 	err := lines(r, &st, func(b []byte) {
 		if b[0] == '#' {
@@ -76,7 +97,19 @@ func ReadZeek(r io.Reader, kind string) ([]event.Event, ReadStats, error) {
 		}
 		emit(m)
 	})
+	if newErr != nil {
+		return nil, st, newErr
+	}
 	return out, st, err
+}
+
+// present returns a log field unless the log left it empty (Zeek writes "-"
+// for a field it did not fill, and JSON-lines logs omit it).
+func present(m map[string]any, key string) any {
+	if v, ok := m[key]; ok && v != "-" && v != nil {
+		return v
+	}
+	return nil
 }
 
 func num(v any) (float64, bool) {

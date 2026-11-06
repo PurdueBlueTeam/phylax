@@ -1,0 +1,4 @@
+# Off in the reference manifest: the pcap run and the analyze_pcap action are
+# W11. The readers are built and tested on their own.
+enabled: false
+act_enabled: false

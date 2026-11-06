@@ -4,4 +4,5 @@ package all
 
 import (
 	_ "github.com/PurdueBlueTeam/phylax/internal/agent/mods"
+	_ "github.com/PurdueBlueTeam/phylax/internal/suricata"
 )

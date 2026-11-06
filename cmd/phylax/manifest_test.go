@@ -77,21 +77,29 @@ func TestManifestLintCleanReference(t *testing.T) {
 func copyManifest(t *testing.T, edit func(string) string) string {
 	t.Helper()
 	dst := t.TempDir()
-	ents, err := os.ReadDir(ref2027)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range ents {
-		b, err := os.ReadFile(filepath.Join(ref2027, e.Name()))
-		if err != nil {
-			t.Fatal(err)
+	err := filepath.WalkDir(ref2027, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
 		}
-		if e.Name() == "hosts.yml" {
+		rel, err := filepath.Rel(ref2027, p)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if rel == "hosts.yml" {
 			b = []byte(edit(string(b)))
 		}
-		if err := os.WriteFile(filepath.Join(dst, e.Name()), b, 0o644); err != nil {
-			t.Fatal(err)
+		out := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return err
 		}
+		return os.WriteFile(out, b, 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return dst
 }
