@@ -27,7 +27,6 @@ func TestManifestValidate(t *testing.T) {
 		func(m *Manifest) { m.Emits = []event.Type{{Kind: "other.found", Schema: 1}} },
 		func(m *Manifest) { m.Emits = []event.Type{{Kind: "agent.health", Schema: 1}} },
 		func(m *Manifest) { m.Consumes = []string{"capture.*"} },
-		func(m *Manifest) { m.Budget.HeldMB = -1 },
 	}
 	for i, f := range bad {
 		m := good()

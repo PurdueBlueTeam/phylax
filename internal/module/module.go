@@ -19,16 +19,6 @@ const (
 	SideController Side = "controller"
 )
 
-// Budget is a module's resource budget.
-type Budget struct {
-	CPUMillisPerSec int     `json:"cpu_ms_per_sec"`
-	HeldMB          int     `json:"held_mb"`
-	EventsPerSec    float64 `json:"events_per_sec"`
-	Burst           int     `json:"burst"`
-	BytesOutPerMin  int     `json:"bytes_out_per_min"`
-	DiskMB          int     `json:"disk_mb"`
-}
-
 // Manifest is a module's capability manifest.
 type Manifest struct {
 	Name      string       `json:"name"`
@@ -38,7 +28,6 @@ type Manifest struct {
 	Roles     []string     `json:"roles,omitempty"`
 	Consumes  []string     `json:"consumes,omitempty"`
 	Emits     []event.Type `json:"emits,omitempty"`
-	Budget    Budget       `json:"budget"`
 	Default   bool         `json:"default"`
 	Tables    []string     `json:"tables,omitempty"`
 	Content   []string     `json:"content,omitempty"`
@@ -106,10 +95,6 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("manifest %s: consumes %q", m.Name, c)
 		}
 	}
-	b := m.Budget
-	if b.CPUMillisPerSec < 0 || b.HeldMB < 0 || b.EventsPerSec < 0 || b.Burst < 0 || b.BytesOutPerMin < 0 || b.DiskMB < 0 {
-		return fmt.Errorf("manifest %s: budget values must be >= 0", m.Name)
-	}
 	return nil
 }
 
@@ -141,7 +126,6 @@ const (
 	StateDegraded    State = "degraded"
 	StateUnavailable State = "unavailable"
 	StateDisabled    State = "disabled"
-	StateOverBudget  State = "over_budget"
 	StateRestarting  State = "restarting"
 	StateError       State = "error"
 )
