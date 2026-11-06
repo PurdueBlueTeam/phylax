@@ -7,7 +7,6 @@ import (
 )
 
 func TestProcStats(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 7")
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc")
 	}

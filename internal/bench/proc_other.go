@@ -3,6 +3,8 @@
 package bench
 
 // ProcStats returns 0, 0: process figures are Linux-only.
+//
+// shortcut: the controller runs on Linux, upgrade when it does not.
 func ProcStats() (cpuMs, rssBytes uint64) {
-	panic("unimplemented: W14 Task 7")
+	return 0, 0
 }
