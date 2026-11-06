@@ -108,7 +108,20 @@ func adoptBootstrap(l agent.Layout, path string) error {
 	if err != nil {
 		return err
 	}
-	return l.SaveBundle(b)
+	if err := l.SaveBundle(b); err != nil {
+		return err
+	}
+	if !b.Safe {
+		return nil
+	}
+	sm, err := actions.NewSafeMode(l.SafeModeFile())
+	if err != nil {
+		return fmt.Errorf("agent: safe mode state: %w", err)
+	}
+	if err := sm.Set(true); err != nil {
+		return fmt.Errorf("agent: safe mode: %w", err)
+	}
+	return nil
 }
 
 // osBackstop builds the OS timer for a state dir; tests replace it so they

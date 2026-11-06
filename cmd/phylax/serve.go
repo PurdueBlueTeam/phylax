@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
@@ -28,8 +29,15 @@ func runServe(ctx context.Context, args []string) error {
 	uiListen := fs.String("ui-listen", "", "operator UI address (loopback only; \"off\" disables)")
 	plansDir := fs.String("plans", "", "plan template directory")
 	vaultPath := fs.String("vault", "", "secrets vault file (enables controller-side device and Splunk plan nodes; needs a manifest)")
+	bundlesDir := fs.String("bundles", "", "write one enrollment bootstrap bundle per manifest host to this directory")
+	advertise := fs.String("advertise", "", "controller host:port the agent dials (required with -bundles)")
+	bundleTTL := fs.Duration("bundle-ttl", 8*time.Hour, "enrollment token lifetime for -bundles")
+	bundleSafe := fs.Bool("bundle-safe", false, "start the bundled agents in safe mode")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *bundlesDir != "" && *advertise == "" {
+		return fmt.Errorf("-bundles needs -advertise HOST:PORT (the address the agent dials)")
 	}
 	var cfg controller.Config
 	if *cfgPath != "" {
@@ -83,6 +91,15 @@ func runServe(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	if *bundlesDir != "" {
+		if m == nil {
+			return fmt.Errorf("-bundles needs a manifest (manifest_path)")
+		}
+		if err := writeBundles(c, m, *bundlesDir, *advertise, *bundleTTL, *bundleSafe); err != nil {
+			return err
+		}
+		log.Info("enrollment bundles written", "dir", *bundlesDir, "hosts", len(m.Hosts), "safe", *bundleSafe)
+	}
 	if cfg.ManifestPath != "" {
 		// Agent configs are generated from the manifest (and rules) and pushed
 		// on connect and whenever those files change.
@@ -103,6 +120,17 @@ func runServe(ctx context.Context, args []string) error {
 		}
 	}
 	return c.Run(ctx)
+}
+
+// writeBundles writes one bootstrap bundle per manifest host, named
+// <host>.json, so a person can download it on the console host and enroll.
+func writeBundles(c *controller.Controller, m *manifest.Manifest, dir, advertise string, ttl time.Duration, safe bool) error {
+	hosts := make([]string, 0, len(m.Hosts))
+	for h := range m.Hosts {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	return c.WriteBundles(dir, hosts, controller.BundleOptions{Controllers: []string{advertise}, TTL: ttl, Safe: safe})
 }
 
 // startUI serves the operator UI on its own loopback listener. The first run
