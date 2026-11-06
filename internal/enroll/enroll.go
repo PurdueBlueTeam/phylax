@@ -6,6 +6,8 @@ package enroll
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -34,8 +36,9 @@ type Options struct {
 type Enroller struct {
 	opt Options
 
-	mu     sync.Mutex // serialises enrollment decisions
-	tokens *Tokens
+	mu      sync.Mutex // serialises enrollment decisions and revocation
+	tokens  *Tokens
+	revoked *revokedKeys
 }
 
 // New opens the token and revocation files under o.DataDir.
@@ -51,7 +54,11 @@ func New(o Options) (*Enroller, error) {
 		return nil, err
 	}
 	tokens.now = o.Now
-	return &Enroller{opt: o, tokens: tokens}, nil
+	revoked, err := openRevoked(filepath.Join(o.DataDir, "revoked.json"))
+	if err != nil {
+		return nil, err
+	}
+	return &Enroller{opt: o, tokens: tokens, revoked: revoked}, nil
 }
 
 // Tokens returns the token file for peeking and consuming.
@@ -64,3 +71,130 @@ func (e *Enroller) MintToken(host string, ttl time.Duration) (string, error) {
 	}
 	return e.tokens.Mint(host, ttl)
 }
+
+// ErrRevoked reports a host key that an operator revoked.
+var ErrRevoked = errors.New("enroll: key revoked")
+
+// Result records what an Authorize call did.
+type Result struct {
+	Enrolled   bool // first enrollment of a host
+	Reenrolled bool // a revoked host enrolled again
+}
+
+// Authorize decides whether pin may act as h.Host. Refusals call Options.Alert
+// with the enrollment alert kind.
+func (e *Enroller) Authorize(ctx context.Context, h *link.Hello, pin link.Pin) (Result, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	refuse := func(kind string, err error) (Result, error) {
+		if e.opt.Alert != nil {
+			e.opt.Alert(h.Host, kind, fmt.Sprintf("pin %s: %v", pin, err))
+		}
+		return Result{}, err
+	}
+
+	if e.revoked.has(h.Host) {
+		ag, aerr := e.opt.Store.Agent(ctx, h.Host)
+		switch {
+		case aerr == nil && string(ag.PubKey) == string(pin[:]):
+			return refuse("enroll.refused", ErrRevoked)
+		case aerr != nil && !errors.Is(aerr, store.ErrUnknownAgent):
+			return Result{}, aerr
+		}
+		if h.Token == "" {
+			return refuse("enroll.refused", ErrRevoked)
+		}
+		if err := e.keyReuse(ctx, h.Host, pin); err != nil {
+			return refuse("enroll.key_reuse", err)
+		}
+		if err := e.tokens.Consume(h.Token, h.Host, pin); err != nil {
+			return refuse("enroll.refused", err)
+		}
+		res := Result{Reenrolled: true}
+		if aerr == nil {
+			if _, err := e.opt.Store.ArchiveAgent(ctx, h.Host, pin[:]); err != nil {
+				return Result{}, err
+			}
+		} else {
+			res = Result{Enrolled: true}
+			if err := e.opt.Store.EnrollAgent(ctx, h.Host, pin[:]); err != nil {
+				return Result{}, err
+			}
+		}
+		if err := e.revoked.set(h.Host, false); err != nil {
+			return Result{}, err
+		}
+		return res, nil
+	}
+
+	ag, err := e.opt.Store.Agent(ctx, h.Host)
+	switch {
+	case err == nil:
+		if string(ag.PubKey) != string(pin[:]) {
+			return refuse("enroll.key_mismatch", store.ErrKeyMismatch)
+		}
+		return Result{}, nil
+	case !errors.Is(err, store.ErrUnknownAgent):
+		return Result{}, err
+	}
+	if h.Token == "" {
+		return refuse("enroll.refused", errors.New("unknown host without token"))
+	}
+	if err := e.keyReuse(ctx, h.Host, pin); err != nil {
+		return refuse("enroll.key_reuse", err)
+	}
+	if err := e.tokens.Consume(h.Token, h.Host, pin); err != nil {
+		return refuse("enroll.refused", err)
+	}
+	if err := e.opt.Store.EnrollAgent(ctx, h.Host, pin[:]); err != nil {
+		return Result{}, err
+	}
+	return Result{Enrolled: true}, nil
+}
+
+// keyReuse refuses a key already enrolled as another host.
+func (e *Enroller) keyReuse(ctx context.Context, host string, pin link.Pin) error {
+	all, err := e.opt.Store.Agents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, o := range all {
+		if o.ID != host && string(o.PubKey) == string(pin[:]) {
+			return fmt.Errorf("key already enrolled as %q", o.ID)
+		}
+	}
+	return nil
+}
+
+// Announce emits agent.enrolled or agent.reenrolled through Options.Emit.
+func (e *Enroller) Announce(ctx context.Context, host string, pin link.Pin, r Result) error {
+	var ev event.Event
+	var err error
+	switch {
+	case r.Reenrolled:
+		ev, err = event.New("agent.reenrolled", event.AgentReenrolled{Host: host, KeyHash: pin.String(), Manifest: host})
+	case r.Enrolled:
+		ev, err = event.New("agent.enrolled", event.AgentEnrolled{Host: host, KeyHash: pin.String(), Manifest: host})
+	default:
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if e.opt.Emit == nil {
+		return errors.New("enroll: announce needs Options.Emit")
+	}
+	_, err = e.opt.Emit(ctx, ev)
+	return err
+}
+
+// Revoke makes host's current key unusable until a new token replaces it.
+// A live session is closed by the caller.
+func (e *Enroller) Revoke(ctx context.Context, host string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.revoked.set(host, true)
+}
+
+// Revoked reports whether host's current key is revoked.
+func (e *Enroller) Revoked(host string) bool { return e.revoked.has(host) }

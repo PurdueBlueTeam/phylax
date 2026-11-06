@@ -194,7 +194,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		a.pub, _ = pcs[0].PublicKey.(*ecdsa.PublicKey)
 	}
 	a.minor, a.dm = h.Minor, h.Deadman
-	enrolled, err := c.authorize(ctx, h, pin)
+	res, err := c.enr.Authorize(ctx, h, pin)
 	if err != nil {
 		return err
 	}
@@ -222,7 +222,7 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	}
 	st.mu.Unlock()
 	a.stp.Store(st)
-	welcome := &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: enrolled}
+	welcome := &link.Welcome{Proto: link.ProtoVersion, Minor: link.ProtoMinor, Enrolled: res.Enrolled || res.Reenrolled}
 	if wc, err := c.AgentConfigFor(ctx, h.Host); err != nil {
 		// The agent keeps running its last good config; say why it got none.
 		c.alert(h.Host, "config.generate_failed", err.Error())
@@ -235,56 +235,16 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if err := a.sess.Send(ctx, link.PrioCritical, welcome); err != nil {
 		return err
 	}
+	if err := c.enr.Announce(ctx, h.Host, pin, res); err != nil {
+		return err
+	}
 	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: ag.LastSeq}); err != nil {
 		return err
 	}
 	close(a.ready)
 	go c.resume(h.Host)
-	c.log.Info("agent connected", "host", h.Host, "version", h.Version, "enrolled_now", enrolled, "acked", ag.LastSeq, "agent_last_seq", h.LastSeq)
+	c.log.Info("agent connected", "host", h.Host, "version", h.Version, "enrolled_now", res.Enrolled || res.Reenrolled, "acked", ag.LastSeq, "agent_last_seq", h.LastSeq)
 	return nil
-}
-
-// authorize decides whether pin may act as h.Host. It returns whether this
-// call enrolled the key.
-func (c *Controller) authorize(ctx context.Context, h *link.Hello, pin link.Pin) (bool, error) {
-	c.enrMu.Lock()
-	defer c.enrMu.Unlock()
-	refuse := func(kind string, err error) (bool, error) {
-		c.alert(h.Host, kind, fmt.Sprintf("pin %s: %v", pin, err))
-		return false, err
-	}
-	ag, err := c.st.Agent(ctx, h.Host)
-	switch {
-	case err == nil:
-		if string(ag.PubKey) != string(pin[:]) {
-			// A new key claiming an existing host is always an alert; tokens
-			// cannot override it (operator-approved re-enrollment only).
-			return refuse("enroll.key_mismatch", store.ErrKeyMismatch)
-		}
-		return false, nil
-	case !errors.Is(err, store.ErrUnknownAgent):
-		return false, err
-	}
-	// Unknown host: needs a valid token bound to this host.
-	if h.Token == "" {
-		return refuse("enroll.refused", errors.New("unknown host without token"))
-	}
-	all, err := c.st.Agents(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, o := range all {
-		if string(o.PubKey) == string(pin[:]) {
-			return refuse("enroll.key_reuse", fmt.Errorf("key already enrolled as %q", o.ID))
-		}
-	}
-	if err := c.enr.Tokens().Consume(h.Token, h.Host, pin); err != nil {
-		return refuse("enroll.refused", err)
-	}
-	if err := c.st.EnrollAgent(ctx, h.Host, pin[:]); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
@@ -438,4 +398,22 @@ func (c *Controller) watchSilence(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// RevokeAgent revokes host's current key and closes its live session.
+func (c *Controller) RevokeAgent(ctx context.Context, host string) error {
+	if err := c.enr.Revoke(ctx, host); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	s := c.agents[host]
+	c.mu.Unlock()
+	if s != nil {
+		s.mu.Lock()
+		if s.sess != nil {
+			s.sess.sess.Close()
+		}
+		s.mu.Unlock()
+	}
+	return nil
 }
