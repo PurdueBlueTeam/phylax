@@ -21,6 +21,8 @@ type Query struct {
 	AfterSeq uint64    // with Agent: only seq > AfterSeq (order is then by seq)
 	Limit    int       // default DefaultQueryMax, capped at MaxQueryLimit
 	Desc     bool
+	// Fields is top-level field equality, compared as text.
+	Fields map[string]string
 }
 
 const eventCols = `agent, seq, time_ns, kind, prio, fields, prev, hash`
