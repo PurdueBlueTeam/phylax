@@ -28,6 +28,15 @@
           },
           "type": "array"
         },
+        "act": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
         "adopted_drift": {
           "items": {
             "additionalProperties": false,
@@ -100,6 +109,12 @@
               "observed"
             ],
             "type": "object"
+          },
+          "type": "array"
+        },
+        "safe_mode_hosts": {
+          "items": {
+            "type": "string"
           },
           "type": "array"
         }

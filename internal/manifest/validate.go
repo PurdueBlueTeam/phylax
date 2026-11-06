@@ -476,6 +476,7 @@ func (m *Manifest) Validate() error {
 // validateOverrides checks overrides.yml, both on load and before
 // AppendOverrides writes it.
 func validateOverrides(o Overrides, e *ErrorList) {
+	validateActAndSafeMode(o, e)
 	for _, a := range o.AcceptedFindings {
 		if a.ID == "" || a.Subject == "" || a.Reason == "" {
 			e.Addf("overrides: accepted_findings need id, subject and reason")

@@ -528,6 +528,11 @@ type Overrides struct {
 	InjectChanges    []OverrideEntry   `yaml:"inject_changes,omitempty" json:"inject_changes,omitempty"`
 	AcceptedFindings []AcceptedFinding `yaml:"accepted_findings,omitempty" json:"accepted_findings,omitempty"`
 	LearnedListeners []LearnedListener `yaml:"learned_listeners,omitempty" json:"learned_listeners,omitempty"`
+	// Act is the per-host form of a module's act_enabled: module name to
+	// label expressions. SafeModeHosts holds label expressions for the hosts
+	// the controller keeps in safe mode.
+	Act           map[string][]string `yaml:"act,omitempty" json:"act,omitempty"`
+	SafeModeHosts []string            `yaml:"safe_mode_hosts,omitempty" json:"safe_mode_hosts,omitempty"`
 }
 
 // LearnedListener is a port on which scorer traffic was seen arriving.

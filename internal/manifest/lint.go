@@ -47,30 +47,31 @@ func HasErrors(fs []Finding) bool {
 
 // Rule IDs, documented in docs/manifest.md.
 const (
-	RuleLockout      = "SS001"
-	RuleSSH          = "SS002"
-	RuleAccountLogin = "SS003"
-	RuleMail         = "SS004"
-	RuleSourceFilter = "SS005"
-	RuleICMP         = "SS006"
-	RuleNTLM         = "SS007"
-	RuleDisabled     = "SS008"
-	RulePCR          = "SS009"
-	RuleCredlist     = "SS010"
-	RuleKill         = "SS011"
-	RuleDecoyPort    = "DC001"
-	RuleDecoyRole    = "DC002"
-	RuleDHCP         = "FW002"
-	RuleIPv6         = "FW003"
-	RuleEgressWide   = "EG001"
-	RulePatchWindow  = "EG002"
-	RuleReservation  = "NET001"
-	RuleNoPublic     = "NET002"
-	RuleDepPort      = "NET003"
-	RuleDomainMember = "AD001"
-	RuleRPCPin       = "AD002"
-	RuleScorerEst    = "SC001"
-	RuleScorerTime   = "SC002"
+	RuleLockout         = "SS001"
+	RuleSSH             = "SS002"
+	RuleAccountLogin    = "SS003"
+	RuleMail            = "SS004"
+	RuleSourceFilter    = "SS005"
+	RuleICMP            = "SS006"
+	RuleNTLM            = "SS007"
+	RuleDisabled        = "SS008"
+	RulePCR             = "SS009"
+	RuleCredlist        = "SS010"
+	RuleKill            = "SS011"
+	RuleDecoyPort       = "DC001"
+	RuleDecoyRole       = "DC002"
+	RuleDHCP            = "FW002"
+	RuleIPv6            = "FW003"
+	RuleEgressWide      = "EG001"
+	RulePatchWindow     = "EG002"
+	RuleReservation     = "NET001"
+	RuleNoPublic        = "NET002"
+	RuleDepPort         = "NET003"
+	RuleDomainMember    = "AD001"
+	RuleRPCPin          = "AD002"
+	RuleScorerEst       = "SC001"
+	RuleScorerTime      = "SC002"
+	RuleOverridesNoHost = "OV001"
 )
 
 // Lint checks the manifest against the design's scoring-safety rules ("The
@@ -86,6 +87,7 @@ func Lint(m *Manifest) []Finding {
 	l.network()
 	l.domain()
 	l.scorer()
+	l.overrides()
 	return l.finish()
 }
 
@@ -483,4 +485,50 @@ func SortFindings(fs []Finding) {
 		}
 		return a.Subject < b.Subject
 	})
+}
+
+// overrides reports act or safe_mode_hosts expressions that name no host and
+// act keys with no module block. Both are warnings: the file still loads, but
+// a typo is visible.
+func (l *linter) overrides() {
+	for _, module := range SortedKeys(l.m.Overrides.Act) {
+		if _, ok := l.m.Modules[module]; !ok {
+			l.add(RuleOverridesNoHost, SevWarn, "overrides: act "+module,
+				"module %s has no modules/%s.yml", module, module)
+		}
+		for _, expr := range l.m.Overrides.Act[module] {
+			e, err := ParseLabels(expr)
+			if err != nil {
+				continue // validation reports it
+			}
+			matched := false
+			for name := range l.m.Hosts {
+				if l.m.hostMatches(name, e) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				l.add(RuleOverridesNoHost, SevWarn, "overrides: act "+module,
+					"expression %q matches no host", expr)
+			}
+		}
+	}
+	for _, expr := range l.m.Overrides.SafeModeHosts {
+		e, err := ParseLabels(expr)
+		if err != nil {
+			continue
+		}
+		matched := false
+		for name := range l.m.Hosts {
+			if l.m.hostMatches(name, e) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			l.add(RuleOverridesNoHost, SevWarn, "overrides: safe_mode_hosts",
+				"expression %q matches no host", expr)
+		}
+	}
 }
