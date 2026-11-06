@@ -20,7 +20,32 @@ var changeClass = map[string]bool{
 	event.KindFileChange:  true,
 	"inventory.row":       true,
 	"audit.rules_changed": true,
-	"winevt.sec_event":    true,
+}
+
+// secEventKinds are the names the winevt module uses for a Security event. It
+// emits sec_event today; the design name is winevt.sec_event.
+var secEventKinds = map[string]bool{"sec_event": true, "winevt.sec_event": true}
+
+// accountChangeIDs are the Security ids the winevt module maps to an account,
+// group or computer-account change. Logon and authentication ids (4624, 4625,
+// 4648, 4672, 4768, 4769, 4771, 4776 ...) are deliberately absent: they never
+// get a work-window tag (R6).
+var accountChangeIDs = map[int]bool{
+	// account_change
+	4720: true, 4722: true, 4724: true, 4738: true, 4781: true,
+	// group_change
+	4728: true, 4729: true, 4732: true, 4733: true, 4756: true, 4757: true,
+	// computer_account_change
+	4739: true, 4741: true, 4742: true,
+}
+
+// changeKind reports whether a work window may stamp e: a change-class kind, or
+// a winevt Security event that is an account change rather than a logon.
+func changeKind(e event.Event) bool {
+	if changeClass[e.Kind] {
+		return true
+	}
+	return secEventKinds[e.Kind] && accountChangeIDs[intField(e.Fields, "event_id")]
 }
 
 // windowSaveEvery is how often the remaining window time is persisted, so a
@@ -127,7 +152,7 @@ func (w *windowState) apply(f event.ControllerFact) error {
 // attributed to the claimed user, and only while the window is open. It also
 // persists the remaining time every windowSaveEvery.
 func (w *windowState) tagFor(e event.Event) string {
-	if !changeClass[e.Kind] {
+	if !changeKind(e) {
 		return ""
 	}
 	w.mu.Lock()

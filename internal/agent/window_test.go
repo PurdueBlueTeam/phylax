@@ -140,6 +140,43 @@ func TestWorkWindowStampsTag(t *testing.T) {
 	}
 }
 
+// TestWorkWindowOnlyStampsAccountChanges: a work window may label a change of
+// an account, but never a logon or authentication event (design: Tagging and
+// adoption, R6). The ids are the ones the winevt module maps: account, group
+// and computer-account changes; everything else stays untagged.
+func TestWorkWindowOnlyStampsAccountChanges(t *testing.T) {
+	h, cancel := startScripted(t, t.TempDir())
+	defer cancel()
+	now := time.Now()
+	h.setNow(func() time.Time { return now })
+	h.setMono(func() time.Duration { return 0 })
+	h.Fact(workWindowFact("w1", "window:w1", "alice", now, 10*time.Minute))
+
+	authIDs := []int{4624, 4625, 4634, 4647, 4648, 4672, 4768, 4769, 4771, 4776}
+	accountIDs := []int{4720, 4722, 4724, 4738, 4781, 4728, 4729, 4732, 4733, 4756, 4757, 4741, 4742, 4739}
+	otherIDs := []int{1102, 4697, 4698, 4719, 5136}
+	for _, kind := range []string{"sec_event", "winevt.sec_event"} {
+		for _, id := range authIDs {
+			e := event.Event{Kind: kind, Fields: map[string]any{"event_id": id, "user": "alice"}}
+			if got := emitAndLast(t, h, "wx", e).Tag; got != "" {
+				t.Errorf("%s %d (authentication) tagged %q", kind, id, got)
+			}
+		}
+		for _, id := range accountIDs {
+			e := event.Event{Kind: kind, Fields: map[string]any{"event_id": id, "user": "alice"}}
+			if got := emitAndLast(t, h, "wx", e).Tag; got != "window:w1" {
+				t.Errorf("%s %d (account change) tag %q", kind, id, got)
+			}
+		}
+		for _, id := range otherIDs {
+			e := event.Event{Kind: kind, Fields: map[string]any{"event_id": id, "user": "alice"}}
+			if got := emitAndLast(t, h, "wx", e).Tag; got != "" {
+				t.Errorf("%s %d (not an account change) tagged %q", kind, id, got)
+			}
+		}
+	}
+}
+
 func TestWorkWindowIgnoresWallClock(t *testing.T) {
 	h, cancel := startScripted(t, t.TempDir())
 	defer cancel()
