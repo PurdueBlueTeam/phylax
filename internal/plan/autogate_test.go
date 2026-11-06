@@ -3,7 +3,6 @@ package plan
 import "testing"
 
 func TestAutoGateValidates(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 27a")
 	ok := Node{ID: "g", Gate: true, Needs: []string{"a"}, Until: &GateUntil{AfterSec: 600, Probe: "*"}}
 	if err := validateNode(ok); err != nil {
 		t.Fatal(err)

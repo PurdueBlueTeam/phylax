@@ -403,6 +403,11 @@ func (c *Controller) Close() error {
 	c.pmu.Unlock()
 	for _, rt := range rts {
 		rt.mu.Lock()
+		for _, gs := range rt.gates {
+			if gs.timer != nil {
+				gs.timer.Stop()
+			}
+		}
 		rt.mu.Unlock()
 	}
 	return c.st.Close()

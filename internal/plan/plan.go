@@ -125,6 +125,9 @@ var idRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 // rather than the one-click plan approval: gates, host.exec, and lockout or
 // destructive nodes (design: Plan, approve, apply).
 func RequiresOwnApproval(n Node, effective Risk) bool {
+	if n.Gate && n.Until != nil {
+		return false // gate: auto passes itself when its conditions hold
+	}
 	return n.Gate || n.Action == "host.exec" || effective.rank() >= RiskLockout.rank()
 }
 

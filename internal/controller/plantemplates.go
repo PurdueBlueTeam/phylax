@@ -187,6 +187,9 @@ func translateNodeKeys(doc any) error {
 		if err := translateExpiresAfter(n); err != nil {
 			return err
 		}
+		if err := translateGate(n); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -212,6 +215,69 @@ func translateExpiresAfter(n map[string]any) error {
 	}
 	delete(n, "expires_after")
 	n["expires_after_sec"] = int(d.Seconds())
+	return nil
+}
+
+// translateGate turns the gate: sugar into plan.Node's JSON keys. `gate: true`
+// and `gate: approval` are a plain gate; `gate: auto` needs `until:`; `gate:
+// manual` is W7's (today it is a plain gate).
+func translateGate(n map[string]any) error {
+	if raw, ok := n["gate"]; ok {
+		switch v := raw.(type) {
+		case bool:
+			if !v {
+				delete(n, "gate")
+			}
+		case string:
+			switch v {
+			case "approval", "manual":
+				delete(n, "gate")
+				n["gate"] = true
+			case "auto":
+				delete(n, "gate")
+				n["gate"] = true
+				if _, ok := n["until"]; !ok {
+					return fmt.Errorf("template: node %v: gate: auto needs until:", n["id"])
+				}
+			default:
+				return fmt.Errorf("template: node %v: unknown gate %q", n["id"], v)
+			}
+		default:
+			return fmt.Errorf("template: node %v: gate must be true, false, approval, manual or auto", n["id"])
+		}
+	}
+	return translateUntil(n)
+}
+
+// translateUntil turns `until: {after: 10m, probe: '*', no_event: {...}}` into
+// GateUntil's JSON keys.
+func translateUntil(n map[string]any) error {
+	raw, ok := n["until"]
+	if !ok {
+		return nil
+	}
+	u, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("template: node %v: until must be a mapping", n["id"])
+	}
+	if a, ok := u["after"]; ok {
+		if _, dup := u["after_sec"]; dup {
+			return fmt.Errorf("template: node %v: until sets both after and after_sec", n["id"])
+		}
+		s, ok := a.(string)
+		if !ok {
+			return fmt.Errorf("template: node %v: until.after must be a duration like 10m", n["id"])
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("template: node %v: until.after: %w", n["id"], err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("template: node %v: until.after must be positive", n["id"])
+		}
+		delete(u, "after")
+		u["after_sec"] = int(d.Seconds())
+	}
 	return nil
 }
 

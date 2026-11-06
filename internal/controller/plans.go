@@ -132,13 +132,13 @@ type probeGroupRT struct {
 
 // gateRT is the evaluation state of one gate: auto node.
 type gateRT struct {
-	start    time.Time
-	timer    *time.Timer
-	waiting  bool
-	probing  bool
-	probeOK  bool
-	probeErr error
-	checked  bool
+	start   time.Time
+	timer   *time.Timer
+	waiting bool
+	probing bool
+	probeOK bool
+	checked bool
+	failed  bool
 }
 
 type stepKey struct {
@@ -1484,6 +1484,3 @@ func (rt *planRT) persistLocked(ctx context.Context) error {
 	}
 	return nil
 }
-
-// evalAutoGatesLocked evaluates ready gate: auto nodes. Task 27a fills it in.
-func (rt *planRT) evalAutoGatesLocked() {}

@@ -196,6 +196,9 @@ func (r *Run) Next(lim Limits) []string {
 				continue
 			}
 			if n.Gate {
+				if n.Until != nil {
+					continue // gate: auto is evaluated by the controller
+				}
 				r.state[id] = StateVerified
 				changed = true
 				continue
@@ -225,6 +228,65 @@ func (r *Run) Next(lim Limits) []string {
 		}
 	}
 	return out
+}
+
+// ReadyAutoGates lists approved gate: auto nodes whose dependencies are done,
+// in plan order. It does not change their state: the controller evaluates
+// their until conditions and then calls PassGate or FailGate.
+func (r *Run) ReadyAutoGates() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, id := range r.res.order {
+		n, _ := r.node(id)
+		if !n.Gate || n.Until == nil || r.state[id] != StateApproved || !r.depsDone(n) {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// PassGate completes a gate: auto node with its auto approval record.
+func (r *Run) PassGate(id string, a Approval) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.node(id)
+	if !ok || !n.Gate {
+		return fmt.Errorf("plan: %q is not a gate", id)
+	}
+	if a.By == "" {
+		return errors.New("plan: approval needs an approver")
+	}
+	if r.state[id] == StatePending {
+		if err := r.move(id, StateApproved); err != nil {
+			return err
+		}
+	}
+	if err := r.move(id, StateVerified); err != nil {
+		return err
+	}
+	r.approvals[id] = a
+	return nil
+}
+
+// FailGate fails a gate: auto node without a state transition through running.
+func (r *Run) FailGate(id, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n, ok := r.node(id)
+	if !ok || !n.Gate {
+		return fmt.Errorf("plan: %q is not a gate", id)
+	}
+	switch r.state[id] {
+	case StatePending, StateApproved, StateRunning:
+	default:
+		return fmt.Errorf("%w: %s %s -> failed", ErrTransition, id, r.state[id])
+	}
+	r.state[id] = StateFailed
+	r.reason[id] = reason
+	r.applyPolicy(id)
+	return nil
 }
 
 // MarkApplied records that the apply phase succeeded.
