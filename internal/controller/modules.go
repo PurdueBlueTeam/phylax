@@ -211,15 +211,6 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 	return out
 }
 
-func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by string) error {
-	panic("unimplemented: W1 Task 28")
-}
-
-// noteAutoRollback feeds the auto circuit breaker.
-func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
-	panic("unimplemented: W1 Task 28")
-}
-
 // safeModuleHealth calls a module's Health, turning a panic into an error
 // report so a broken module cannot take the controller's health page down.
 func safeModuleHealth(mod module.ControllerModule) (h module.Health) {

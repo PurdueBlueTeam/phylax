@@ -33,3 +33,9 @@ func (s *Store) MetaSet(ctx context.Context, key, value string) error {
 ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	return err
 }
+
+// MetaDelete removes key. A missing key is not an error.
+func (s *Store) MetaDelete(ctx context.Context, key string) error {
+	_, err := s.w.ExecContext(ctx, `DELETE FROM meta WHERE key=?`, key)
+	return err
+}

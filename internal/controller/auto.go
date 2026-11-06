@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/plan/lint"
@@ -287,8 +289,79 @@ func (rt *planRT) failGateLocked(id, reason string) {
 	_ = rt.persistLocked(context.Background())
 }
 
+// autoBreakerWindow is how far back the breaker counts automatic rollbacks.
+const autoBreakerWindow = 10 * time.Minute
+
 // autoHalted reports whether the circuit breaker has halted (module, template,
-// host). Task 28 fills in the kv-backed breaker.
+// host). The marker survives a restart.
 func (c *Controller) autoHalted(ctx context.Context, mod, template, host string) bool {
-	return false
+	v, err := c.st.MetaGet(ctx, autoHaltedKey(mod, template, host))
+	return err == nil && v != ""
+}
+
+// noteAutoRollback feeds the auto circuit breaker. Two automatic rollbacks of
+// the same (module, template, host) within ten minutes halt it and emit
+// plan.auto_halted at critical priority.
+func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
+	ctx := context.Background()
+	if c.autoHalted(ctx, mod, template, host) {
+		return
+	}
+	key := autoRollbacksKey(mod, template, host)
+	var times []int64
+	if raw, err := c.st.MetaGet(ctx, key); err == nil && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &times)
+	}
+	cutoff := at.Add(-autoBreakerWindow).UnixMilli()
+	kept := times[:0]
+	for _, t := range times {
+		if t >= cutoff && t <= at.UnixMilli() {
+			kept = append(kept, t)
+		}
+	}
+	times = append(kept, at.UnixMilli())
+	raw, _ := json.Marshal(times)
+	if err := c.st.MetaSet(ctx, key, string(raw)); err != nil {
+		c.log.Error("auto breaker: save rollback history", "module", mod, "template", template, "host", host, "err", err)
+		return
+	}
+	if len(times) < 2 {
+		return
+	}
+	if err := c.st.MetaSet(ctx, autoHaltedKey(mod, template, host), "1"); err != nil {
+		c.log.Error("auto breaker: save halt", "module", mod, "template", template, "host", host, "err", err)
+		return
+	}
+	e, err := event.New("plan.auto_halted", event.PlanAutoHalted{Module: mod, Template: template, Host: host, Rollbacks: len(times)})
+	if err != nil {
+		c.log.Error("auto breaker: build event", "err", err)
+		return
+	}
+	if _, err := c.EmitController(ctx, e); err != nil {
+		c.log.Error("auto breaker: emit plan.auto_halted", "err", err)
+	}
+}
+
+// ReenableAuto clears a halted breaker and records the operator in the audit
+// log.
+func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by string) error {
+	if err := requireOperator(by); err != nil {
+		return err
+	}
+	if err := c.st.MetaDelete(ctx, autoHaltedKey(mod, template, host)); err != nil {
+		return err
+	}
+	if err := c.st.MetaDelete(ctx, autoRollbacksKey(mod, template, host)); err != nil {
+		return err
+	}
+	return c.st.AppendAudit(ctx, store.AuditRow{Time: c.now(), Actor: by, Action: "auto_reenable",
+		Detail: "auto " + mod + "/" + template + " on " + host})
+}
+
+func autoHaltedKey(mod, template, host string) string {
+	return "auto_halted/" + mod + "/" + template + "/" + host
+}
+
+func autoRollbacksKey(mod, template, host string) string {
+	return "auto_rollbacks/" + mod + "/" + template + "/" + host
 }

@@ -62,6 +62,9 @@ func TestAutoAfterProbeRollsBack(t *testing.T) {
 	if got, _ := readFileString(file); got != "original" {
 		t.Fatalf("file content %q, want the original", got)
 	}
+	if _, err := x.c.st.MetaGet(ctx, autoRollbacksKey("ctltest", "t1", "h1")); err != nil {
+		t.Fatalf("the automatic rollback did not feed the breaker: %v", err)
+	}
 }
 
 func TestAutoBeforeProbeStops(t *testing.T) {
