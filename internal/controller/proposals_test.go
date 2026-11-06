@@ -71,6 +71,32 @@ func TestAcceptProposalNeedsCleanDryRun(t *testing.T) {
 	}
 }
 
+func TestProposalDecisionsNeedOperator(t *testing.T) {
+	c := newTestControllerWithPlans(t, map[string]string{
+		"ctltest/gate.yml": "id: gate\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: g, gate: true}\n",
+	})
+	id, err := c.Propose(ctx, module.Proposal{Module: "ctltest", Title: "approve the release", Template: "gate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, by := range []string{"", "   "} {
+		if _, err := c.AcceptProposal(ctx, id, by); err == nil {
+			t.Fatalf("accept with operator %q", by)
+		}
+		if err := c.DismissProposal(ctx, id, by); err == nil {
+			t.Fatalf("dismiss with operator %q", by)
+		}
+	}
+	row, err := c.st.Proposal(ctx, id)
+	if err != nil || row.State != "open" || row.By != "" {
+		t.Fatalf("a decision without an operator changed the proposal: %+v %v", row, err)
+	}
+	plans, err := c.StoredPlans(ctx)
+	if err != nil || len(plans) != 0 {
+		t.Fatalf("a refused accept stored a plan: %+v %v", plans, err)
+	}
+}
+
 func TestProposeRejectsBrokenTemplate(t *testing.T) {
 	c := newTestControllerWithPlans(t, nil)
 	if _, err := c.Propose(ctx, module.Proposal{Module: "ctltest", Title: "x", Template: "missing"}); err == nil {

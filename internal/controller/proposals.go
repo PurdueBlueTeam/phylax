@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
@@ -78,9 +79,20 @@ func (c *Controller) OpenProposals(ctx context.Context) ([]store.ProposalRow, er
 	return c.st.OpenProposals(ctx)
 }
 
+// requireOperator refuses a decision with no authenticated operator name.
+func requireOperator(by string) error {
+	if strings.TrimSpace(by) == "" {
+		return errors.New("controller: an operator identity is required")
+	}
+	return nil
+}
+
 // AcceptProposal creates the proposed plan with the click class, runs its dry
 // run, approves and applies it, then closes the proposal as accepted.
 func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (string, error) {
+	if err := requireOperator(by); err != nil {
+		return "", err
+	}
 	row, err := c.st.Proposal(ctx, id)
 	if err != nil {
 		return "", err
@@ -117,6 +129,9 @@ func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (s
 
 // DismissProposal closes an open proposal without a plan.
 func (c *Controller) DismissProposal(ctx context.Context, id int64, by string) error {
+	if err := requireOperator(by); err != nil {
+		return err
+	}
 	row, err := c.st.Proposal(ctx, id)
 	if err != nil {
 		return err
