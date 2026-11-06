@@ -67,3 +67,31 @@ func TestRunModulesRestartsAfterPanic(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+type panicHealthMod struct{ ctlMod }
+
+func (panicHealthMod) Health() module.Health { panic("health exploded") }
+
+func TestModuleHealthRecoversPanic(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.RunModules(ctx, []module.ControllerModule{panicHealthMod{testMod()}})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h := c.ModuleHealth()["ctltest"]
+		found := false
+		for _, gap := range h.Gaps {
+			if gap.What == "health" && gap.Why == "panic: health exploded" {
+				found = true
+			}
+		}
+		if found && h.State == module.StateError && c.moduleRunning("ctltest") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("health panic not recovered: %+v running=%v", h, c.moduleRunning("ctltest"))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

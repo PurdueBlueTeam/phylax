@@ -202,7 +202,7 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 		if state != "" {
 			h = module.Health{State: state, Detail: detail, Gaps: gaps}
 		} else {
-			h = st.mod.Health()
+			h = safeModuleHealth(st.mod)
 			h.Gaps = append(h.Gaps, gaps...)
 		}
 		h.Usage.Dropped = c.bus.dropped(name)
@@ -254,4 +254,17 @@ func (c *Controller) SendFact(ctx context.Context, mod string, m module.ControlM
 // noteAutoRollback feeds the auto circuit breaker.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
 	panic("unimplemented: W1 Task 28")
+}
+
+// safeModuleHealth calls a module's Health, turning a panic into an error
+// report so a broken module cannot take the controller's health page down.
+func safeModuleHealth(mod module.ControllerModule) (h module.Health) {
+	defer func() {
+		if r := recover(); r != nil {
+			why := fmt.Sprintf("panic: %v", r)
+			h = module.Health{State: module.StateError, Detail: why,
+				Gaps: []module.Gap{{What: "health", Why: why}}}
+		}
+	}()
+	return mod.Health()
 }

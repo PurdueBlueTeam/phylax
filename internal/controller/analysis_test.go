@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,5 +71,34 @@ func TestAnalyzerDeadline(t *testing.T) {
 			t.Fatalf("no analyser gap in %+v", c.ModuleHealth()["ctltest"])
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestAnalyzerPanicRecovered(t *testing.T) {
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
+	var runs atomic.Int32
+	m := anaMod{testMod(), []module.Analyzer{{Name: "boom", Every: 20 * time.Millisecond,
+		Run: func(context.Context, store.Reader, time.Time) ([]event.Event, error) {
+			runs.Add(1)
+			panic("analyser exploded")
+		}}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.RunModules(ctx, []module.ControllerModule{m})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		found := false
+		for _, gap := range c.ModuleHealth()["ctltest"].Gaps {
+			if gap.What == "analyser boom" && gap.Why == "panic: analyser exploded" {
+				found = true
+			}
+		}
+		if found && runs.Load() >= 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("analyser panic not recovered: runs %d, health %+v", runs.Load(), c.ModuleHealth()["ctltest"])
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

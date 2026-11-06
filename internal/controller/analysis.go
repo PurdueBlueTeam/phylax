@@ -129,6 +129,11 @@ func (c *Controller) runAnalyzer(ctx context.Context, h *moduleHost, st *moduleR
 }
 
 func (c *Controller) runAnalyzerOnce(ctx context.Context, h *moduleHost, st *moduleRunState, a module.Analyzer) {
+	defer func() {
+		if r := recover(); r != nil {
+			c.setAnalysisGap(st, a.Name, module.Gap{What: "analyser " + a.Name, Why: fmt.Sprintf("panic: %v", r)})
+		}
+	}()
 	deadline := c.analysisDeadline
 	if deadline <= 0 {
 		deadline = analysisDefaultDeadline
