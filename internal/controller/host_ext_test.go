@@ -1,13 +1,14 @@
 package controller
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
+	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
 
 func TestHostManifestNotNil(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17a")
 	c := newTestControllerWithManifest(t, nil)
 	m := c.hostFor(testMod()).Manifest()
 	if m == nil || len(m.Hosts) == 0 {
@@ -16,7 +17,6 @@ func TestHostManifestNotNil(t *testing.T) {
 }
 
 func TestHostUpdateOverridesReloads(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17a")
 	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\n"})
 	h := c.hostFor(testMod())
 	err := h.UpdateOverrides(func(o *manifest.Overrides) error {
@@ -39,8 +39,31 @@ func TestHostUpdateOverridesReloads(t *testing.T) {
 }
 
 func TestHostSecretsPrefixGrant(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 17a")
-	// block "enabled: true\nsecrets: [cred/*]\n"; unlocked test vault holds "cred/palo1/phylax", "cred/vyos/phylax", "other"
-	// h.Secrets("cred/*") -> reader; Get("cred/palo1/phylax") and Get("cred/vyos/phylax") ok; Get("other") -> vault.ErrNotAllowed
-	// h.Secrets("cred/palo1/phylax") -> ok (covered by the grant); h.Secrets("other") -> vault.ErrNotAllowed
+	v := newVault(t)
+	for _, name := range []string{"cred/palo1/phylax", "cred/vyos/phylax", "other"} {
+		if _, err := v.Put(name, vault.NewSecretString("value"), "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": "enabled: true\nsecrets: [cred/*]\n"})
+	c.opt.Vault = v
+	h := c.hostFor(testMod())
+	r, err := h.Secrets("cred/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cred/palo1/phylax", "cred/vyos/phylax"} {
+		if _, err := r.Get(name); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if _, err := r.Get("other"); !errors.Is(err, vault.ErrNotAllowed) {
+		t.Fatalf("prefix reader served another name: %v", err)
+	}
+	if _, err := h.Secrets("cred/palo1/phylax"); err != nil {
+		t.Fatalf("covered exact name refused: %v", err)
+	}
+	if _, err := h.Secrets("other"); !errors.Is(err, vault.ErrNotAllowed) {
+		t.Fatalf("got %v", err)
+	}
 }
