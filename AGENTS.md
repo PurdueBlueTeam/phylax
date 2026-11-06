@@ -91,3 +91,10 @@ and its findings are design requirements.
   `service` for that reason; it is gated by its own node approval and by
   `SS010`, not by the risk class. The envelope plan tag is
   `actions.Tag.PlanTag()` (`plan:<id>`).
+- The bench recorder is on by default, so every controller started with a data
+  dir (including `newCtl` in the tests) writes `<data_dir>/bench.jsonl` every
+  `bench_interval` (10 s) for as long as `Serve` runs; `bench_off: true` stops
+  it. The e2e test helper `newAgent` heartbeats every 50 ms unless the test
+  sets `hbEvery` to 0 before `run`, which is how a test keeps one heartbeat's
+  `RTTUs`/`Health` in the sample (a later heartbeat overwrites them with the
+  measured round trip).
