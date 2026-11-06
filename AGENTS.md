@@ -3,8 +3,8 @@
 Branch `v4` builds the v4 design in [phylax_design.md](phylax_design.md)
 (version 4, which supersedes v3) by moving the v3 code onto the module contract,
 workstream by workstream (`docs/impl/README.md`). Don't copy code from `main` or
-from the older `qwen-wip` work (branch deleted 2026-11-06, still in git objects of
-old clones only); their review is in ccdc-private `strategy/phylax-code-review.md`,
+from the older `qwen-wip` work (its branch was deleted on 2026-11-06);
+their review is in ccdc-private `strategy/phylax-code-review.md`,
 and its findings are design requirements.
 
 ## The design and the module contract
