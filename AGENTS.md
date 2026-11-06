@@ -24,7 +24,7 @@ and its findings are design requirements.
   - one config block (`modules/<name>.yml`, a typed struct, unknown fields are an
     error) that carries the generic `enabled` and `act_enabled` fields; the YAML maps
     1:1 onto the struct; new capabilities are off unless the manifest enables them;
-  - a capability manifest (sides, OS, privilege, roles, `Consumes`, `Emits`, budget,
+  - a capability manifest (sides, OS, privilege, roles, `Consumes`, `Emits`,
     tables, content, actions, pages), typed events declared with `event.Declare` and
     listed in the event-kind table, and a health report;
   - **no sibling imports**: a module imports only core packages and the closed list

@@ -15,7 +15,7 @@
 1. **`Host` plan methods take a template, not a `plan.Plan`.** `plan.ModuleLimits` embeds `module.Common`, so `internal/plan` imports `internal/module`; `internal/module` therefore cannot import `internal/plan`. `RunReadOnly(template, params)`, `RunStanding(approvalID, template, params)` and `RunAuto(template, params)` take a plan template under `plans/<module>/` plus string parameters, matching "content before code" and the standing approval's `Template` scope. `Proposal` carries a template too.
 2. **`store.Reader`** is the read-only query interface the design calls `store.Query`; the name `store.Query` is the existing event filter struct (9 call sites). `Query` gains `Fields map[string]string`.
 3. **`Host.Tables()`** is added: a module that declares `Tables` needs a write path for its one writer goroutine; the design's `Host` has none.
-4. **`Analyzer.Run` takes a `context.Context`** so the analysis worker can stop a run over its deadline ("a run over budget is stopped").
+4. **`Analyzer.Run` takes a `context.Context`** so the analysis worker can stop a run over its deadline ("a run over its deadline is stopped").
 5. **`module.Common` gains `Auto []string` (`auto:`)**, the module's `auto` template allowlist; the design names the allowlist but not its home.
 6. **`event.Type` gains `Alert bool`**, the per-kind alert flag of the kind table; `event.Type.Fields` is not serialised.
 7. **`Event.Schema` is `json:"schema,omitempty"`**, so an event sealed before this change (schema 0, no tag) keeps its hash. Declared kinds always carry a schema of 1 or more.
@@ -33,7 +33,7 @@
 19. **Modules reach `overrides.yml` and per-device vault keys through `Host`.** `Host.UpdateOverrides` over `manifest.AppendOverrides` (Task 11a, with `Overrides.LearnedListeners`), and `Host.Secrets` accepts prefix grants (`cred/*`, Task 9a) so `devices` and `creds` need no fixed names in their block.
 
 20. **YAML keys equal JSON tags; durations are `module.Duration`.** A small wrapper over `time.Duration` that unmarshals `"90s"` or `"2m"` in YAML and JSON is the one exception to the one-to-one mapping (R11, Task 33).
-21. **Tables are projections of the module's own events, command events included.** Operator actions are typed command events the module emits through `Host.Emit`; conformance check 11 replays them (R10, Task 36).
+21. **Tables are projections of the module's own events, command events included.** Operator actions are typed command events the module emits through `Host.Emit`; conformance check 10 replays them (R10, Task 36).
 22. **The agent answers `busy`, not `failed`, over the step cap; a plan that touches a scored service defaults to `rollback_plan`; the probe runs inside the node and `deadman_confirm` waits for the after-probe** (R12, Tasks 27, 27b, 27c).
 23. **Tags cover only our own activity** (R6, Tasks 32 and 32a). **Controller disk quotas** (R9, Task 8b).
 
@@ -70,7 +70,7 @@
 | `internal/event/types.go` | `Type`, `Declare`, `Lookup`, `Declared`, `New`, `Decode`, `Validate`, `WithExtra` | 1, 3, 3a |
 | `internal/event/kinds.go` | common kinds and canonical structs, extension fields | 1, 4, 4a |
 | `internal/event/core.go` | core kinds and payload structs | 1, 5 |
-| `internal/module/module.go` | `Side`, `Budget`, `Manifest`, `Common`, `State`, `Gap`, `Usage`, `Health`, `Effective` | 1, 7 |
+| `internal/module/module.go` | `Side`, `Manifest`, `Common`, `State`, `Gap`, `Usage`, `Health`, `Effective` | 1, 7 |
 | `internal/module/host.go` | `Host`, `ControlMsg`, `Proposal`, `EventRef`, `ControllerModule`, `Analyzer`, `AnalyzerProvider`, `Configurable`, errors | 1 |
 | `internal/module/registry.go` | `Register`, `Registered`, `Lookup` | 1, 7 |
 | `internal/module/schema.go` | JSON Schema of a config block | 1, 33 |
@@ -283,15 +283,6 @@ const (
 	SideController Side = "controller"
 )
 
-type Budget struct {
-	CPUMillisPerSec int     `json:"cpu_ms_per_sec"`
-	HeldMB          int     `json:"held_mb"`
-	EventsPerSec    float64 `json:"events_per_sec"`
-	Burst           int     `json:"burst"`
-	BytesOutPerMin  int     `json:"bytes_out_per_min"`
-	DiskMB          int     `json:"disk_mb"`
-}
-
 type Manifest struct {
 	Name      string       `json:"name"`
 	Sides     []Side       `json:"sides"`
@@ -300,7 +291,6 @@ type Manifest struct {
 	Roles     []string     `json:"roles,omitempty"`
 	Consumes  []string     `json:"consumes,omitempty"`
 	Emits     []event.Type `json:"emits,omitempty"`
-	Budget    Budget       `json:"budget"`
 	Default   bool         `json:"default"`
 	Tables    []string     `json:"tables,omitempty"`
 	Content   []string     `json:"content,omitempty"`
@@ -324,7 +314,6 @@ const (
 	StateDegraded    State = "degraded"
 	StateUnavailable State = "unavailable"
 	StateDisabled    State = "disabled"
-	StateOverBudget  State = "over_budget"
 	StateRestarting  State = "restarting"
 	StateError       State = "error"
 )
@@ -609,7 +598,7 @@ type AgentCase struct {
 	Default  *plan.AgentConfig // the module's default block on a fixture host
 	Reconfig *plan.AgentConfig // a changed block (check 8)
 	KeepKey  string            // key the module stores with Env.Keep; "" when it keeps nothing
-	Load     []event.Event     // consumed events fed on the bus (checks 6 and 7)
+	Load     []event.Event     // consumed events fed on the bus (check 6)
 	Block    any               // pointer to a zero settings struct (check 9); nil: plan.BlockFor(Default, Factory.Name)
 }
 func Agent(t *testing.T, c AgentCase)
@@ -617,7 +606,7 @@ func Agent(t *testing.T, c AgentCase)
 type ControllerCase struct {
 	Module module.ControllerModule
 	Config string        // YAML of modules/<name>.yml with the default settings
-	Seed   []event.Event // fixture store contents for analysers (check 11)
+	Seed   []event.Event // fixture store contents for analysers (check 10)
 	Now    time.Time
 }
 func Controller(t *testing.T, c ControllerCase)
@@ -631,7 +620,7 @@ var PreContract []string             // registered module names not yet on the c
 var AllowedLibraries []string        // the closed list of shared stateless libraries
 var CoreImports []string             // the core packages a module may import
 var ModulePackages map[string]string // module name -> package path (34 catalogue modules plus health)
-var LinkLoss = 60 * time.Second      // check 7 duration; 2 s under testing.Short()
+var LinkLoss = 60 * time.Second      // check 6 duration; 2 s under testing.Short()
 
 // ---- seam extras that W3, W5, W6, W7 and W11 assumed (each implemented by the task named) ----
 
@@ -693,7 +682,7 @@ func LoadModuleTemplateFor(plansRoot, mod, name string, hosts func(expr string) 
 - [ ] **Step 1: Write the stubs.** Types, constants and interfaces exactly as above. Function bodies: `panic("unimplemented: W1 Task N")` naming the implementing task (`Declare` → 3, common `Declare` calls → 4, ...), except `Effective`, which is one line and written now, and `agent.Registered()` (the sorted process-wide factory list, one line over the existing `registered(nil)`). Add the new fields to existing structs now, all zero-value safe (`omitempty` where JSON-encoded): `event.Event.Schema` and `Tag` (in the order of Task 2), `store.Query.Fields`, `manifest.Manifest.Modules`, `manifest.Host.Modules` and `Labels`, `agent.Factory.Manifest`, `link.Heartbeat.Health`, `plan.Plan.Class`, `Module`, `Template`, `Approver`, `plan.StepBody.Class`, `actions.Env.Probe`, `controller.Options.Probe`. Do not change `plan.ModuleLimits` (Task 12 does, with its callers). `Env.Subscribe` becomes variadic in kinds (the filter itself is Task 13). `var _ Reader = (*Store)(nil)` compiles against the built `Store` methods. `PreContract` lists every factory registered today: `audit`, `capture`, `deception`, `detect`, `health`, `integrity`, `net`, `winevt`. `AllowedLibraries` and `CoreImports` hold the module paths of the two lists in Global Constraints. `internal/module/all/all.go` blank-imports `internal/agent/mods`.
 - [ ] **Step 2: Write the skipped tests and their helpers.** For each of Tasks 3 to 42, lettered tasks included, except Task 12 (which writes its own, because its tests need the `ModuleLimits` change), create the test file the task names with the test functions of its Step 1, the first statement of each being `t.Skip("unimplemented: W1 Task N")`. Prose comments inside a test body become the code they describe. Write, for real, the helpers those tests call: in `internal/controller` (`modtest_helpers_test.go`): `newTestController`, `newTestControllerAt`, `newTestControllerWithManifest(t, files map[string]string)` (manifest dir with a minimal topology naming controller host `ctl`, hosts `h1` (labels `linux`, `server`, scored service `web`) and `db1`, plus `files`), `newTestControllerWithPlans`, `newTestControllerWithRegistry`, `newStandingController`, `newAutoController`, `setHeartbeat`, `mustNew`, `testMod`, `ctlMod`, `ctx`; in `internal/module/conformance` (`helpers_test.go`): the fixture factories and modules each test names, `cfgWith`, `cfgWith2`, `someLoad`, `looseSettings`; in `internal/agent`: `harnessFactory`, `subscriberFactory`, `emitterFactory`, `emitOnce`. A helper that needs behaviour a later task builds may call the stub (the test is skipped until then).
 - [ ] **Step 2b: Envelope tests, not skipped.** The four `internal/event/envelope_test.go` tests of Task 2 pass as soon as the fields exist; commit them unskipped here (Step 0 of Task 2 records the old hash before the fields are added: do that first).
-- [ ] **Step 3: Apply the deviations to `phylax_design.md`.** Edit the Go sketches under "The capability manifest", "Agent modules", "Controller modules and analysers", "Health and budgets", "Configuration", "UI shell: Module registration" and "Lint registration" to the signatures above, and add the 19 deviations as one bullet each under "The module contract" with their reasons. Already in the design from the consistency pass (verify, do not re-add): the `Host` plan methods taking a template, `Tables`, `Manifest`, `UpdateOverrides` and prefix `Secrets` in the `Host` sketch, the root `plans` package in the core package list, `registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in the `ad` Emits, the sshsig namespace `phylax-release`, and the embedded content paths of `logs` and `inventory`.
+- [ ] **Step 3: Apply the deviations to `phylax_design.md`.** Edit the Go sketches under "The capability manifest", "Agent modules", "Controller modules and analysers", "Health and usage", "Configuration", "UI shell: Module registration" and "Lint registration" to the signatures above, and add the 19 deviations as one bullet each under "The module contract" with their reasons. Already in the design from the consistency pass (verify, do not re-add): the `Host` plan methods taking a template, `Tables`, `Manifest`, `UpdateOverrides` and prefix `Secrets` in the `Host` sketch, the root `plans` package in the core package list, `registry.set`/`registry.delete`/`registry.snapshot`, `ad.recycle_restored` in the `ad` Emits, the sshsig namespace `phylax-release`, and the embedded content paths of `logs` and `inventory`.
 - [ ] **Step 4: Verify.** Run: `make build build-windows vet test race`. Expected: all pass. Then `go test -v ./internal/... 2>&1 | grep -c 'unimplemented: W1 Task'`. Expected: a count equal to the number of skipped tests written in Step 2 (no stub panics, only skips).
 - [ ] **Step 5: Commit.**
 
@@ -1346,7 +1335,7 @@ func TestAgentCoreEventsValidate(t *testing.T) {
 - Consumes: Task 1 types.
 - Produces: `(Manifest).Validate`, `Register`, `Registered`, `Lookup`, `Effective`.
 
-Validation rules: `Name` matches `^[a-z][a-z0-9_]{1,31}$`; `Sides` non-empty, each `agent` or `controller`, no duplicate; `OS` ⊆ {`linux`, `windows`}; `Privilege` ∈ {`root`, `user`, `none`}, and `none` only when `Sides` is exactly `[controller]`; each `Emits[i].Kind` is a common kind (`event.Kind*` constants), or starts with `Name + "."`, or is `agent.*`/`telemetry_gap` when `Name` is `health` or `exec` (the core modules); no `Consumes` entry is empty or contains `*`; every `Budget` field ≥ 0. Declaredness of `Emits` is not checked here (init order); the conformance suite checks it.
+Validation rules: `Name` matches `^[a-z][a-z0-9_]{1,31}$`; `Sides` non-empty, each `agent` or `controller`, no duplicate; `OS` ⊆ {`linux`, `windows`}; `Privilege` ∈ {`root`, `user`, `none`}, and `none` only when `Sides` is exactly `[controller]`; each `Emits[i].Kind` is a common kind (`event.Kind*` constants), or starts with `Name + "."`, or is `agent.*`/`telemetry_gap` when `Name` is `health` or `exec` (the core modules); no `Consumes` entry is empty or contains `*`. Declaredness of `Emits` is not checked here (init order); the conformance suite checks it.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -1368,7 +1357,6 @@ func TestManifestValidate(t *testing.T) {
 		func(m *Manifest) { m.Emits = []event.Type{{Kind: "other.found", Schema: 1}} },
 		func(m *Manifest) { m.Emits = []event.Type{{Kind: "agent.health", Schema: 1}} },
 		func(m *Manifest) { m.Consumes = []string{"capture.*"} },
-		func(m *Manifest) { m.Budget.HeldMB = -1 },
 	}
 	for i, f := range bad {
 		m := good()
@@ -2133,7 +2121,7 @@ func TestSectionHonoursEnabled(t *testing.T) {
 - Consumes: `module.Manifest`, `module.Health` (Task 1), `(Manifest).Validate` (Task 7).
 - Produces: `Factory.Manifest`; `HealthReporter`; `(*Supervisor).Health(name) (module.Health, bool)`; `Env.Subscribe(buf int, kinds ...string)`.
 
-Rules: `RegisterFactory` panics when `Manifest.Name` is set and differs from `Name` or fails `Validate`. Supervisor state mapping: `ok`→`ok`, `starting`→`degraded` (Detail `starting`), `restarting`→`restarting`, `over_budget`→`over_budget`, `stopped`→`disabled`. `Usage.Events` = `Emitted`, `Usage.Dropped` = `RateDropped + SpoolDrops`. With a `HealthReporter`, its `State` wins unless the supervisor says `restarting` or `over_budget`; its `Detail`, `Gaps`, `Info`, `CPUMillis`, `HeldBytes`, `BytesOut` are copied. `Subscribe` with no kinds delivers every kind (pre-contract modules); with kinds, only those; a kind outside the factory's `Manifest.Consumes` (when the manifest is set) is dropped from the filter and logged once.
+Rules: `RegisterFactory` panics when `Manifest.Name` is set and differs from `Name` or fails `Validate`. Supervisor state mapping: `ok`→`ok`, `starting`→`degraded` (Detail `starting`), `restarting`→`restarting`, `stopped`→`disabled`. `Usage.Events` = `Emitted`, `Usage.Dropped` = `RateDropped + SpoolDrops`. With a `HealthReporter`, its `State` wins unless the supervisor says `restarting`; its `Detail`, `Gaps`, `Info`, `CPUMillis`, `HeldBytes`, `BytesOut` are copied. `Subscribe` with no kinds delivers every kind (pre-contract modules); with kinds, only those; a kind outside the factory's `Manifest.Consumes` (when the manifest is set) is dropped from the filter and logged once.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -2676,7 +2664,7 @@ func TestAnalyzerDeadline(t *testing.T) {
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/controller/ -run Analyzer -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** as specified. `shortcut: per-module analyser CPU budget is the run deadline only, upgrade when a lab run shows an analyser hogging the worker`.
+- [ ] **Step 3: Implement** as specified. `shortcut: the per-module analyser limit is the run deadline only, upgrade when a lab run shows an analyser hogging the worker`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/controller/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "controller: analysis worker with per-run deadline"`
 
@@ -3919,7 +3907,7 @@ func TestAgentCheck1CatchesPanic(t *testing.T) {
 
 ---
 
-### Task 35: Conformance, agent checks 4 to 7 and 12
+### Task 35: Conformance, agent checks 4, 5, 6 and 11
 
 **Files:**
 - Modify: `internal/module/conformance/agent.go`
@@ -3927,7 +3915,7 @@ func TestAgentCheck1CatchesPanic(t *testing.T) {
 
 **Interfaces:**
 - Consumes: Task 34; `event.Validate`, `event.Lookup`; `Factory.Manifest`.
-- Produces subtests: `health` (check 4: within 5 s a health block exists; for each OS in `Manifest.OS` other than `runtime.GOOS`, and for `Privilege == "root"` when not running as root, the state is `unavailable` or `degraded` with a non-empty `Gaps`), `declared_kinds` (checks 5 and 12: every emitted event's kind is in `Manifest.Emits` and `event.Validate` passes; every `Consumes` entry is declared with `event.Lookup`), `budget` (check 6: `c.Load` published at 10× `Budget.EventsPerSec` for 3 s; emitted rate ≤ `EventsPerSec × 1.1 + Burst`; reported `HeldBytes` ≤ `HeldMB << 20`; reported `CPUMillis` per second ≤ `CPUMillisPerSec` when non-zero), `link_loss` (check 7: with `EmitErr` failing for `LinkLoss` (60 s; 2 s under `testing.Short()`) and `c.Load` published, the module stays `ok` and the supervisor restarts it zero times).
+- Produces subtests: `health` (check 4: within 5 s a health block exists; for each OS in `Manifest.OS` other than `runtime.GOOS`, and for `Privilege == "root"` when not running as root, the state is `unavailable` or `degraded` with a non-empty `Gaps`), `declared_kinds` (checks 5 and 11: every emitted event's kind is in `Manifest.Emits` and `event.Validate` passes; every `Consumes` entry is declared with `event.Lookup`), `link_loss` (check 6: with `EmitErr` failing for `LinkLoss` (60 s; 2 s under `testing.Short()`) and `c.Load` published, the module stays `ok` and the supervisor restarts it zero times).
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -3937,18 +3925,12 @@ func TestAgentCheck5CatchesUndeclared(t *testing.T) {
 		t.Fatal("undeclared kind not detected")
 	}
 }
-func TestAgentCheck12CatchesLegacyField(t *testing.T) {
+func TestAgentCheck11CatchesLegacyField(t *testing.T) {
 	if errs := runAgentChecks(AgentCase{Factory: emitsConnWithSrcIPFactory(), Default: cfgWith("legacy")}); errs["declared_kinds"] == nil {
 		t.Fatal("non-canonical conn field not detected")
 	}
 }
-func TestAgentCheck6CatchesOverBudget(t *testing.T) {
-	// the module reports HeldBytes above its HeldMB
-	if errs := runAgentChecks(AgentCase{Factory: heldBytesLiarFactory(), Default: cfgWith("fat")}); errs["budget"] == nil {
-		t.Fatal("over budget not detected")
-	}
-}
-func TestAgentCheck7CatchesCrashOnEmitError(t *testing.T) {
+func TestAgentCheck6CatchesCrashOnEmitError(t *testing.T) {
 	if errs := runAgentChecks(AgentCase{Factory: crashOnEmitErrFactory(), Default: cfgWith("fragile"), Load: someLoad()}); errs["link_loss"] == nil {
 		t.Fatal("crash under link loss not detected")
 	}
@@ -3959,15 +3941,15 @@ func TestAgentCheck4CatchesMissingGap(t *testing.T) {
 		t.Fatal("missing OS gap not detected")
 	}
 }
-func TestAgentChecks4to7Pass(t *testing.T) {
+func TestAgentChecks4to6Pass(t *testing.T) {
 	Agent(t, AgentCase{Factory: goodFactory(), Default: cfgWith("good"), Load: someLoad()})
 }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check5|Check12|Check6|Check7|Checks4to7' -v`. Expected: FAIL.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/module/conformance/ -run 'Check5|Check11|Check6|Checks4to6' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement** as specified.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -short -race ./internal/module/conformance/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "conformance: agent checks 4-7 and 12 (health, kinds, budget, link loss)"`
+- [ ] **Step 5: Commit.** `git commit -am "conformance: agent checks 4-6 and 11 (health, kinds, link loss)"`
 
 ---
 
@@ -3979,7 +3961,7 @@ func TestAgentChecks4to7Pass(t *testing.T) {
 
 **Interfaces:**
 - Consumes: Tasks 34 and 35; `plan.BlockFor`; `controller.New`, `RunModules`, `ModuleHealth` (Task 19), `hostFor` through `RunModules`; `module.Configurable`, `module.AnalyzerProvider`.
-- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 11: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON) and `tables_replay` (check 11, R10: for a module with `Manifest().Tables`, run it over `c.Seed` plus `c.Commands` (the module's own command events, committed through `Host.Emit` like the operator would), dump its `<module>_*` tables, drop and re-create them, replay the module's committed events and its content files through the writer, and compare: the rebuilt rows must equal the dump; a module whose table holds data no event carries fails with the table and column named). `ControllerCase` gains `Commands []event.Event`.
+- Produces agent subtests `reconfig` (check 8: `Apply(c.Reconfig)` replaces the module and, when `KeepKey != ""`, `Kept(KeepKey)` is non-nil after replacement) and `config_decode` (check 9: the block type (`c.Block`, else `plan.BlockFor`; neither is an error) decodes `{"enabled":true,"act_enabled":true}` with `DisallowUnknownFields` with both set, and refuses `{"x_unknown":1}`). Fixture factories in this package's tests set `Block` to their own settings struct. Produces `conformance.Controller(t, c)` with subtests `no_config` (no block: the module ends `unavailable` or `disabled`, no panic), `default_config` (`c.Config` as `modules/<name>.yml` with `enabled: true`: `ok` or `unavailable` within 10 s), `stops_cleanly` (5 s, no leak), `declared_kinds` (every stored event of agent `controller` whose kind starts with the module prefix validates and is in `Emits`), `config_decode` (when `Configurable`: `ConfigBlock()`'s type decodes `enabled: true` and `act_enabled: true` strictly; and the module run with `c.Config` plus the line `x_unknown: 1` ends `unavailable` or `error` within 10 s, never `ok`: a module fails closed on a bad block), `analysers` (check 10: each analyser run twice over a store seeded with `c.Seed` at `c.Now` returns byte-identical JSON) and `tables_replay` (check 10, R10: for a module with `Manifest().Tables`, run it over `c.Seed` plus `c.Commands` (the module's own command events, committed through `Host.Emit` like the operator would), dump its `<module>_*` tables, drop and re-create them, replay the module's committed events and its content files through the writer, and compare: the rebuilt rows must equal the dump; a module whose table holds data no event carries fails with the table and column named). `ControllerCase` gains `Commands []event.Event`.
 
 - [ ] **Step 1: Remove the skips:**
 
@@ -4078,7 +4060,6 @@ func TestImportCheckCatchesSibling(t *testing.T) {
 Manifest: module.Manifest{
 	Name: "health", Sides: []module.Side{module.SideAgent}, Privilege: "root", Default: true,
 	Emits: []event.Type{mustType("agent.health"), mustType(event.KindTelemetryGap)},
-	Budget: module.Budget{CPUMillisPerSec: 1, HeldMB: 1, EventsPerSec: 1, Burst: 64, BytesOutPerMin: 64 << 10},
 }
 // mustType(kind) = the declared event.Type, panicking if undeclared (an unexported helper in health.go)
 ```
@@ -4124,7 +4105,7 @@ type Config struct {
 }
 type Module struct{ /* health behind a mutex */ }
 func (*Module) Manifest() module.Manifest // Name "suricata", Sides [controller], Privilege "none", Default false,
-	// Emits the six suricata.* kinds (incl. suricata.run), Actions ["suricata.analyze_pcap"], Budget per the module section
+	// Emits the six suricata.* kinds (incl. suricata.run), Actions ["suricata.analyze_pcap"]
 func (*Module) Start(ctx context.Context, h module.Host) error // decodes Config; reports unavailable with gap
 	// {"suricata.analyze_pcap", "not built (W11)"} and waits for ctx
 func (*Module) Health() module.Health
@@ -4270,16 +4251,16 @@ Run on the BTaP replica (`stacks/ccdc`: `ubuntu-wkst` as controller, `rocky-ecom
 | Probe inside the node, confirm after the after-probe, `rollback_plan` default, `busy` (R12) | 27, 27b, 27c |
 | Tags only on our own activity (R6) | 32, 32a |
 | `module.Duration` (R11); table replay (R10) | 33, 36 |
-| Canonical fields of common kinds, `x_` prefix, rules reject others (CI half) | 4, 35 (check 12) |
+| Canonical fields of common kinds, `x_` prefix, rules reject others (CI half) | 4, 35 (check 11) |
 | Kind table single source, compared with the registry and `Consumes` (T46) | 37 |
 | Capability manifest, published by `phylax modules` and in `hello` | 1, 7, 14, 40 |
-| Agent `Factory.Manifest`, `HealthReporter`, `ModuleSpec` from budget, `Subscribe` kinds | 13 |
+| Agent `Factory.Manifest`, `HealthReporter`, `ModuleSpec` event rate limit, `Subscribe` kinds | 13 |
 | Controller `Host`, `ControlMsg`, `ControllerModule`, `Analyzer` | 17, 18, 19, 20, 23-30 |
 | Persistence rule: one writer, module tables, query API | 8, 17 |
-| Health and budgets, heartbeat per-module block (bug 16 core) | 13, 14 |
+| Health and usage, heartbeat per-module block (bug 16 core) | 13, 14 |
 | Configuration: host `modules:`, effective enablement, observe-mode switch | 7, 11, 12 |
 | Isolation: no sibling imports, shared libraries closed list | 37 |
-| Conformance checks 1-12 | 34 (1-3), 35 (4-7, 12), 36 (8, 9, 11), 41 (10: `-race` job) |
+| Conformance checks 1-11 | 34 (1-3), 35 (4-6, 11), 36 (7, 8, 10), 41 (9: `-race` job) |
 | Controller executor, approval classes, auto conditions, breaker (T73, T79 core half) | 22-29 |
 | `actions.Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext` (one registration name) | 2a |
 | `Event.WithExtra`, extension fields on the common structs | 3a, 4a |

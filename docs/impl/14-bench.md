@@ -508,7 +508,7 @@ Rules (each has a test below):
 - `Reconnect`: for each mark named `partition_end` (time `T0`) and each host with agent samples, the first sample with `ConnectedAt` after `T0` gives `ConnectedAt - T0` seconds; a host with none counts in `NoReconnect`.
 - `CatchUpS` = first `caught_up` mark minus first `partition_end` mark, -1 when either is absent. `Marks` lists every mark in the window.
 - `ReconnectsPerAgent[host]` = last `Connects` minus first `Connects` in the window.
-- Module: for each (host, module) take the first and last sample in the window, `rate = (last - first) / seconds` (last < first means a restart: use `last`); `ModuleSummary` aggregates by module name as described in Task 1's field comments; `WorstState` order: `error`, `over_budget`, `restarting`, `unavailable`, `degraded`, `disabled`, `ok`.
+- Module: for each (host, module) take the first and last sample in the window, `rate = (last - first) / seconds` (last < first means a restart: use `last`); `ModuleSummary` aggregates by module name as described in Task 1's field comments; `WorstState` order: `error`, `restarting`, `unavailable`, `degraded`, `disabled`, `ok`.
 - `Write` prints exactly these lines (numbers `%.1f`, bytes in MB with one decimal), in this order, omitting a block whose data is empty:
 
 ```

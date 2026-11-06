@@ -6,7 +6,7 @@ Version 4, Oct 31, 2026 · @David. Supersedes v3 (Oct 22, 2026; `git show v3:phy
 
 Phylax is the Purdue Blue Team's defence platform for CCDC. It is one Go binary that runs as `phylax serve` on a controller host inside the competition LAN and as `phylax agent` on every other host. Agents open outbound TLS connections to the controller and never listen for management. The controller holds the manifest (the declared description of the environment), the event store, the plan engine, the analysers, the device adapters and a web UI bound to localhost on the controller's console. Every change to a host goes through a plan: a DAG of typed, Go-native actions that the team can see, dry-run, lint for scoring safety, approve and watch run, with a dead-man rollback on the agent for anything that could cut the link.
 
-Version 4 keeps the v3 architecture and reorganises the design around a **module contract**. A small core (link, spool, execution engine, event store, manifest, UI shell) carries everything else. Every capability above the core is a module: one package with one config block, declared typed events in and out, a capability manifest (OS, privileges, roles, resource budget), a health report and its own tests. Modules never import each other. They talk only through typed events on the bus, and the controller's analysers are pure functions over event-store queries. Rules, plans and checks are content (YAML) wherever content can do the job. A new module is off unless the manifest enables it, and every module passes a shared conformance suite in CI.
+Version 4 keeps the v3 architecture and reorganises the design around a **module contract**. A small core (link, spool, execution engine, event store, manifest, UI shell) carries everything else. Every capability above the core is a module: one package with one config block, declared typed events in and out, a capability manifest (OS, privileges, roles), a health report and its own tests. Modules never import each other. They talk only through typed events on the bus, and the controller's analysers are pure functions over event-store queries. Rules, plans and checks are content (YAML) wherever content can do the job. A new module is off unless the manifest enables it, and every module passes a shared conformance suite in CI.
 
 What Phylax does, by module group (the catalogue near the end lists every module and its status):
 
@@ -290,8 +290,8 @@ A module is:
 1. **One Go package** (`internal/<name>`, with optional subpackages it alone uses). The package holds the module's agent side, its controller side, or both. Agent-side registration stays in `internal/agent/mods/<name>*.go` because sensor packages import `internal/agent` (docs/agent.md); that file is part of the module.
 2. **One config block**, a typed Go struct with JSON tags, under `modules.<name>` in the signed agent config (agent side) and in the manifest file `modules/<name>.yml` (Manifest; it replaces the module sections of v3's `policy.yml`). Unknown fields are an error. The block's JSON Schema is generated from the struct and checked by manifest CI. YAML keys equal the JSON tags and the YAML maps one to one onto the struct (nested structs allowed, no translation layer). The one exception is durations: a settings field of type `module.Duration` (a small wrapper over `time.Duration` that unmarshals a string such as `"90s"` or `"2m"` in YAML and JSON and marshals back to the same string) is written readably, so module examples show `breaker_window: 2m` and never an integer `_sec` field; a bare `time.Duration` in a settings struct is a CI error, and the generated JSON Schema types a `module.Duration` as a string with a duration pattern. Where a module section shows a struct with `...Sec` fields beside a YAML example with durations, the example is authoritative and the field becomes a `module.Duration` when the module is retrofitted. Every block carries the generic `enabled` and `act_enabled` fields of `module.Common` (Configuration below). `scorer.yml` (the environment's scorer facts, a manifest file) and `modules/scorer.yml` (the `scorer` module's tunables) are two different files and two different structs.
 3. **Declared typed events in and out.** Every event kind the module emits is declared with a schema version; every kind it consumes is listed. It emits nothing undeclared.
-4. **A capability manifest:** sides, OS, privileges, roles, resource budget, default state, owned store tables, content directories and evidence.
-5. **A health report:** state, coverage gaps and self-measured budget use, published in every heartbeat (agent) or on the Platform page (controller).
+4. **A capability manifest:** sides, OS, privileges, roles, default state, owned store tables, content directories and evidence.
+5. **A health report:** state, coverage gaps and self-measured usage, published in every heartbeat (agent) or on the Platform page (controller).
 6. **Its own tests,** plus the shared conformance suite.
 7. **No sibling imports.** A module imports only the core packages and the shared libraries listed below, never another module. Modules talk only through typed events on the bus. Controller analysers read the event store through the query API and write their findings as events.
 8. **Content before code.** Rules, plans and checks are YAML under the module's content directories; a capability that content over existing actions can deliver gets no new Go.
@@ -642,15 +642,6 @@ const (
 	SideController Side = "controller"
 )
 
-type Budget struct {
-	CPUMillisPerSec int     // self-timed work inside handlers and loops, averaged over 10 s
-	HeldMB          int     // bytes the module holds in its own queues, caches and maps (self-reported)
-	EventsPerSec    float64 // sustained emit rate; becomes agent.ModuleSpec.Rate
-	Burst           int     // becomes agent.ModuleSpec.Burst
-	BytesOutPerMin  int     // encoded event bytes handed to the spool (agent) or the store (controller); blob chunks, Splunk HEC and Wazuh network bytes are excluded, a sink module reports its network bytes in its own Health.Detail
-	DiskMB          int     // files under the module's own state directory
-}
-
 type Manifest struct {
 	Name      string       // package name, config block key and module-kind prefix
 	Sides     []Side       // where it runs
@@ -659,7 +650,6 @@ type Manifest struct {
 	Roles     []string     // host roles that make it eligible (relay, capture, check_runner, scanner, canary, decoys, domain_controller, controller); empty means any host
 	Consumes  []string     // event kinds read: agent Subscribe filter, or controller query inputs
 	Emits     []event.Type // every kind it may emit
-	Budget    Budget
 	Default   bool         // true only for core-default modules; false means off unless the manifest enables it
 	Tables    []string     // controller store tables it owns; migrations ship in the package
 	Content   []string     // content directories it loads, e.g. "rules/detect", "plans/hardening", "checks/checks"
@@ -691,7 +681,7 @@ type HealthReporter interface {
 
 type ModuleSpec struct {
 	Module     Module
-	Rate       float64 // from Manifest.Budget.EventsPerSec unless the config lowers it
+	Rate       float64 // per-module event rate limit; 0 means unlimited
 	Burst      int
 	Subscriber bool    // calls Env.Subscribe from Start; the agent holds start-up events for it
 }
@@ -767,7 +757,7 @@ type Analyzer struct {
 }
 ```
 
-An analyser holds no state between runs; anything it must remember it writes as an event or into a table it owns. **Persistence rule (builder check):** analysers are pure and never touch a table. A controller module that owns tables has exactly one writer goroutine, started in `Start`, which consumes the module's own emitted events (from `Host.Subscribe`) and writes them into the module's own tables. A table is therefore always a projection of the module's own event stream, and rebuilding it is a replay; no analyser, handler or other goroutine writes it. **Every table row must be reproducible from the module's own events plus its content files** (the YAML under the module's content directories, which are in the repository and in the signed config). Data that no sensor event carries still follows the rule: an operator action (an accepted ledger entry, a hunt decision, a check edit, a baseline acceptance, a golden tag, a report edit) is a **typed command event** that the module emits itself through `Host.Emit` when the operator acts, and the table writer applies it like any other event. Command events carry the full new value (never a diff against state the event does not hold), the operator login and the time; they are ordinary declared kinds in the table with the consumers that need them, and a command event does not retrigger other modules unless a consumer is listed. Each module section lists the command events that carry its mutations, and the conformance replay (check 11) rebuilds every table from the module's own events and its content files and compares. That is what makes traceback, chains, deps, SLA, egress ranking and the vulnerability matcher testable from fixture stores and switchable one at a time (review N1.3, cross-cutting idea 7). Analysers run on the controller's analysis worker with a per-run deadline and a per-module CPU budget; a run over budget is stopped and reported.
+An analyser holds no state between runs; anything it must remember it writes as an event or into a table it owns. **Persistence rule (builder check):** analysers are pure and never touch a table. A controller module that owns tables has exactly one writer goroutine, started in `Start`, which consumes the module's own emitted events (from `Host.Subscribe`) and writes them into the module's own tables. A table is therefore always a projection of the module's own event stream, and rebuilding it is a replay; no analyser, handler or other goroutine writes it. **Every table row must be reproducible from the module's own events plus its content files** (the YAML under the module's content directories, which are in the repository and in the signed config). Data that no sensor event carries still follows the rule: an operator action (an accepted ledger entry, a hunt decision, a check edit, a baseline acceptance, a golden tag, a report edit) is a **typed command event** that the module emits itself through `Host.Emit` when the operator acts, and the table writer applies it like any other event. Command events carry the full new value (never a diff against state the event does not hold), the operator login and the time; they are ordinary declared kinds in the table with the consumers that need them, and a command event does not retrigger other modules unless a consumer is listed. Each module section lists the command events that carry its mutations, and the conformance replay (check 10) rebuilds every table from the module's own events and its content files and compares. That is what makes traceback, chains, deps, SLA, egress ranking and the vulnerability matcher testable from fixture stores and switchable one at a time (review N1.3, cross-cutting idea 7). Analysers run on the controller's analysis worker with a per-run deadline; a run over its deadline is stopped and reported.
 
 `Proposal` is the one route from a module to change: a typed suggestion ("block 10.0.0.5 on the Palo", "restore /var/www/html/index.php from golden", "disable unit x") with evidence references, or a plan draft of several nodes (evidence runs, backup restores), rendered as a one-click button that creates and approves a plan through the normal engine. A response recipe of the `respond` module whose tier is 1 becomes a Proposal on the controller side of that module; its tier-0 half runs on the agent. (A-AUTO) A proposal is also what an automatic action degrades to when a precondition fails (probe cannot run, breaker open, rate limit), so the human always has the one-click form of anything the system would have done by itself. Modules never sign or send steps themselves.
 
@@ -775,11 +765,11 @@ An analyser holds no state between runs; anything it must remember it writes as 
 
 **UI.** A module registers its pages, overview tiles and host-grid columns through `ui.Registrar` (UI shell). The shell has no module-specific code; a disabled module's pages disappear.
 
-### Health and budgets
+### Health and usage
 
 ```go
 // package module
-type State string // "ok", "degraded", "unavailable", "disabled", "over_budget", "restarting", "error"
+type State string // "ok", "degraded", "unavailable", "disabled", "restarting", "error"
 
 type Gap struct{ What, Why string } // e.g. {"overlayfs under /var/lib/docker", "audit watches cannot see it"}
 
@@ -802,12 +792,12 @@ type Health struct {
 
 The supervisor fills `State`, `Events` and `Dropped` for every module (built: `ModuleStatus`). A module that implements `HealthReporter` adds gaps, detail and its own usage. The heartbeat's per-module block carries the whole `Health`, so a runaway rule shows as one module's CPU climbing (review D67, cross-cutting idea 13).
 
-**Budgets are enforced in two layers.** The process as a whole is capped by systemd `MemoryMax` and `CPUQuota` or a Windows Job Object, with `debug.SetMemoryLimit` set below the cap. Per module, Go cannot attribute RSS or CPU to goroutines, so usage is self-measured: modules time their own handler and loop work and count the bytes they hold. The supervisor's budget hook (built) stops a module whose self-reported usage exceeds its budget for three consecutive intervals, marks it `over_budget` and restarts it after backoff. `shortcut: per-module CPU and memory are self-reported approximations, upgrade only if a lab run shows a module misreporting`.
+**Modules report their usage; they declare no budget (owner decision 2026-11-06).** The process as a whole is capped by systemd `MemoryMax` and `CPUQuota` or a Windows Job Object, with `debug.SetMemoryLimit` set below the cap. Go cannot attribute RSS or CPU to goroutines, so per-module usage is self-measured: modules time their own handler and loop work and count the bytes they hold, and the heartbeat carries that usage so a runaway rule shows as one module's usage climbing. `shortcut: per-module CPU and memory are self-reported approximations, upgrade only if a lab run shows a module misreporting`.
 
 ### Configuration
 
 - The manifest enables modules per host with a `modules:` map of booleans in `hosts.yml` (`modules: {<name>: true|false}`), or for every host matching a `labels:` list and label expression, plus each module's block in `modules/<name>.yml`. Core-default modules are enabled unless the host's entry turns them off.
-- The controller renders each host's `AgentConfig` from the manifest (built: `controller/agentconfig.go`, `genconfig.go`); each agent module's block becomes its `ModuleSettings` field. The signed config carries the module blocks, the rule files the host's modules need and the budgets.
+- The controller renders each host's `AgentConfig` from the manifest (built: `controller/agentconfig.go`, `genconfig.go`); each agent module's block becomes its `ModuleSettings` field. The signed config carries the module blocks and the rule files the host's modules need.
 - Event-specific values are entered in the UI and written to `overrides.yml` (Manifest), never to the module's base block.
 - **Generic `enabled` and `act_enabled` (builder check).** Every `modules/<name>.yml` has both fields, defined once:
 
@@ -844,13 +834,12 @@ Content lives in the repository under `rules/`, `plans/` and `checks/`, one subd
 3. **Stops cleanly:** returns within 5 s of context cancel and leaves no goroutines (checked with a goroutine leak detector).
 4. **Reports health** within one heartbeat interval, with a non-empty `Gaps` entry for every declared OS or privilege it lacks.
 5. **Emits only declared kinds,** every event decoding strictly against its declared schema version.
-6. **Respects its budget** under its fixture load (events per second, self-reported CPU and held bytes).
-7. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s.
-8. **Survives reconfiguration:** a changed config replaces it without losing `Keep` state.
-9. **Has no sibling imports** and **rejects unknown config fields**, while decoding `enabled` and `act_enabled` (they are accepted by every block).
-10. **Passes `go test -race`** for its package.
-11. **For analysers and tables:** an analyser produces identical output twice from the same fixture store and `now` and writes no table (the module's one writer goroutine does); and every table the module declares is a projection: the replay test empties the module's tables, feeds the module's own committed events (command events included) and its content files back through its writer, and the rebuilt rows equal the originals.
-12. **Common kinds use canonical fields:** every event of a common kind decodes strictly against the canonical struct (Event envelope: canonical fields), and a module's `Consumes` contains only declared table kinds.
+6. **Survives link loss:** keeps running and keeps local behaviour when `Emit` returns errors for 60 s.
+7. **Survives reconfiguration:** a changed config replaces it without losing `Keep` state.
+8. **Has no sibling imports** and **rejects unknown config fields**, while decoding `enabled` and `act_enabled` (they are accepted by every block).
+9. **Passes `go test -race`** for its package.
+10. **For analysers and tables:** an analyser produces identical output twice from the same fixture store and `now` and writes no table (the module's one writer goroutine does); and every table the module declares is a projection: the replay test empties the module's tables, feeds the module's own committed events (command events included) and its content files back through its writer, and the rebuilt rows equal the originals.
+11. **Common kinds use canonical fields:** every event of a common kind decodes strictly against the canonical struct (Event envelope: canonical fields), and a module's `Consumes` contains only declared table kinds.
 
 ### Retrofit order
 
@@ -1084,15 +1073,15 @@ The agent is the agent mode of the single static binary, running as a supervised
 
 - **Main process,** root or SYSTEM: everything except decoys. Modules run as supervised goroutines with panic recovery and exponential restart backoff (1 s to 60 s, reset after a 30 s stable run), and each crash emits `agent.module_crash` (built; review D63). Shared state is behind locks or channels; `go test -race` is a CI gate, because a concurrent map write is a fatal error no recover can catch [CR §3.5].
 - **Decoy process,** unprivileged (a dedicated user on Linux, a low-privilege service account on Windows): every decoy listener and the fake shell. A second process, kept because decoys are the agent code most exposed to attackers. Status: the split is not done yet (docs/agent.md); the `decoys` module section carries it.
-- **Config comes only from the controller** as signed `config` messages delivered at `welcome` and on change (review D65). The bootstrap file carries the controller pin and the host identity; module blocks, rules, ledger references and budgets arrive signed. An agent without config reports itself unconfigured and runs no module except `health` [CR §3.4]. The agent persists the last good config and runs it on restart without a controller.
+- **Config comes only from the controller** as signed `config` messages delivered at `welcome` and on change (review D65). The bootstrap file carries the controller pin and the host identity; module blocks, rules and ledger references arrive signed. An agent without config reports itself unconfigured and runs no module except `health` [CR §3.4]. The agent persists the last good config and runs it on restart without a controller.
 
 #### Footprint
 
 | Measure | Target | Enforced by |
 | --- | --- | --- |
 | Binary size | 40 MB or less, 15 MB or less compressed | CI fails the build above it (`make size`; review D66). No agent-only build tag. |
-| Memory | 80 MB RSS or less steady for the agent without the `capture` module, excluding kernel-held memory (reported separately in the heartbeat). On a host with the `capture` role the capture module's ring and freeze hold are Go heap (256 MiB each by default, `ring_mb` and `hold_mb`) and are budgeted on top: the hard cap is 80 MB plus the module's configured `HeldMB`, and the heartbeat reports the capture module's held bytes separately from the base figure | `debug.SetMemoryLimit` plus systemd `MemoryMax` or a Windows Job Object as the hard cap, computed from the 80 MB base plus the held budgets of the modules enabled on the host; per-module self-reported held bytes (review D67) |
-| CPU | 3% average; a 5 s burst of one core at most | systemd `CPUQuota` or the Job Object; per-module self-timed budgets; sweeps run at low priority; capture drops packets before slowing the host |
+| Memory | 80 MB RSS or less steady for the agent without the `capture` module, excluding kernel-held memory (reported separately in the heartbeat). On a host with the `capture` role the capture module's ring and freeze hold are Go heap (256 MiB each by default, `ring_mb` and `hold_mb`) and count on top: the hard cap is 80 MB plus the capture module's configured ring and hold, and the heartbeat reports the capture module's held bytes separately from the base figure | `debug.SetMemoryLimit` plus systemd `MemoryMax` or a Windows Job Object as the hard cap, computed from the 80 MB base plus the capture module's configured held bytes; per-module self-reported held bytes (review D67) |
+| CPU | 3% average; a 5 s burst of one core at most | systemd `CPUQuota` or the Job Object; per-module self-reported usage; sweeps run at low priority; capture drops packets before slowing the host |
 | Disk | Spool 200 MB cap; frozen capture evidence (pcap slices) under the `capture` module's `disk_budget_mb` (default 512 MB) | Oldest low-priority data shed first; alerts and evidence never shed (review D68) |
 
 Kernel-held memory is reported in the heartbeat (audit backlog, inotify watches, the kernel's TPACKET_V3 mapping) [OA §5.7] but not accounted per module. The capture module's own packet ring is not kernel memory: it is a copy-in circular buffer in the agent's heap, so it counts against the cap and is sized by configuration, not hidden from it. If a lab run shows the heap ring too costly on a small host, moving it to a file is a change inside the module (the ring API does not expose where the bytes live); the design follows the code until then.
@@ -1180,7 +1169,7 @@ The operator UI is not on this listener. Four connection types on one port is st
 | Both | `chunk`, `chunk_have` | Content-addressed transfers: evidence, pcap slices and collected files up; step payloads, depot blobs, ledger files and the agent binary down |
 | Controller → agent | `ack` | Highest contiguous sequence stored (after the store commit) |
 | Controller → agent | `step` | A signed plan step |
-| Controller → agent | `config` | Signed `AgentConfig`: module blocks, rules, ledger references, budgets |
+| Controller → agent | `config` | Signed `AgentConfig`: module blocks, rules, ledger references |
 | Controller → agent | `fetch` | Request for a pcap slice, a file, a depot blob or raw telemetry |
 | Controller → agent | `control` | Signed; the types are listed below: `safe_mode`, `freeze_capture`, `deadman_confirm`, `step_status`, `fact` |
 | Relay ↔ controller | `relay_request` | Device-proxy and bootstrap splice requests on the relay control connection |
@@ -1228,7 +1217,7 @@ The sender drains its queues in strict order, and every message is sent at its r
 
 #### Signed agent config
 
-The signed config is the typed `AgentConfig` (`internal/plan/agentconfig.go`, docs/protocol.md §8a; review D126), generated per host by the controller from the manifest and rules, signed with the plan key, host-bound and replay-protected by a durable `(epoch, version)` mark on the agent. Versions move only when a host's content changes. It carries `roles`, `modules` (one block per agent module, nil means off), and `budgets`. **Sealed secrets** (builder check): a secret an agent module needs on the host is carried in the signed config sealed to the host's enrolled key (the mechanism `capture` uses for its seal key), is opened in memory by the module and never written to disk or into an event; a new `(epoch, version)` is signed whenever a sealed value changes. The agent persists the last good config and runs it on restart without a controller; modules start, stop and reconfigure through the factory registry.
+The signed config is the typed `AgentConfig` (`internal/plan/agentconfig.go`, docs/protocol.md §8a; review D126), generated per host by the controller from the manifest and rules, signed with the plan key, host-bound and replay-protected by a durable `(epoch, version)` mark on the agent. Versions move only when a host's content changes. It carries `roles` and `modules` (one block per agent module, nil means off). **Sealed secrets** (builder check): a secret an agent module needs on the host is carried in the signed config sealed to the host's enrolled key (the mechanism `capture` uses for its seal key), is opened in memory by the module and never written to disk or into an event; a new `(epoch, version)` is signed whenever a sealed value changes. The agent persists the last good config and runs it on restart without a controller; modules start, stop and reconfigure through the factory registry.
 
 #### The spool
 
@@ -1246,7 +1235,7 @@ The spool is segment files, not one file [CR §3.10, OA §5.8] (review D129-D134
 
 - **Shipped continuously:** alerts, heartbeats, process starts, connection changes, file changes on watched paths, selected log lines, flows, protocol transactions on scored ports, denied-egress attempts, decoy sightings, ledger verdicts (review D127).
 - **Kept on the host until fetched:** the packet ring, raw sampler output, full log files.
-- **Design envelope** (review D128): outages of up to 60 s on any link; event-to-controller latency of 10 s or less while the link is up. These size buffers and timeouts; they are budget targets, not competition time goals.
+- **Design envelope** (review D128): outages of up to 60 s on any link; event-to-controller latency of 10 s or less while the link is up. These size buffers and timeouts; they are targets, not competition time goals.
 
 ### Enrollment, bootstrap and recovery
 
@@ -1293,7 +1282,7 @@ First contact and enrollment are one core package, `internal/enroll` (builder ch
 
 The one-liner carries two pins: the controller's public-key hash (`curl --pinnedpubkey`, or a validation callback in PowerShell, which also enables TLS 1.2 on older builds) and the download's hash. The Linux one-liner pins the SPKI hash (`--pinnedpubkey`). The Windows one-liner pins the controller certificate's SHA-1 thumbprint (`X509Certificate.GetCertHashString()` is the only hash .NET Framework 4.x exposes without extra code); `shortcut: SHA-1 thumbprint pin on Windows, upgrade when the minimum Windows build has GetCertHash(HashAlgorithmName)`. The UI generates the full command for each host [SP §A18].
 
-**The Invitational's console scripts (R1).** At the Invitational the typed line is the short W2 line (about 70 characters of `a-z 0-9 . : / | -`), which fetches `e.sh` or `e.ps1`, the kit, the binary and the host's bundle over plain HTTP from `phylax serve -bundles`; no pin or full hash can be typed in that budget, and the pinned one-liner above stays the production path. Instead of a pin, the controller detects what a pin would have prevented: (1) the agent reports the sha256 of its own binary in `hello` (`binary_sha256`) and the controller raises an alert-class `enroll.hash_mismatch` event when it differs from the hash of the binary the controller served; (2) the controller raises `enroll.no_show` when a host that has a bundle does not connect within the enrollment window, and flags `enroll.refused` alert-class (a stolen token shows as the real host being refused); (3) bundles are served only during the enrollment window, and each `<host>.json` is removed from the served directory once that host connects, so a bundle cannot be fetched twice after use. The bundle TTL stays short. Residual risk, accepted (Risks): a trojaned binary or script that lies about its own hash is not caught.
+**The Invitational's console scripts (R1).** At the Invitational the typed line is the short W2 line (about 70 characters of `a-z 0-9 . : / | -`), which fetches `e.sh` or `e.ps1`, the kit, the binary and the host's bundle over plain HTTP from `phylax serve -bundles`; no pin or full hash can be typed in that time, and the pinned one-liner above stays the production path. Instead of a pin, the controller detects what a pin would have prevented: (1) the agent reports the sha256 of its own binary in `hello` (`binary_sha256`) and the controller raises an alert-class `enroll.hash_mismatch` event when it differs from the hash of the binary the controller served; (2) the controller raises `enroll.no_show` when a host that has a bundle does not connect within the enrollment window, and flags `enroll.refused` alert-class (a stolen token shows as the real host being refused); (3) bundles are served only during the enrollment window, and each `<host>.json` is removed from the served directory once that host connects, so a bundle cannot be fetched twice after use. The bundle TTL stays short. Residual risk, accepted (Risks): a trojaned binary or script that lies about its own hash is not caught.
 
 **Bootstrap config contents** (review D141): the controller addresses and port, the controller key pin, the host's manifest identity, the randomised install parameters, the plan-signing public key, a one-time enrollment token that expires after 10 minutes, and the initial roles.
 
@@ -1667,7 +1656,7 @@ scorer:
 | Palo and VyOS rules, objects, NAT, including the Kali path | topology, services, devices | `devices` |
 | Egress allowlists | `depends_on`, topology | Host and network firewalls |
 | Domain membership allowances | `domain_member`, `rpc_range` | Host firewalls of members and the DC (review D210, D211) |
-| Agent configs (roles, module blocks, rules, ledger references, budgets) | hosts, services, `modules/<name>.yml` | `config` messages (review D203) |
+| Agent configs (roles, module blocks, rules, ledger references) | hosts, services, `modules/<name>.yml` | `config` messages (review D203) |
 | Plan targets and the scoring-safety constraints per service and host | hosts, services, accounts | Plan templates, the lint, `phylax guard` (review D204) |
 | Active checks and scorer-mimic probes | `health` and `transport` blocks plus accepted proposals | `checks`, `vantage` (review D205) |
 | Honeytoken and decoy configs | `modules/decoys.yml`, `modules/honeytokens.yml` (values generated at competition time) | `decoys`, `honeytokens` |
@@ -1778,7 +1767,7 @@ Pages registered by a disabled module disappear (review D464, D468, D469, D471-D
 | Host x step grid | The convergence board (below) | shell; columns from modules |
 | Plans | Templates, the plan DAG with live node status, diffs, lint results, approvals with approver names and class (`click`, `auto_readonly`, `standing`, `auto`), the standing approvals with scope and expiry (create, revoke), rollback (review D462) | shell (execution engine) |
 | Alerts and incidents | Queue, evidence, trace-back, one-click actions and proposals, IR draft button, and a **pivot** on IP, host, user, domain and process GUID over the full-text store (review D463; verify first that no pivot exists) | shell; actions from modules |
-| Platform | One page (review D475-D477, D479): controller disk use with the current shed level (Event store and vault: Quotas), per agent link state and lag, spool depth and congestion, clock offset, safe mode, config status, every module's health with gaps and budget use, telemetry gap counts; per relay connections, bytes and errors; the controller's CPU, memory, disk, database size and last snapshot; cache progress (from `depot`) and integration health (from opt-in integration modules). Anything degraded shows on the Overview. Replaces v3's separate Integrations and Cache pages. | shell |
+| Platform | One page (review D475-D477, D479): controller disk use with the current shed level (Event store and vault: Quotas), per agent link state and lag, spool depth and congestion, clock offset, safe mode, config status, every module's health with gaps and usage, telemetry gap counts; per relay connections, bytes and errors; the controller's CPU, memory, disk, database size and last snapshot; cache progress (from `depot`) and integration health (from opt-in integration modules). Anything degraded shows on the Overview. Replaces v3's separate Integrations and Cache pages. | shell |
 | Settings | Manifest overrides, the adoption queue, suppression records, runtime facts, secrets unlock (review D478) | shell |
 | Audit, Account | Audit log (filter by operator and action); password change | shell |
 | Since you left | The hand-over digest (review D505). The outgoing SOC person presses "Hand over" on the Overview, which records the time and their name in the audit log and opens a free-text note box; the incoming person opens this page: everything since the last hand-over, newest first (plan completions and failures, drift adoptions, open work windows and feed entries, new and changed incidents, approvals waiting, safe-mode changes, modules or agents that degraded, and the outgoing person's notes). Read-only, built from the store, no new tables beyond the hand-over audit entry | shell |
@@ -1929,7 +1918,7 @@ Every module section has these parts, in this order. A part that does not apply 
 
 1. **Purpose and evidence.** What the module does and the evidence that it matters for points (vault citations, research tags, peer evidence for and against). A module without evidence says so and starts off.
 2. **Status and code.** built, partial or missing; the packages and files; what is missing.
-3. **Capability manifest.** Sides, OS, privilege, roles, budget (CPU ms/s, held MB, events/s, bytes out/min, disk MB), default (core or opt-in), owned tables, content directories, actions, pages.
+3. **Capability manifest.** Sides, OS, privilege, roles, default (core or opt-in), owned tables, content directories, actions, pages.
 4. **Configuration.** The config block as manifest YAML with every field, and the typed Go settings struct.
 5. **Events.** Consumed kinds; emitted kinds with schema version, priority and key fields.
 6. **Behaviour.** How it works: mechanisms, procedures, thresholds and edge cases, carried over from v3 where kept.
@@ -1989,10 +1978,6 @@ module.Manifest{
 	Roles:     nil,    // any Linux host
 	Consumes:  nil,
 	Emits: []event.Type{ /* process_start v1, file_change v1, conn v1, telemetry_gap v1, audit.rules_changed v1, audit.module_load v1, audit.af_alg v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 150, HeldMB: 96, EventsPerSec: 2000, Burst: 4000,
-		BytesOutPerMin: 24 << 20, DiskMB: 1,
-	},
 	Default:  true, // core-default
 	Tables:   nil,
 	Content:  nil, // the rule builder takes its path lists from config; detection rules are in `detect`
@@ -2001,8 +1986,6 @@ module.Manifest{
 	Evidence: []string{"[[ccdc-the-great-the-good-and-the-ok#e10]]", "[OA §0.1]", "[OA §4]", "[OA §5.1]", "[OA §5.2]", "[OA §5.6]"},
 }
 ```
-
-`EventsPerSec` and `Burst` are the code's defaults (`RatePerSec` 2000, `Burst` 4000). The CPU, held-memory and bytes-out numbers are initial limits to be replaced by the first lab measurement (held memory is dominated by the process table, 16384 entries, the reader queue of 16384 records and one sweep snapshot of up to 200000 entries). `shortcut: budget numbers are estimates, replace with measured values after the first T43 and Invitational runs`.
 
 `Actions`: `audit.rules` and `audit.immutable` are registered by this module from its package (the execution engine's action table names `audit` as their owner; builder check). `audit.rules` uses the module's own rule set, so a plan change to audit rules and the guard cannot fight: the action edits the module's `extra_watches` list and the guard then renders and repairs the result, and the guard still deletes stale `phylax`-keyed rules it did not render.
 
@@ -2104,7 +2087,7 @@ An audit rule flush by the red team (`auditctl -D`) is therefore seen within 10 
 
 **Loss is visible.** Sequence gaps found by the reassembler, `ENOBUFS`, queue overflow, rate-limit drops and kernel-lost increases are accumulated and flushed once a second as `telemetry_gap` events with an exact-or-estimate flag. v3 also described a `/proc`-diff backfill at lower confidence (`source=backfill`, review D90); the code does not do it. See Limits.
 
-**Hash sweep (the file source of truth).** Every `sweep_interval_sec` (default 5 min, first pass after 5 s) the module walks the watch paths and web roots, plus the self paths, depth 8, at most 200000 entries, at 400 files per second, and diffs against the previous snapshot (creates, deletes, content and attribute changes). Files over 8 MiB are compared by size and mtime only. Changes the audit stream already reported since the previous sweep started are skipped, so a sweep event means "audit did not see it" (`writer_known: false`). At most 500 sweep events per pass; the overflow is counted as `sweep_overflow`. v3 hashed only changed files each pass and re-hashed everything on a slower cadence; the code re-hashes every file each pass within the rate limit, which is simpler and bounded. `shortcut: full re-hash each sweep, add a changed-files-only fast pass if a lab run shows the sweep costs more than its CPU budget`.
+**Hash sweep (the file source of truth).** Every `sweep_interval_sec` (default 5 min, first pass after 5 s) the module walks the watch paths and web roots, plus the self paths, depth 8, at most 200000 entries, at 400 files per second, and diffs against the previous snapshot (creates, deletes, content and attribute changes). Files over 8 MiB are compared by size and mtime only. Changes the audit stream already reported since the previous sweep started are skipped, so a sweep event means "audit did not see it" (`writer_known: false`). At most 500 sweep events per pass; the overflow is counted as `sweep_overflow`. v3 hashed only changed files each pass and re-hashed everything on a slower cadence; the code re-hashes every file each pass within the rate limit, which is simpler and bounded. `shortcut: full re-hash each sweep, add a changed-files-only fast pass if a lab run shows the sweep costs too much CPU`.
 
 **Containers (N7.6).** For a service with `runtime: docker` or `podman`, the manifest gives the controller the published-port listeners, the container's mount namespace for pins, and the volumes as content roots. For `audit` this means: volume paths on the host are ordinary `web_roots` and are watched and swept normally; processes inside a container are seen by the host's audit (the initial namespace) and carry the container's `cgroup`, from which the controller resolves the service. Files in the container's writable layer on `overlayfs` under `/var/lib/docker` are not reliably visible to path watches; they are reported as a coverage gap (see Health) rather than silently missed.
 
@@ -2125,7 +2108,7 @@ Implements `agent.HealthReporter`. States:
 - `ok`: rules installed (`rules_failed` 0), enabled, reader attached, no `never` rules.
 - `degraded`: some rules failed to install, a foreign `never` rule exists, the module is rate-limiting, or the receive buffer overflowed in the last interval.
 - `unavailable`: not root or no audit netlink (reported as `ErrUnavailable` by the factory with the reason).
-- `over_budget` and `restarting` are set by the supervisor.
+- `restarting` is set by the supervisor.
 
 Gaps reported (each a `Gap{What, Why}`):
 
@@ -2134,7 +2117,7 @@ Gaps reported (each a `Gap{What, Why}`):
 - `unsupported filesystem under <path>` for NFS, overlayfs, FUSE and similar mounts that carry a watch path (to build with a `statfs` type check at start and on the verify loop; review D98).
 - `unicast reader displaced` while it lasts.
 
-`Health.Info` carries the full `rules_hash`, `mode` (`multicast` or `unicast`), `rules_installed` and `rules_failed` (module contract: Health and budgets); `Health.Detail` is display text only (the first 12 hex of the hash) and no decision reads it. Usage reports the self-timed handler CPU, bytes held in the process table, queue and snapshot, events and bytes out, and drops (rate-limited plus queue overflow).
+`Health.Info` carries the full `rules_hash`, `mode` (`multicast` or `unicast`), `rules_installed` and `rules_failed` (module contract: Health and usage); `Health.Detail` is display text only (the first 12 hex of the hash) and no decision reads it. Usage reports the self-timed handler CPU, bytes held in the process table, queue and snapshot, events and bytes out, and drops (rate-limited plus queue overflow).
 
 ##### 10. Scoring safety
 
@@ -2155,15 +2138,15 @@ To add: a test for the module-load rule, the filesystem-type gap, the `HealthRep
 
 Conformance (module contract): starts with no config (`Section` returns disabled), reaches `ok` or `unavailable` within 10 s on a fixture host, stops within 5 s, emits only declared kinds, survives link loss (every `emit` error is counted, none is fatal), survives reconfiguration (a new web root replaces the module; no `Keep` state is needed because the rule baseline is re-read from the kernel), `go test -race`.
 
-Lab tests (ids from the Testing section matrix): T43 exec storm, T71 module budgets against the cgroup figure, T01 prebaked set present (file and exec evidence), T02 firewall disabled by timer (D10 path), T12 `LD_PRELOAD` rootkit hiding a process (the `env` field and the sweep), T36 hardening with no red steps (no untagged `file_change` from our own plans).
+Lab tests (ids from the Testing section matrix): T43 exec storm, T71 module usage against the cgroup figure, T01 prebaked set present (file and exec evidence), T02 firewall disabled by timer (D10 path), T12 `LD_PRELOAD` rootkit hiding a process (the `env` field and the sweep), T36 hardening with no red steps (no untagged `file_change` from our own plans).
 
 ##### 12. Limits and open items
 
 - `shortcut: audit sees only the initial namespaces, so processes in containers appear with the host pid and cgroup but their in-container paths are not mapped; resolve cgroup to service in the controller and add a container-aware pin only when the 2027 stack is known to use Docker`.
 - `shortcut: no process_exit events; add -S exit_group rules only if a rule needs exit times`. v3 listed "process start and exit"; the code, and every rule so far, uses starts only, and exited parents are kept in the TTL table.
 - `shortcut: no /proc-diff backfill after an event loss; gaps are reported, not filled, add the backfill (source=backfill, lower confidence) if the lab shows gaps that matter for trace-back`. Review D90 kept the backfill; the code has the gap half only. If it is built, it belongs to this module.
-- `shortcut: the sweep re-hashes everything each pass within a rate limit, add a changed-files-only pass if the CPU budget needs it`.
-- Resolved: the heartbeat rules hash travels in the typed `Health.Info` map (`Info["rules_hash"]`, module contract: Health and budgets), next to `Detail`; the controller compares it with the hash it rendered. The module implements `HealthReporter` to fill it.
+- `shortcut: the sweep re-hashes everything each pass within a rate limit, add a changed-files-only pass if the CPU cost needs it`.
+- Resolved: the heartbeat rules hash travels in the typed `Health.Info` map (`Info["rules_hash"]`, module contract: Health and usage), next to `Detail`; the controller compares it with the hash it rendered. The module implements `HealthReporter` to fill it.
 - Resolved: plan-driven audit rule changes (`audit.rules`) and the guard share the `audit` lock. The guard does not repair while a plan node holds the lock, and a successful `audit.rules` node updates the declared rule set the guard verifies against (each successful node updates the host's declared state, Execution engine: Locks), so the plan's change becomes the new baseline instead of being repaired away.
 - Resolved: the module-load rule's event is the declared kind `audit.module_load` (see Behaviour and the Event kinds table).
 - Open: honey-file read detection (v3 mentioned fanotify) belongs to `honeytokens`; if it uses `perm=r` audit watches the rule set needs a hook for other modules' watches without a sibling import (config-rendered `extra_watches` with a key suffix is the likely answer).
@@ -2214,10 +2197,6 @@ module.Manifest{
 	Consumes:  nil,
 	Emits: []event.Type{ /* process_start v1, process_exit v1, auth_event v1, conn v1, file_change v1, dns_query v1, telemetry_gap v1,
 	                         winevt.sec_event v1, winevt.sensor_state v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 100, HeldMB: 64, EventsPerSec: 500, Burst: 1000,
-		BytesOutPerMin: 12 << 20, DiskMB: 1,
-	},
 	Default:  true, // core-default on Windows
 	Tables:   nil,
 	Content:  []string{"sysmon"}, // sysmon_config.xml is embedded in the binary; the hash is pinned in the release
@@ -2227,7 +2206,6 @@ module.Manifest{
 }
 ```
 
-The numbers are initial limits, not measurements. Event volume is unmeasured: question R7 and O3 in `docs/impl/invitational-data.md` (Windows event rates per host, cost per module) set the real values. `shortcut: budget numbers are estimates, replace with Invitational measurements`.
 
 ##### 4. Configuration
 
@@ -2419,10 +2397,6 @@ module.Manifest{
 	Roles:     nil,
 	Consumes:  []string{"winevt.sec_event"}, // Windows only: 5157 outbound blocks become net.egress_denied
 	Emits: []event.Type{ /* conn v1, listener v1, net.egress_denied v1, net.ingress_denied v1, net.shadow_drop v1, net.canary_result v1, net.sensor_degraded v1, telemetry_gap v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 80, HeldMB: 64, EventsPerSec: 200, Burst: 400,
-		BytesOutPerMin: 8 << 20, DiskMB: 0,
-	},
 	Default:  true, // core-default
 	Tables:   nil,
 	Content:  nil,
@@ -2432,7 +2406,6 @@ module.Manifest{
 }
 ```
 
-Budget numbers are initial limits. Held memory is dominated by the tracked-connection map (65536 entries) and the process cache. `shortcut: budget numbers are estimates, replace with Invitational measurements (O3 in docs/impl/invitational-data.md)`.
 
 ##### 4. Configuration
 
@@ -2604,10 +2577,6 @@ module.Manifest{
 	Roles:     nil,
 	Consumes:  nil,
 	Emits: []event.Type{ /* auth_event v1, logs.line v1, telemetry_gap v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 30, HeldMB: 8, EventsPerSec: 300, Burst: 600,
-		BytesOutPerMin: 4 << 20, DiskMB: 1,
-	},
 	Default:  true, // core-default
 	Tables:   nil,
 	Content:  []string{"internal/logs/parsers"}, // regex parsers with inline tests, embedded with go:embed
@@ -2617,7 +2586,6 @@ module.Manifest{
 }
 ```
 
-Numbers are initial limits. Access logs are the volume risk; the rate limit and bulk priority bound it. `shortcut: budget numbers are estimates, replace with Invitational measurements (R7, O3 in docs/impl/invitational-data.md)`.
 
 ##### 4. Configuration
 
@@ -2733,7 +2701,7 @@ Lab tests: T37 scorer failed logins do not trip D9e, the purple-team false-posit
 - Open: the Windows Firewall operational log, the DNS Server analytical log and the Netlogon log tail (v3 Windows `logs` row) belong to `winevt` (channels) or to a Windows build of this file tailer. The Go file tail is portable, so adding `windows` to `OS` and a `C:\Windows\debug\netlog*.log` entry is small; decide when a rule needs it.
 - Open: an ESXi or Palo/FTD syslog receiver (rules D14b, D14d) needs a listener, which `logs` does not have and which the complexity register would need a line for. The `devices` module pulls device logs, which is the preferred route; no listener is planned.
 - Open: `plan.ModuleSettings` needs a `Logs` field and the `Files` list needs schema generation, a core change that follows the retrofit order.
-- Open: detection of `rules/logs.yml` regex cost on busy access logs; the on-host engine runs it per `logs.line`. The rate limit bounds it. If the Invitational shows access-log volume above the budget, add `lines: false` for the access log and emit only parsed fields for attacks.
+- Open: detection of `rules/logs.yml` regex cost on busy access logs; the on-host engine runs it per `logs.line`. The rate limit bounds it. If the Invitational shows access-log volume above the measured rate, add `lines: false` for the access log and emit only parsed fields for attacks.
 
 #### `inventory`
 
@@ -2770,10 +2738,6 @@ module.Manifest{
 	Roles:     nil,
 	Consumes:  []string{"inventory.row", "inventory.snapshot"}, // controller side
 	Emits: []event.Type{ /* inventory.snapshot v1, inventory.row v1, inventory.probe_result v1, telemetry_gap v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 60, HeldMB: 48, EventsPerSec: 50, Burst: 400,
-		BytesOutPerMin: 6 << 20, DiskMB: 64,
-	},
 	Default:  false, // opt-in; the reference manifest enables it on every host
 	Tables:   []string{"inventory_rows", "inventory_epochs"},
 	Content:  []string{"internal/inventory/probes", "internal/inventory/software"},
@@ -2783,7 +2747,6 @@ module.Manifest{
 }
 ```
 
-Numbers are initial limits. `DiskMB: 64` holds the worst case on the host: the snapshot files of every table in the list at `max_rows` (13 tables, 20000 rows, about 200 bytes of JSON per row is about 52 MB) plus the temporary copy that the atomic write of the largest table needs; real hosts use a few MB, because only `software` comes near the cap. The baseline snapshot of the first collection is the burst: it is sent once per table, in bulk priority and in chunks of at most 500 rows. `shortcut: budget numbers are estimates, replace with Invitational measurements (O3 in docs/impl/invitational-data.md)`.
 
 ##### 4. Configuration
 
@@ -2911,7 +2874,7 @@ Registered through `ui.Registrar`:
 Implements `agent.HealthReporter`. States:
 
 - `ok`: every enabled table collected within twice its interval.
-- `degraded`: a table failed or was truncated, state files were lost (epoch bumped), or the module hit its budget.
+- `degraded`: a table failed or was truncated, or state files were lost (epoch bumped).
 - `unavailable`: not root, or the table sources are missing (for example no BPF syscall permission).
 
 Gaps: `<table>: collection failed: <err>`, `<table> truncated at max_rows`, `rpm database format not readable (Berkeley DB)`, `bpf_programs: no permission (needs CAP_BPF or CAP_SYS_ADMIN)`, `inventory state lost on this host, new epoch`. The Platform page also shows each table's age.
@@ -2924,7 +2887,7 @@ Read-only on the host: it reads state and writes only its own snapshots under `S
 
 To build: per-collector fixture tests (recorded `passwd`, `shadow`, `group`, `sudoers`, `mountinfo`, `modules`, unit files, cron spools, dpkg status, an rpm sqlite fixture, sssd/krb5/smb samples, Windows registry and task XML fixtures); diff engine tests (add, remove, change, no-op, key collision, epoch rules, lost state, schema bump, row caps); persistence across restart; baseline sends a snapshot and no row events; probe interpreter tests (each operator, parameter validation, limit, rejection of an unknown column, unknown table, oversize results); a test that no probe definition names a column the table does not have; the rule tests for the retargeted parked rules over `inventory.row` events; the controller fold (snapshot plus rows equals the table).
 
-Conformance: starts with no config (disabled), starts with default config on a fixture host (fixture procfs and `/etc`), stops within 5 s, reports health, emits only declared kinds, respects the budget under a 20000-row fixture, survives link loss (snapshots are on disk, events are retried by the spool), survives reconfiguration (a new table list keeps the existing tables' epochs through `Keep`), `go test -race`; analyser determinism for the controller fold (same store, same output).
+Conformance: starts with no config (disabled), starts with default config on a fixture host (fixture procfs and `/etc`), stops within 5 s, reports health, emits only declared kinds, behaves under a 20000-row fixture, survives link loss (snapshots are on disk, events are retried by the spool), survives reconfiguration (a new table list keeps the existing tables' epochs through `Keep`), `go test -race`; analyser determinism for the controller fold (same store, same output).
 
 Lab tests (matrix ids): T69 (snapshots, `probe.run`, drift adoption and the version matcher), T12 (LD_PRELOAD rootkit: the `units` and `kernel_modules` rows), the prebake hunt T01 (reference diff uses the same tables), the Invitational questions E5 (what is running at drop flag), E7 (local accounts on every host), E3 (versions of every scored product) as data for the baseline.
 
@@ -2989,7 +2952,6 @@ Rule ids owned by other modules are in the catalogue table's "Owner" column; the
 | Roles | any host; controller side on the controller |
 | Consumes | `process_start`, `file_change`, `conn`, `listener`, `auth_event`, `dns_query`, `telemetry_gap`, plus module kinds named by rules: `net.egress_denied`, `net.canary_result`, `net.shadow_drop`, `net.ingress_denied`, `audit.rules_changed`, `audit.module_load`, `audit.af_alg`, `winevt.sec_event`, `winevt.sensor_state`, `logs.line`, `capture.http_request`, `decoys.hit`, `honeytokens.read`, `honeytokens.aws_key_seen` (rule D15g), `deps.edge`, `deps.edge_gone`, `integrity.verdict`, `integrity.crosscheck`, `integrity.yara`, `inventory.snapshot` and `inventory.row` (when `inventory` is enabled), `ad.finding`, `ad.gpo_finding`, `hunt.finding`, `devices.config` and `devices.finding` (rule D14), `vantage.exposure_change`, `vantage.canary_hit`, `checks.compare` and `checks.result` (rules V1 to V4), `vantage.pcr_verify` (rule V4), `scorer.proposal` (rule D16), and the signals that used to reach tier 0 by their own path (builder check): `firewall.drift` (rule `D10k3`), `agent.health` (rule `D10.audit-rules-changed`: a changed or dropped `rules_hash` in a module's `Health.Info`; the supervisor emits `agent.health` whenever a module's `State` or `Info` changes), and `agent.enrolled` and `agent.reenrolled` (rule D22). Rules D13e and D18b read `conn`, including the `conn` events `capture` emits with `source: capture`. The old code names are renamed by the retrofit in one go (no aliases); the rename map is in the module contract |
 | Emits | `detect.alert` (schema 1, critical), `detect.suppressed` (schema 1, normal) |
-| Budget | CPU 10 ms/s, held 16 MB, 5 events/s, burst 50, 200 KB/min out, disk 1 MB. Starting values; the Invitational collector replaces them with measured numbers (`docs/impl/invitational-data.md`) |
 | Default | core |
 | Tables | none (alerts are core `alert` rows) |
 | Content | `rules/` (all rule files), `rules/lists.yml`, `rules/profiles.yml`; hand-ported packs under `rules/ported/` |
@@ -3067,7 +3029,7 @@ Emitted:
 
 The controller sends `freeze_capture` for controller-scope rules; that is the fix for Known bug 7. **Transfer and kind** (builder check): every agent-side collector delivers its result through the core file-chunk transfer (the existing resumable, content-addressed 256 KB chunks at evidence priority, Wire protocol: Framing) and announces each item with one core event `evidence.blob` (`alert_id`, `collector`, `name`, `sha256`, `size`, `truncated`, `error`). The cap is **8 MiB per item and 64 MiB per alert**; an item over the cap is truncated and marked `truncated: true`, and an alert past 64 MiB gets no more items (the collector records `error: alert_cap`). `report` consumes `evidence.blob` to attach the evidence to the IR draft; `capture.evidence` stays the packet-ring slice announcement. Collectors are bounded in time and size, and a failed collector is recorded on the alert, never retried in a loop.
 
-*Hand-ported third-party logic.* Third-party rules are ported by hand, never imported. A ported rule carries `source:` with the upstream id, path, commit, author and licence; it reaches the alert, the UI and the IR drafter, and a generated `THIRD_PARTY_RULES.md` lists them. Licence policy [DR §6]: Sigma (Detection Rule License 1.1, attribution required), Splunk security_content, Falco, osquery packs, sysmon-modular and Atomic Red Team may be ported with attribution; Elastic (ELv2) and Wazuh (GPL-2.0) logic is re-implemented from the idea and the upstream id is cited in `source:`; the UIUC and Wayne State files are not used. Same CI as any rule: an inline test per rule, ATT&CK ids, tier and mode. Why not a native Sigma evaluator, kept as rationale: 10,377 match values cost about 46 MB of heap and 14.5 ms per event unindexed against an 80 MB, 3% agent budget, and Sigma is 77% Windows and 7% Linux, mostly `status: test` [DR §4].
+*Hand-ported third-party logic.* Third-party rules are ported by hand, never imported. A ported rule carries `source:` with the upstream id, path, commit, author and licence; it reaches the alert, the UI and the IR drafter, and a generated `THIRD_PARTY_RULES.md` lists them. Licence policy [DR §6]: Sigma (Detection Rule License 1.1, attribution required), Splunk security_content, Falco, osquery packs, sysmon-modular and Atomic Red Team may be ported with attribution; Elastic (ELv2) and Wazuh (GPL-2.0) logic is re-implemented from the idea and the upstream id is cited in `source:`; the UIUC and Wayne State files are not used. Same CI as any rule: an inline test per rule, ATT&CK ids, tier and mode. Why not a native Sigma evaluator, kept as rationale: 10,377 match values cost about 46 MB of heap and 14.5 ms per event unindexed against an 80 MB, 3% agent footprint, and Sigma is 77% Windows and 7% Linux, mostly `status: test` [DR §4].
 
 *The detection catalogue.* Ids continue v2's D1 to D17 and the coverage spec's D18 onward [COV §4]. The 81 proposed rules P01 to P81 [PR] are the backlog, each a tested file under `rules/` when its producer exists (readiness classes: A shipped event types, A* needs the exec feed, B needs an engine feature, C needs a producer). The mapping from a proposed rule to its id is in the rule id (`D18.default-cred-logon` is P01). Appendix I of the design groups the backlog.
 
@@ -3133,7 +3095,7 @@ The shell's Alerts and incidents page lists `detect.alert` rows with evidence, o
 
 **9. Health**
 
-States: `ok`; `degraded` when the signed rule set failed to load (the previous set keeps running) or when profiles were rebuilt from empty after a restore; `over_budget` per the contract. Gaps reported: a rule whose producer is missing on this host (for example the `inventory` rules on a host without that module), reported by rule count and by the first ten rule ids; the evidence collectors not yet built; `lists:` or `exceptions:` entries that failed to parse. Detail carries rules loaded, rules in alert mode, `count` and `sequence` state sizes against `max_keys`, and profile keys. `degraded` means some detection is not running on this host; the Platform page shows which.
+States: `ok`; `degraded` when the signed rule set failed to load (the previous set keeps running) or when profiles were rebuilt from empty after a restore. Gaps reported: a rule whose producer is missing on this host (for example the `inventory` rules on a host without that module), reported by rule count and by the first ten rule ids; the evidence collectors not yet built; `lists:` or `exceptions:` entries that failed to parse. Detail carries rules loaded, rules in alert mode, `count` and `sequence` state sizes against `max_keys`, and profile keys. `degraded` means some detection is not running on this host; the Platform page shows which.
 
 **10. Scoring safety**
 
@@ -3199,7 +3161,6 @@ Status: **partial**. Tier-0 responses are not enabled (`act_enabled` is left off
 | Roles | any host |
 | Consumes | `detect.alert` (the only thing it acts on; builder check), `controller.fact` (guard inputs only: the `gpo_finding` and `scorer_probe_result` facts, never a trigger) |
 | Emits | `respond.action` (schema 1, high), `respond.breaker` (schema 1, critical), `respond.loop` (schema 1, critical) |
-| Budget | CPU 2 ms/s, held 4 MB, 2 events/s, burst 20, 50 KB/min out, disk 1 MB |
 | Default | core |
 | Tables | none |
 | Content | `rules/respond/` (recipes) |
@@ -3398,7 +3359,6 @@ To build: the golden store, the watch loop, the restore sequence with its probe 
 | Roles | any host with a service that declares `content.guard` paths, or any host that enables the boot-critical list |
 | Consumes | `file_change`, `process_start` (to see a service restart after a restore), `telemetry_gap`, `controller.fact` (the `scorer_probe_result` fact, when present, adds the scorer-mimic verdict to the restore probe) |
 | Emits | `content_guard.change` (schema 1, high), `content_guard.restore` (schema 1, high), `content_guard.stop` (schema 1, critical), `content_guard.promoted` (schema 1, normal) |
-| Budget | CPU 2 ms/s, held 8 MB (hash index of guarded paths), 1 event/s, burst 10, 20 KB/min out, disk 64 MB (golden copies of declared files; large content roots are not copied, only the listed files) |
 | Default | opt-in, per service (the service's `content.guard` list) and per host (the boot-critical list) |
 | Tables | none |
 | Content | `plans/content_guard/guard.snapshot.yaml` (the plan node that takes golden copies; service hardening plans include it), `content_guard/boot_critical.yml` (default boot-critical list per OS) |
@@ -3510,7 +3470,7 @@ The Content guard page lists each guarded file: golden hash, current hash, mode,
 
 **9. Health**
 
-`ok` when every listed file is watched and its golden copy exists. `degraded` when a path is on the list but has no golden copy, or a watch gap forces the sweep-only fallback (the gap is named), or when the golden store is over its disk budget. `unavailable` on a host with no listed paths. Detail: files guarded per service, mode per service, loops open.
+`ok` when every listed file is watched and its golden copy exists. `degraded` when a path is on the list but has no golden copy, or a watch gap forces the sweep-only fallback (the gap is named), or when the golden store is over its disk cap. `unavailable` on a host with no listed paths. Detail: files guarded per service, mode per service, loops open.
 
 **10. Scoring safety**
 
@@ -3581,7 +3541,6 @@ Status: **partial**. The checks and the ledger are built; the producer for D5d, 
 | Roles | any host; controller side on the controller |
 | Consumes | `process_start`, `winevt.sec_event` (Sysmon 6 driver load and Sysmon 7 image load hashes on Windows), `file_change` (sweep triggers), `telemetry_gap`; controller side, its own `integrity.claims`, `integrity.ledger_package` and `integrity.accepted` |
 | Emits | `integrity.verdict` (schema 1, critical/high/normal), `integrity.pin` (schema 1, normal), `integrity.sweep_done` (schema 1, normal), `integrity.yara` (schema 1, critical), `integrity.crosscheck` (schema 1, high), `integrity.claims` (schema 1, normal), `integrity.ledger_unavailable` (schema 1, high), `integrity.ledger_package` (schema 1, bulk), `integrity.accepted` (schema 1, normal) |
-| Budget | CPU 8 ms/s average (sweeps and scans run at low priority and are throttled separately by `bytes_per_sec`), held 24 MB (identity cache and the loaded ledger), 2 events/s, burst 20, 100 KB/min out, disk 100 MB (ledger file and YARA corpus). Starting values; the Invitational collector measures the ledger size |
 | Default | core |
 | Tables | `ledger_entry` (controller working set: vendor-package entries from `integrity.ledger_package` events, imports from the release's `ledger/` indexes), `ledger_accept` (accepted hashes, with reason, owner, time; one row per `integrity.accepted` event); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `ledger/` (signed indexes shipped in the release), `rules/yara/` (the corpus), the D5d and D11 rules |
@@ -3609,7 +3568,7 @@ signers: []                    # third-party signer allowlist from the manifest 
 crosscheck_interval_sec: 300   # rootkit cross-checks (hunt content)
 yara:
   files: { enabled: true, interval_sec: 300, roots: [webroots, new binaries, temp dirs] }
-  memory: { enabled: true, interval_sec: 300, cpu_budget_ms_per_sec: 4 }   # scheduled, low priority, inside the module budget
+  memory: { enabled: true, interval_sec: 300 }   # scheduled, low priority
   engine: go                   # go (built) | yarax (pinned binary from the depot, for rules the Go matcher skips)
 # Rendered per host from services.yml, not configured here: pins (process.binaries with pin: true) and the ledger reference.
 ```
@@ -3710,10 +3669,10 @@ Paths are normalised before lookup: usr-merge folded (`/bin` to `/usr/bin`, `/sb
 
 These would have caught the regional's Postfix proxy even without a ledger entry.
 
-*YARA.* The scheduled scan runs every 5 minutes over files and over process memory, deduplicated by inode identity, at low priority with a pause between items so CPU stays inside the module budget, and raises D5-class alerts at tier 1 with a quarantine proposal.
+*YARA.* The scheduled scan runs every 5 minutes over files and over process memory, deduplicated by inode identity, at low priority with a pause between items so CPU stays bounded, and raises D5-class alerts at tier 1 with a quarantine proposal.
 
 - **Corpus.** The C2 set: Sliver, Mythic (Apollo and Poseidon), Realm, Sentinel, chisel, ligolo, pamspy, sshsnake, watershell, Cobalt Strike and Metasploit stagers [WT §2.3, §9.3]. It includes the **17 MIT-licensed UCF CCDC rules** (`nmagill123/compiled-yara-rules-rb2@c2b9d3f custom/`: Realm imix, Sentinel, chisel, ligolo, pamspy, sshsnake, watershell, jstap, headshot, powerlurk and others), imported as content with attribution, which removes the licence reason for that subset. Elastic protections-artifacts stay out. Other public sets are used only after their licence is checked.
-- **Memory is kept** (review A5.Q1; David's call on a mixed record). Evidence against: sleep-masked beacons are encrypted while sleeping [[redefiningreality-cobalt-strike#e6]], and UCF ran memory polling, found red adapted its beacons, and paid real CPU [[ccdc-the-great-the-good-and-the-ok#e10]]. Reasons to keep it: implants that do not sleep-mask (chisel, ligolo, pamspy, sshsnake, watershell, stagers) are in memory in clear, and the scan is scheduled, low priority and capped by `cpu_budget_ms_per_sec`; if the cap is hit the scheduler slows down, never the host. `/proc/<pid>/mem` is read on Linux; `ReadProcessMemory` on Windows is not built.
+- **Memory is kept** (review A5.Q1; David's call on a mixed record). Evidence against: sleep-masked beacons are encrypted while sleeping [[redefiningreality-cobalt-strike#e6]], and UCF ran memory polling, found red adapted its beacons, and paid real CPU [[ccdc-the-great-the-good-and-the-ok#e10]]. Reasons to keep it: implants that do not sleep-mask (chisel, ligolo, pamspy, sshsnake, watershell, stagers) are in memory in clear, and the scan is scheduled and low priority; if the work takes too long the scheduler slows down, never the host. `/proc/<pid>/mem` is read on Linux; `ReadProcessMemory` on Windows is not built.
 - **Scan on write** (review N5.9): a write into a content root triggers `yara.scan` on that file as a `respond` recipe, which is faster than the schedule for webshells and needs no new Go because the action takes a path.
 - **Engine.** The `Scanner` interface has the built `GoScanner` (text and hex strings with wildcards, `any/all/N of them`, boolean conditions, `filesize`, `uint8/16/32(offset)` in the first 4 KiB; regexes, jumps, modules, `fullword`, `xor` and `base64` are not supported, and such rules are listed in `Matcher.Skipped`, never silently ignored) and a stub for the pinned YARA-X binary. v3 specified YARA-X as the engine and flagged it as the one host binary in a default path. The code's pure-Go matcher needs no host binary, so the default is `engine: go`; YARA-X is the fallback for rules the Go matcher skips. Which engine ships is decided by how many of the 17 UCF rules appear in `Skipped` (part 12).
 
@@ -3753,7 +3712,7 @@ The Integrity page is the verdict queue. Each row shows the path, hash, ledger v
 
 **10. Scoring safety**
 
-- The module is read-only. It hashes files, reads `/proc` and judges, so it cannot fail a scored check; its cost is CPU and disk reads, bounded by the throttle and the budget.
+- The module is read-only. It hashes files, reads `/proc` and judges, so it cannot fail a scored check; its cost is CPU and disk reads, bounded by the throttle.
 - Hashing uses native Go calls and opens files read-only. Large files are skipped above a cap (2 GiB).
 - The one write path is `binary.restore_from_depot`, a tier-1 plan node: it declares a touch on a scored service's binary, takes the service lock, runs the scorer-mimic probe before and after, rolls back on a failed probe and needs an approval record. Alert-only is the default stage and the only automatic behaviour (D-1).
 - The sweep never reads content roots as binaries; scored content is the `content_guard` module's concern.
@@ -3813,7 +3772,6 @@ Status: **partial**. The pieces exist as separate actions; the hunt as a flow do
 | Roles | any host; controller side on the controller |
 | Consumes | `integrity.crosscheck`, `integrity.verdict` (every verdict; the controller side joins them to its findings by host, path and hash, so hunt never calls a ledger library for verdicts), `backup.restored` (the post-restore run), `agent.enrolled`, `agent.reenrolled`, `respond.loop`, `ad.finding` (for the AD part of the queue), `inventory.snapshot` and `inventory.row` when that module is enabled; controller side, its own `hunt.finding` and `hunt.decision` (the table writer) |
 | Emits | `hunt.finding` (schema 1, high), `hunt.run` (schema 1, normal), `hunt.decision` (schema 1, normal) |
-| Budget | CPU 5 ms/s average (collection runs as a low-priority burst), held 16 MB, 2 events/s, burst 40, 200 KB/min out, disk 20 MB |
 | Default | core |
 | Tables | `hunt_finding` (id, host, artifact, score, state: open, approved, rejected, accepted, remediated; evidence references; a row is created by a `hunt.finding` event and its `state` is moved only by `hunt.decision` events); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `hunt/checks/*.yml` (persistence, application, credential-file checks), `hunt/killlist.yml`, `hunt/heuristics.yml`, `hunt/baselines/` (signed reference artifacts per OS, release assets in the cache's first tier), `plans/hunt/` |
@@ -4026,7 +3984,6 @@ Status: **partial**. The first-hour plans exist; the baseline packs and the new 
 | Roles | any host; packs target by label |
 | Consumes | `winevt.sensor_state` (builder check): the Windows packs that touch the audit policy or the Sysmon configuration read the host's last `winevt.sensor_state` as a plan precondition (Sysmon present and running, `config_hash` equal to `expected_config_hash`, or the 4688 fallback active) and refuse the node, with the reason, when the sensor is down; nothing else is read from the bus |
 | Emits | none of its own; plan, step and audit events are the execution engine's |
-| Budget | none (content); each action runs inside the executor's limits |
 | Default | core |
 | Tables | none |
 | Content | `plans/hardening/` |
@@ -4248,7 +4205,6 @@ Status: **partial**. The actions are built; the continuous checks, the path quer
 | Roles | `domain_controller` (agent), `controller` (controller side) |
 | Consumes | agent: `winevt.sec_event` (5136, 5137, 5139, 5141 with `gpo: true`; 4662; 4742), `file_change` with `sysvol_policy: true`, `process_start`. Controller: `hunt.run` and `integrity.sweep_done` (the DC's first clean hunt and ledger sweep trigger the baseline), `ad.gpo_finding` (its own, to send it as a fact) |
 | Emits | `ad.finding` (schema 1, high), `ad.gpo_finding` (schema 1, high), `ad.gpo_baseline` (schema 1, normal), `ad.recycle_restored` (schema 1, high) |
-| Budget | CPU 3 ms/s average (a check run is a short low-priority burst), held 8 MB, 1 event/s, burst 20, 50 KB/min out, disk 20 MB (GPO baseline copies) |
 | Default | core, on hosts with the `domain_controller` role |
 | Tables | none |
 | Content | `ad/checks.yml` (check definitions), `ad/service_sddl.yml` (default service security descriptors from the clean reference image), `plans/hardening/dc.service_repair.yaml`, `plans/ad/` |
@@ -4462,8 +4418,6 @@ module.Manifest{
 	Roles:     nil,                                                    // every host
 	Consumes:  []string{"net.shadow_drop", "net.egress_denied", "net.ingress_denied"},
 	Emits:     []event.Type{ /* part 5 */ },
-	Budget: module.Budget{CPUMillisPerSec: 5, HeldMB: 8, EventsPerSec: 2, Burst: 20,
-		BytesOutPerMin: 65536, DiskMB: 20},
 	Default:  true,
 	Tables:   []string{"firewall_shadow_summary"},
 	Content:  []string{"plans/firewall"},
@@ -4473,7 +4427,6 @@ module.Manifest{
 }
 ```
 
-Budget numbers are starting caps; the agent-side module is idle between applies, so CPU and held memory are small. Snapshots on disk are the only disk use.
 
 **4. Configuration.**
 
@@ -4664,7 +4617,7 @@ Gaps reported: foreign firewall present (firewalld, ufw, docker), Windows Firewa
 **11. Tests.**
 
 - Built: translate and diff tests, snapshot and restore round trips, the dead-man restore handler, `managementIntact`, Windows manager against the fake backend, and a privileged kernel test that applies and reads back a ruleset (`internal/firewall/kernel_linux_test.go`, skipped without privilege). `nft -c -f` runs on every rendered file in the CI privileged job. Lint tests for `FW101`-`FW110`.
-- To add: conntrack flush (spawn flows in a network namespace, apply a tightening policy, assert only the affected flows die and scored-port and management flows survive); shadow summary fixture store (golden table and the manifest diff); quarantine round trip with revert; `fw.apply op: block` lint (scored port, CIDR warning, own address refused); Windows shadow evaluator against recorded connection lists; the conformance suite entries (starts with no config, survives link loss, budget).
+- To add: conntrack flush (spawn flows in a network namespace, apply a tightening policy, assert only the affected flows die and scored-port and management flows survive); shadow summary fixture store (golden table and the manifest diff); quarantine round trip with revert; `fw.apply op: block` lint (scored port, CIDR warning, own address refused); Windows shadow evaluator against recorded connection lists; the conformance suite entries (starts with no config, survives link loss).
 - Lab: T77 (inbound enforcement with allow-back), T02 (timer disables the host firewall, restored in time, trigger identified), T16 (a change that breaks a scored service is caught), T17 (link drops during a firewall-enforce plan, dead-man rolls back), T44 is the device equivalent in `devices`.
 
 **12. Limits and open items.**
@@ -4727,8 +4680,6 @@ module.Manifest{
 	Roles:     []string{"controller"},
 	Consumes:  []string{"net.egress_denied", "net.canary_result", "devices.deny", "integrity.pin"},
 	Emits:     []event.Type{ /* egress.candidate, egress.suggest_block */ },
-	Budget: module.Budget{CPUMillisPerSec: 20, HeldMB: 16, EventsPerSec: 2, Burst: 20,
-		BytesOutPerMin: 65536, DiskMB: 0},
 	Default:  true,
 	Tables:   []string{"egress_candidate"},
 	Content:  []string{"plans/egress"}, // the per-executable rule D4c is detect content (builder check)
@@ -4962,8 +4913,6 @@ module.Manifest{
 	Roles:     []string{"capture"},
 	Consumes:  []string{"detect.alert", "devices.traffic"},
 	Emits:     []event.Type{ /* part 5 */ },
-	Budget: module.Budget{CPUMillisPerSec: 25, HeldMB: 512, EventsPerSec: 600, Burst: 1200,
-		BytesOutPerMin: 31457280, DiskMB: 512},
 	Default:  true, // on hosts with the capture role
 	Tables:   []string{"capture_source_check"},
 	Content:  []string{"rules/capture"},
@@ -4972,8 +4921,6 @@ module.Manifest{
 	Evidence: []string{"2026-mw-regional-packet#e19"},
 }
 ```
-
-Budget notes: `EventsPerSec: 600` is the supervisor budget in the code (per-class buckets: transactions 300/s, flows 300/s, scans 20/s). `HeldMB: 512` is the default ring (256 MiB) plus the freeze hold (256 MiB); the core Footprint adds this `HeldMB` to the 80 MB base on a host with the `capture` role (part 12). `CPUMillisPerSec` is a starting cap against the agent-wide 3% average; the module has not been run on a real NIC under load.
 
 **4. Configuration.**
 
@@ -5130,11 +5077,11 @@ Capture folds into the Traffic page: per host capture state (interface, ring fil
 - Fuzzing, 10 s each: `FuzzHTTP FuzzWinRM FuzzSSH FuzzTLS FuzzFTP FuzzSMTP FuzzIMAP FuzzPOP3 FuzzDNS FuzzDNSDatagram FuzzSMB2 FuzzTDS FuzzNTLM FuzzICMP`, and `FuzzReassembly` and `FuzzProcess` in capture.
 - Real AF_PACKET: `TestAFPacketTPACKETV3OnContainerLoopback` runs only with `PHYLAX_CAPTURE_DOCKER=1` and `/.dockerenv`; nothing else touches a real interface.
 - To add: TFTP and NTP parsers (fixtures and fuzz), `freeze_capture` end to end (controller rule, control message, agent freeze, `fetch`), the source-address check against a fixture Palo log, `go test -race` on the module, the conformance entries.
-- Lab: a real capture run on a real NIC under load (drop counts, block sizing, VLAN and bonded interfaces, CPU against the budget), the T33 expectations that depend on stitched flows, and the Palo inbound NAT question. The Windows raw-socket test (T26) is retired with the cut.
+- Lab: a real capture run on a real NIC under load (drop counts, block sizing, VLAN and bonded interfaces, CPU cost), the T33 expectations that depend on stitched flows, and the Palo inbound NAT question. The Windows raw-socket test (T26) is retired with the cut.
 
 **12. Limits and open items.**
 
-- **Memory cap.** Resolved by following the code: the ring (`ring_mb`, default 256 MiB) and the freeze hold (`hold_mb`, default 256 MiB) are Go heap, so they count against `debug.SetMemoryLimit` and `MemoryMax`. The core Footprint now budgets the module's `HeldMB` on top of the 80 MB base for a host with the `capture` role, and the heartbeat reports the capture bytes separately. `policy.yml`'s `packet_ring_max_bytes` and `packet_ring_free_pct` are dead fields and are deleted (Known bugs 13). If a lab run shows the heap ring too costly on a small host, moving it to a file is a change inside this module (the ring API does not expose where the bytes live); v3's on-disk ring sized at the smaller of 2 GB or 10% of free disk stays the fallback.
+- **Memory cap.** Resolved by following the code: the ring (`ring_mb`, default 256 MiB) and the freeze hold (`hold_mb`, default 256 MiB) are Go heap, so they count against `debug.SetMemoryLimit` and `MemoryMax`. The core Footprint now counts the capture module's configured ring and hold on top of the 80 MB base for a host with the `capture` role, and the heartbeat reports the capture bytes separately. `policy.yml`'s `packet_ring_max_bytes` and `packet_ring_free_pct` are dead fields and are deleted (Known bugs 13). If a lab run shows the heap ring too costly on a small host, moving it to a file is a change inside this module (the ring API does not expose where the bytes live); v3's on-disk ring sized at the smaller of 2 GB or 10% of free disk stays the fallback.
 - **Reference manifest.** Resolved: the core hosts example no longer gives the Windows hosts (`ad`, `mssql`, `win11-wkst`) the `capture` role, so health does not read `degraded` forever (Known bugs 23).
 - **Seal key distribution.** `capture.seal` is a file in the state directory with no distribution mechanism. A vault secret delivered in the signed config (`seal_key_ref`) is proposed; the key is then in each capture host's config.
 - **Agent `fetch`** is a core task (Known bug 4); the evidence pcaps and the controller's pull depend on it.
@@ -5194,8 +5141,6 @@ module.Manifest{
 	Roles:     []string{"controller"},        // the controller; a device behind a segment is reached through that segment's `relay` host's splice (devices.yml `via`), which is a transport, not a role of this module
 	Consumes:  nil,                            // polls devices; reads no events (its writer reads its own events from Host.Subscribe)
 	Emits:     []event.Type{ /* part 5: devices.config, devices.change, devices.deny, devices.traffic, devices.backup, devices.version, devices.finding, devices.capture, devices.baseline_accepted */ },
-	Budget: module.Budget{CPUMillisPerSec: 20, HeldMB: 32, EventsPerSec: 5, Burst: 50,
-		BytesOutPerMin: 262144, DiskMB: 200},
 	Default:  true,  // when devices.yml declares devices; otherwise disabled
 	Tables:   []string{"device_snapshot", "device_backup"},
 	Content:  []string{"plans/hardening", "plans/devices", "rules/devices"},
@@ -5458,15 +5403,12 @@ Files: `internal/checks/*.go` (module, scheduler, flows, doctor), `internal/chec
 | Privilege | `root` on the agent (the ICMP probe tries an unprivileged datagram socket first and falls back to a raw socket); `none` on the controller |
 | Roles | `check_runner` (agent), `controller` |
 | Default | core |
-| Budget (agent) | 40 CPU ms/s, 24 MB held, 5 events/s, burst 20, 60 KB out/min, 5 MB disk |
-| Budget (controller) | 60 CPU ms/s, 48 MB held, 10 events/s, 120 KB out/min, 20 MB disk |
 | Tables | `checks`, `check_results`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `checks/checks` (check templates per service kind), `checks/flows` (Orange flows), `checks/doctor` (collect plans per service kind) |
 | Actions | none; the doctor uses the core `collect.files` and the `inventory` module's `collect.inventory` and `probe.run` (the doctor's reads are unavailable when `inventory` is off); probes run through the scorer-mimic probe contract of the execution engine |
 | Pages | `/services`, `/checks`, `/checks/{id}`, `/flows` |
 | Evidence | the citations in part 1 |
 
-The budget numbers are starting values; the lab run sets them.
 
 **4. Configuration.**
 
@@ -5640,7 +5582,7 @@ No new action. The module uses the core `collect.files`, `collect.inventory` and
 
 **9. Health.**
 
-States: `ok`; `degraded` when a runner defers more than half its passes (no quiet window); `degraded` also when no clock feed has arrived and the module runs on its jittered-interval fallback (gap: "no round-clock feed; probes are not aligned to the scorer's bursts"); `over_budget`. Gaps: a check type without a credential, ICMP without privilege, `xfreerdp` absent on the Kali (RDP auth probe unavailable), `checks.refused` events seen. Degraded means results exist but their alignment or coverage is reduced.
+States: `ok`; `degraded` when a runner defers more than half its passes (no quiet window); `degraded` also when no clock feed has arrived and the module runs on its jittered-interval fallback (gap: "no round-clock feed; probes are not aligned to the scorer's bursts"). Gaps: a check type without a credential, ICMP without privilege, `xfreerdp` absent on the Kali (RDP auth probe unavailable), `checks.refused` events seen. Degraded means results exist but their alignment or coverage is reduced.
 
 **10. Scoring safety.**
 
@@ -5659,7 +5601,7 @@ The module is the heaviest active user of scored services, so it limits itself:
 
 - Unit: every probe against a local fake server (`ssh_test.go`, `smb_test.go` with `ntlmserver_test.go`, `web_dns_test.go`, `lineproto_test.go`, `misc_test.go`); strict-mode cases; credential redaction; quiet-window gate and allowlist (`checkrunner_test.go`); `Compare` classification.
 - New: TFTP and NTP against fake servers; flow runner with a fake web app (cookie jar, capture, form post, effects flag); doctor ranking from fixture collect output; check lifecycle (proposal, accept, retire, accept-current-response writes an override).
-- Conformance: starts with no config (disabled), reaches `ok` or `unavailable` within 10 s, stops cleanly, emits only declared kinds, respects its budget under a 40-check fixture, survives 60 s of failing `Emit`, survives reconfiguration with `Keep` state (the pass counters).
+- Conformance: starts with no config (disabled), reaches `ok` or `unavailable` within 10 s, stops cleanly, emits only declared kinds, survives 60 s of failing `Emit`, survives reconfiguration with `Keep` state (the pass counters).
 - Lab (matrix ids): T14 (a Quotient config hot-adds an HTTP path, a DNS record and a custom check: a proposal within one round), T15 (check discovery accuracy over 2 hours with Orange traffic: 100% of Quotient's checks proposed, 0 false proposals), T16 (a hardening plan breaks a scored page, `PermitTTY` or a mail plaintext setting: the lint rejects it; if forced, the probe is red in 60 s and the node rolls back), T20 (60 minutes of Quotient plus Orange traffic, 5 or fewer false-positive alerts per hour), T34 (hardening against real Quotient: 0 failed rounds attributable to Phylax), T39 (faithful checks against Quotient's results: 98% agreement or more, after calibration). New lab tests: TFTP and NTP against a Quotient configured with them; each Orange flow against the lab ecom and mail host; a doctor run for each injected failure (stopped unit, broken config, full disk, SELinux denial, dependency down).
 
 **12. Limits and open items.**
@@ -5728,7 +5670,6 @@ Files: `internal/scorer/*.go`, `internal/controller/checks_hub.go` (SLA wiring m
 | Privilege | `none` |
 | Roles | `controller` |
 | Default | core |
-| Budget | 80 CPU ms/s, 64 MB held, 8 events/s, burst 40, 80 KB out/min (to the store), 30 MB disk |
 | Tables | `scorer_round`, `scorer_service`, `scorer_item`, `scorer_account`, `scorer_note`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/scorer` (fingerprint table) |
 | Actions | none |
@@ -5885,7 +5826,7 @@ The module touches no scored state: it reads events. Its output gates other modu
 
 - Unit (built): `clock_test.go` (bursts, lattice fit, dropped rounds, jitter estimate, window and hazard), `fingerprint_test.go`, `discovery_test.go` (learning, coverage, proposals, stale, blocked, accounts), `sla_test.go` (replay, discard, verdict, accrual).
 - New: `per_round` accrual with phases; credlist grouping from fixture service sets, including a user in two groups; points-at-risk from a fixture store (identical output twice from the same store and `now`); replay rebuild equals the live state; `sysadmin` is not special-cased.
-- Conformance: starts with no capture feed, stops cleanly, emits only declared kinds, respects its budget under a 10-service fixture, survives link loss and reconfiguration (the estimator is rebuilt by replay, no `Keep` needed beyond the overrides).
+- Conformance: starts with no capture feed, stops cleanly, emits only declared kinds, survives link loss and reconfiguration (the estimator is rebuilt by replay, no `Keep` needed beyond the overrides).
 - Lab (matrix ids): T30 (round clock: 20 bursts with jitter, a discarded round, a team-wide missing burst: Delay and Jitter within 1 s, the dropped round is not an incident), T37 (`BadAttempts` and scorer fingerprints with the runner address changed each round: no brute-force or lockout alert, scorer-labelled by behaviour), T15 and T14 (shared with `checks`), T49 (eviction uses the measured round delay) and T50 (account and credlist learning against a Quotient with two credlists: 100% of the accounts the scorer used in the window, service-to-credlist inferred from observed auth events). Invitational measurements S1-S14 (`docs/impl/invitational-data.md`) are the first real data.
 
 **12. Limits and open items.**
@@ -5942,8 +5883,6 @@ The Kali-to-controller path (VyOS source NAT, Palo static NAT, one Palo rule, ho
 | Privilege | `root` (raw ICMP for the check runner; `nmap`-class service detection), `none` on the controller |
 | Roles | `scanner`, `canary` (agent); `controller`. The Kali also carries `check_runner`, which belongs to the `checks` module (the same agent runs both modules) |
 | Default | core on hosts with the Kali roles; the rest of the fleet does not run it |
-| Budget (agent) | 60 CPU ms/s, 32 MB held, 6 events/s, burst 30, 40 KB out/min, 10 MB disk (scan reports). The event rate covers the canary listener's own global cap (`max_events_per_sec: 5`, burst 20) plus scan and verification events, so the supervisor's rate limit never sheds a canary hit (builder check) |
-| Budget (controller) | 20 CPU ms/s, 16 MB held, 2 events/s, 20 KB out/min, 5 MB disk |
 | Tables | `vantage_scan`, `vantage_exposure`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/vantage` (V1-V4 correlation rules, dangerous-port list) |
 | Actions | `pcr.verify` (owned here: the Kali side handles the signed step; `creds` uses it), `probe.zerologon_check` |
@@ -6067,7 +6006,7 @@ States: `ok`; `degraded` when the scan is behind schedule, the clock feed is abs
 
 - Unit (built): `scan_test.go` (ordering, rate bucket, UDP replies, diff, cancel), `canary_test.go` (tag, ACK, dedup, rate, bounds), `verify_test.go` (all-must-pass, allowlist refusal, secret redaction), `core_test.go`, `checkrunner_test.go` (moves with the runner).
 - New: per-credlist verification targets; `dangerous_open` and scored-port-closed diffs; pre-window scan scheduling; Zerologon tester against a fake Netlogon server that reports vulnerable and patched; SMB and WinRM exposure parsing; V1-V4 rule fixtures.
-- Conformance: starts with no config (disabled), refuses a non-allowlisted target, stops cleanly, emits only declared kinds, respects its budget during a full-range fixture scan, survives link loss (scan results spool), survives reconfiguration.
+- Conformance: starts with no config (disabled), refuses a non-allowlisted target, stops cleanly, emits only declared kinds, survives link loss during a full-range fixture scan (scan results spool), survives reconfiguration.
 - Lab (matrix ids): T39 (Kali vantage: faithful checks against Quotient's results; a Palo rule that blocks the public path but not the LAN; a newly opened port; an egress leak: agreement 98% or more, V1 localises the fault, V2 and V3 fire), T35 (PCR transaction, shared with `creds`: verification via the Kali and the scorer's next login). New: a closed scored port raises V2; the Zerologon tester against an unpatched lab DC (a lab-build decision, v3 note) and the patched Server 2022 AD; the pre-window scan.
 
 **12. Limits and open items.**
@@ -6124,7 +6063,6 @@ Files: `internal/creds/*.go`, `internal/creds/pcr/*.go`, `internal/vault/*.go` (
 | Privilege | `none` |
 | Roles | `controller` |
 | Default | core |
-| Budget | 20 CPU ms/s, 16 MB held, 1 event/s, 10 KB out/min, 2 MB disk |
 | Tables | `credentials`, `cred_credlist`, `pcr_txn`, `pcr_row`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `plans/creds` (T+0 sheet, rotation plans for unscored accounts, the scored-change plan), `rules/creds` (word list) |
 | Actions | `pcr.generate`; uses `pcr.verify` (owned and executed by `vantage` on the Kali) |
@@ -6291,7 +6229,7 @@ This module can fail the most scored checks of any, so it is the most constraine
 
 - Unit (built): `creds_test.go` (generator classes, uniqueness, alphabet, break-glass known answers, record validation, rotation order), `pcr_test.go` and `csv_test.go` (state machine, windows, CSV parser round trip, rollback, race forgiveness).
 - New: the typeable class (length, complexity, safe set, determinism of the derived form); per-credlist rows; `reverted` and both resolutions; the caps; `late` and `race`; the armed plan released at a window; the transaction-id exception in the lint; secrets never in events or logs.
-- Conformance: starts locked (health `degraded`, vault gap), stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration (open transactions are in `pcr_txn`).
+- Conformance: starts locked (health `degraded`, vault gap), stops cleanly, emits only declared kinds, survives link loss and reconfiguration (open transactions are in `pcr_txn`).
 - Lab (matrix ids): T35 (PCR transaction: normal, PCR mid-enqueue, wrong order, mismatched CSV, password with edge characters: at most one failed round per affected user; verification via Kali and the scorer's next login; rollback never uses "Reset to Defaults"), T48 (the T+0 rehearsal that precedes any PCR), T51 (a host revert and both resolutions against real Quotient with two credlists), T66 (the pass-the-hash pack's scorer baseline); a wrong typed row with fix-forward; the Invitational PCR measurements S13 and the typing exercise O8.
 
 **12. Limits and open items.**
@@ -6348,7 +6286,6 @@ Files: `internal/traceback/*.go`, `internal/traceback/tbtest`, `rules/traceback`
 | Privilege | `none` |
 | Roles | `controller` |
 | Default | core |
-| Budget | 120 CPU ms/s during a run, 64 MB held, 4 events/s, burst 30, 100 KB out/min, 20 MB disk |
 | Tables | `source`, `traceback_baseline`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/traceback/app_queries` (read-only application data queries), `rules/traceback/change_classes.yml` (which paths and files a service treats as content or config) |
 | Actions | none (read-only evidence requests ride on events) |
@@ -6463,7 +6400,7 @@ No actions. Content: `rules/traceback/app_queries/` (OpenCart admin users and gr
 
 **9. Health.**
 
-States: `ok`; `degraded` when an input feed is missing for a scored host (gap: "no process_start from <host>", "no capture from <host>"), when a run exceeds its CPU budget, or when events at an unknown schema version were skipped (the count is shown); `unavailable` when the store cannot be queried. Degraded means labels or traces may be incomplete; the timeline marks guesses.
+States: `ok`; `degraded` when an input feed is missing for a scored host (gap: "no process_start from <host>", "no capture from <host>"), when a run exceeds its deadline, or when events at an unknown schema version were skipped (the count is shown); `unavailable` when the store cannot be queried. Degraded means labels or traces may be incomplete; the timeline marks guesses.
 
 **10. Scoring safety.**
 
@@ -6473,7 +6410,7 @@ Read-only against scored services except the application pollers: those run read
 
 - Unit (built): `trace_test.go` with `tbtest` scenarios: webshell write on ecom traced to the HTTP source; default-credential SSH, sudo, cron persistence and WinRM to the DC with a hidden Domain Admin; agent gap; bounds; time-window fallback; link confidence values.
 - New: label assignment from a fixture store (identical output twice); change classes per row of the table; tagged versus untagged baseline update; app-query diff; dedupe by trigger key; the analyser runs from fixture stores with a fixed `now`.
-- Conformance, analyser rules: identical output twice from the same fixture store and `now`; switchable alone; budget respected on a large fixture.
+- Conformance, analyser rules: identical output twice from the same fixture store and `now`; switchable alone; the same output on a large fixture.
 - Lab (matrix ids): T03 (PHP webshell upload, command, file change: trace-back reaches the source IP and request), T31 (integrity changes appear as `class: binary`), the OpenCart admin-row case of T38. Quick webshell requests are the request-link stress test.
 
 **12. Limits and open items.**
@@ -6521,7 +6458,6 @@ What differs from v3 and is followed or changed:
 | Privilege | `none` |
 | Roles | `controller` |
 | Default | core |
-| Budget | 150 CPU ms/s during a run, 64 MB held, 2 events/s, 100 KB out/min, 20 MB disk |
 | Tables | `chains`, `hops`, `remediation_items`, `campaigns` (moved from the core migrations); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/chains/links.yml` (lateral ports, noisy execs, ignored accounts, ATT&CK map) |
 | Actions | none (remediation items link to existing actions through proposals) |
@@ -6636,7 +6572,7 @@ No actions. Content: `rules/chains/links.yml` (lateral ports, ATT&CK technique p
 
 **9. Health.**
 
-States: `ok`; `degraded` when inputs are missing for hops (no capture from a host, no Palo log feed, agent gaps near a seed) or a run hit its CPU budget; `unavailable` when the store cannot be queried. Gaps: "no Palo traffic-log feed (perimeter hops missing)", "no Community ID from <host>". Degraded means chains may miss hops and say so in their notes.
+States: `ok`; `degraded` when inputs are missing for hops (no capture from a host, no Palo log feed, agent gaps near a seed) or a run hit its deadline; `unavailable` when the store cannot be queried. Gaps: "no Palo traffic-log feed (perimeter hops missing)", "no Community ID from <host>". Degraded means chains may miss hops and say so in their notes.
 
 **10. Scoring safety.**
 
@@ -6645,7 +6581,7 @@ Read-only analysis. It never touches scored state. A remediation item that would
 **11. Tests.**
 
 - Unit (existing): `chains_test.go` over the synthetic streams from `tbtest`. Required rewrite as fixture tests (review D15): one fixture store per linking rule (login with source; merge of connection into login; Community ID stitch; swapped 5-tuple stitch with skew; known-host login; unmatched lateral port; within-host session join; same-account join; seed graft through trace-back; DCSync as change); bounds (window, `max_hops`, `Truncated`); confidence (agent gap x0.6, minimum over the chain); exclusions (tagged, scorer and us sources, sweep-only); `Group` keys; `Units` (narrative plus persistence); remediation (one action once, verification); persistence round trip; identical output twice for the same store and `now`.
-- Conformance: analyser rule (identical output, switchable alone, within budget on a 10k-event fixture).
+- Conformance: analyser rule (identical output and switchable alone on a 10k-event fixture).
 - Lab (matrix ids): T33 (attack chains for campaigns 01 and 03: 100% of expected hops present, each with a link method and confidence; a two-hop SSH chain stitched by 5-tuple; one campaign per attacker; remediation checklist items verify). The purple-team campaigns come from the lab repo.
 
 **12. Limits and open items.**
@@ -6697,8 +6633,6 @@ Files: `internal/deps/*.go`, `internal/agent/mods/deps.go` (new), `rules/deps.ym
 | Privilege | `root` (reads the process table through the event bus only; no extra privilege) |
 | Roles | any host with a scored service (agent); `controller` |
 | Default | core |
-| Budget (agent) | 15 CPU ms/s, 8 MB held, 1 event/s, burst 10, 12 KB out/min, 1 MB disk |
-| Budget (controller) | 40 CPU ms/s, 24 MB held, 1 event/s, 20 KB out/min, 5 MB disk |
 | Tables | `deps_edge` (the persisted graph; rebuilt from events on loss); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/deps` (the three detection rules) |
 | Actions | none |
@@ -6788,7 +6722,7 @@ The collector only reads events; the controller only reads and proposes. The lin
 
 - Unit (built): `deps_test.go` covers the collector (ancestor chain, orphan fallback, loopback ignored, strength, learning flag, gone), the graph (confidence arithmetic, resolution), `Propose` and `Diff`, and the lint.
 - New: the agent module fed from a recorded bus stream (no `net` import); `dns_query` naming; the graph analyser from a fixture store (identical output twice); `DEP1`-`DEP3` fixtures renamed, and the registry test that one rule id has one definition (the `D14` collision is a regression test).
-- Conformance: starts with no config, stops cleanly, emits only declared kinds, respects its budget, survives link loss and reconfiguration (the learning window state is kept through `Keep`).
+- Conformance: starts with no config, stops cleanly, emits only declared kinds, survives link loss and reconfiguration (the learning window state is kept through `Keep`).
 - Lab: T65 (the rule-id registry regression for the `D14` collision) and a mail service with an LDAP and Kerberos dependency survives default-deny egress rendered from accepted proposals; a planted forwarder to a public address fires `DEP2`; a stopped upstream fires `DEP3`. The lint rejects a plan that stops a service a scored service depends on.
 
 **12. Limits and open items.**
@@ -6837,7 +6771,6 @@ Scope of the first cut (review A5.Q2, N5.1): KEV plus the vendor advisories alre
 | Privilege | `none` |
 | Roles | `controller` |
 | Default | opt-in |
-| Budget | 30 CPU ms/s during a run, 32 MB held (the KEV index), 1 event/s, 40 KB out/min, 5 MB disk |
 | Tables | `vuln_finding`; written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `rules/vuln` (`products.yml`, `kernel.yml`) |
 | Actions | none |
@@ -6920,7 +6853,7 @@ Read-only analysis over events and cached data. It never touches a host or the s
 
 - Unit: version comparison per scheme (semver, dpkg, rpm, Splunk, PAN-OS, Windows build); the verdict table (vulnerable, fixed, unknown for backports, no mapping ignored); KEV parsing against a pinned snapshot excerpt; the product map; kernel bands.
 - Fixture: a store with `inventory.snapshot` rows for the 2027 reference hosts and a KEV and advisory fixture produces the expected `vuln.finding` set, identical twice from the same store and `now`.
-- Conformance (analyser rules): identical output, switchable alone, within budget with the full KEV index loaded.
+- Conformance (analyser rules): identical output and switchable alone with the full KEV index loaded.
 - Lab: T69 (a KEV fixture matches an installed version) and install a known-vulnerable Splunk and an old OpenCart on the lab hosts; the findings appear with the right CVEs and `fixed_in`; a patched build reports `fixed`; a distro package with a backport reports `unknown`.
 
 **12. Limits and open items.**
@@ -6984,8 +6917,6 @@ module.Manifest{
 	Roles:     []string{"decoys"},
 	Consumes:  nil,
 	Emits:     []event.Type{ /* decoys.hit */ },
-	Budget: module.Budget{CPUMillisPerSec: 10, HeldMB: 16, EventsPerSec: 20, Burst: 100,
-		BytesOutPerMin: 131072, DiskMB: 1},
 	Default:  false,                      // opt-in per host in modules/decoys.yml
 	Tables:   nil,
 	Content:  []string{"rules/decoys", "pools"},
@@ -6995,7 +6926,6 @@ module.Manifest{
 }
 ```
 
-The sandbox child is part of the module, not a second module. Budgets are starting caps; the child's memory counts toward the agent's cap.
 
 **4. Configuration.**
 
@@ -7140,7 +7070,7 @@ The Deception page (shared with `honeytokens`) lists, per host, the declared dec
 **11. Tests.**
 
 - Built: shell and service tests; the source-level import test for the record-only rule; limits (sessions, per-source, timeouts, command and auth caps); the sandbox tests (child serves decoys and relays events, `no_new_privs` and stops with the parent, root drop); `ErrScoredPort` and the refusal of 445; pool tests (`pools_test.go`); the lint tests (`DC001`, `DC002`); controller tests for config and plan (`deception_test.go`); decoy rule inline tests; `FuzzShell`.
-- To add: host-firewall decoy rules restricted to the segment prefixes (render test) and the absence of any decoy rule in Palo and VyOS intents; a manifest with `exposure` fails validation; the lint warning for a decoy on a domain controller; `D15a` exemption for the Kali source; conformance entries (no config, link loss, budget).
+- To add: host-firewall decoy rules restricted to the segment prefixes (render test) and the absence of any decoy rule in Palo and VyOS intents; a manifest with `exposure` fails validation; the lint warning for a decoy on a domain controller; `D15a` exemption for the Kali source; conformance entries (no config, link loss).
 - Lab: T09 (a honey SSH key used against the SSH decoy: critical alert naming the origin host), T24 (Defender), T25 (crafted strings in decoy-shell input never execute or render as markup in the UI). Review D514 keeps the decoy tests in the renumbered matrix.
 
 **12. Limits and open items.**
@@ -7202,8 +7132,6 @@ module.Manifest{
 	Roles:     nil,                        // any host (builder check): a token can be planted wherever `hosts:` in modules/honeytokens.yml declares one; the AD kinds need a domain_controller host; the `decoys` role is not required
 	Consumes:  []string{"detect.alert", "dns_query", "capture.http_request", "honeytokens.generated" /* the table writer */},
 	Emits:     []event.Type{ /* honeytokens.read, honeytokens.sighting, honeytokens.generated, honeytokens.secrets_unavailable, honeytokens.aws_key_seen */ },
-	Budget: module.Budget{CPUMillisPerSec: 3, HeldMB: 4, EventsPerSec: 5, Burst: 20,
-		BytesOutPerMin: 32768, DiskMB: 1},
 	Default:  false,                      // opt-in per host in modules/honeytokens.yml
 	Tables:   []string{"honeytoken"},     // today one record in the store's meta table
 	Content:  []string{"rules/honeytokens", "plans/deception.deploy.yaml", "pools"},
@@ -7408,7 +7336,6 @@ Status: **partial**.
 | Roles | `controller` |
 | Consumes | `detect.alert`, `chains.chain`, `chains.item`, `hunt.finding`, `hunt.run`, `integrity.verdict`, `capture.flow`, `capture.txn`, `capture.evidence`, `evidence.blob`, `scorer.round`, `checks.result`, `vantage.scan`, `listener`, `net.egress_denied`, `net.canary_result`, `agent.step_result`, `backup.taken`, `devices.backup`, `devices.traffic`, `teamfeed.say`, `teamfeed.claim`, `backup.restored`, `vuln.finding`, `vuln.summary`, `inventory.snapshot`, `inventory.row`, `auth_event`, `respond.action`, and its own `report.draft`, `report.edited`, `report.validated`, `report.figure`, `report.figure_removed`, `report.export` (the table writer) |
 | Emits | `report.draft`, `report.edited`, `report.validated`, `report.figure`, `report.figure_removed`, `report.export` |
-| Budget | CPU 200 ms/s (a PDF render is a burst of about a second), held 64 MB, 1 event/s, burst 10, bytes out 20 KB/min, disk 512 MB (figures, exports and rendered files under `<data_dir>/reports/`) |
 | Default | core |
 | Tables | `report_drafts` (exists; its migration moves from the controller's list into the package), `report_figures` (figure metadata, so a figure survives a draft deletion for audit); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `reports/generators/*.yml`, `reports/queries/*.yml`, `reports/evidence/*.yml`, `reports/lint.yml`, `inject-kit/` (the memo shell only) |
@@ -7670,7 +7597,7 @@ No agent actions. Controller-side plan content proposed by the module: evidence-
 - Unit (existing): `ir_test.go`, `inject_test.go`, `pdf_test.go`, `names_test.go`, `report_test.go`. New: generator-engine fixtures per generator over a fixture manifest and store; the port-name fixture built from the EVAL11A mistake (464, 593 and 636 must come out right); `TCP/80` formatting; XOR and ROT decode vectors; the config scrub over real PAN-OS and VyOS exports; the skeleton extractor over 2026 prompts (LEGP11T, LINX01A, WINS01A, and SOFT07T with six tasks) and a fixture where the prompt has more tasks than headings; copy-forward fixtures (a 2021 inject number on a 2026 draft, "FROM ANOTHER COMPETITION", an address outside the manifest); duplicate and stock-behaviour fixtures using ledger verdicts; one-draft-per-narrative selection from a two-chain campaign; a hunt-finding draft with its cross-reference.
 - Screen views: render each artifact at 1100 px with a layout check and fail on horizontal overflow.
 - Fuzz the prompt extractor and the Markdown subset parser.
-- Conformance suite (the shared one): starts with no config, emits only declared kinds, stops cleanly, respects its budget under a 50-draft fixture load.
+- Conformance suite (the shared one): starts with no config, emits only declared kinds, stops cleanly under a 50-draft fixture load.
 - Lab: T58 (generators, evidence runs, queries, exports) and T59 (IR drafter, skeleton and validator).
 
 ##### Limits and open items
@@ -7724,8 +7651,6 @@ Status: **missing**. There is no `backup` package. Existing parts it builds on: 
 | Roles | any host that carries a service with backup scope; `domain_controller` for AD actions |
 | Consumes | `agent.step_result`, `scorer.round` (quiet windows), `checks.result`, `integrity.verdict`, `hunt.run`, `hunt.finding` (golden gate); controller side also its own `backup.taken`, `backup.verified`, `backup.tagged`, `backup.pruned` (the table writer) |
 | Emits | `backup.taken`, `backup.restored`, `backup.verified`, `backup.failed`, `backup.tagged`, `backup.pruned` |
-| Budget (agent) | CPU 300 ms/s averaged over a dump (it runs at nice 19 and idle I/O class), held 32 MB, 0.2 events/s, burst 5, bytes out 20 MB/min as bulk chunks (shaped by the link's token bucket), disk 512 MB staging, deleted after the controller acknowledges the pull |
-| Budget (controller) | CPU 100 ms/s, held 32 MB, disk quota from config (default 8192 MB) |
 | Default | opt-in (the reference manifest enables it) |
 | Tables | `backup_sets` (id, host, service, kind, time, bytes, sha256, golden flag, counts), `backup_counts` (per set: source, name, count); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | `plans/backup/` (restore plans), `backups/counts/` (the count specifications per service kind) |
@@ -7938,8 +7863,6 @@ To build: the `phylax say` and `phylax claim` subcommands in `cmd/phylax`; the a
 | Roles | any host; the controller host too |
 | Consumes | agent: none from the bus. Controller: `teamfeed.say`, `teamfeed.claim`, `agent.silent` (to close windows on a host that went away), `teamfeed.window` (the table writer) |
 | Emits | `teamfeed.say`, `teamfeed.claim`, `teamfeed.window` |
-| Budget (agent) | CPU 1 ms/s, held 2 MB, 0.1 events/s, burst 5, bytes out 1 KB/min, disk 1 MB |
-| Budget (controller) | CPU 1 ms/s, held 4 MB, disk 5 MB |
 | Default | opt-in (the reference manifest enables it) |
 | Tables | `teamfeed_windows` (id, host, opened by, opened at, until, ended at, note); written only by the module's one writer goroutine from its own events (module contract: persistence rule) |
 | Content | none |
@@ -8099,7 +8022,6 @@ Status: **missing**. There is no code. It consumes the alert-class kinds from th
 | Roles | `controller` |
 | Consumes | every kind flagged `Alert: yes` in the event-kind table (builder check): `detect.alert`, `agent.silent`, `agent.deadman_fired`, `enroll.key_mismatch`, `enroll.key_reuse`, `enroll.refused`, `enroll.hash_mismatch`, `enroll.no_show`, `controller.locked`, `store.quota`, `plan.deadman_fired`, `plan.rollback_failed`, `plan.restore_failed`, `plan.confirm_failed`, `plan.auto_halted`, `checks.red`, `firewall.allow_back`, `integrity.yara`, `content_guard.stop`, `respond.breaker`, `backup.failed`, `wazuh.health`, `depot.problem`, `scorer.sla`, `splunk.forwarder_state` |
 | Emits | `notify.sent`, `notify.failed` |
-| Budget | CPU 1 ms/s, held 2 MB (the bounded send queue), 0.2 events/s, burst 10, bytes out 2 KB/min, disk 0 |
 | Default | opt-in (the reference manifest enables it) |
 | Tables | none |
 | Content | none |
@@ -8274,10 +8196,6 @@ module.Manifest{
 	Roles:     []string{"controller"}, // the controller side; the agent side is eligible everywhere
 	Consumes:  []string{"depot.sync_state", "depot.entry_added"}, // controller side: its own events, for the table writer
 	Emits: []event.Type{ /* depot.sync_state v1, depot.deploy v1, depot.problem v1, depot.entry_added v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 40, HeldMB: 32, EventsPerSec: 2, Burst: 20,
-		BytesOutPerMin: 1 << 20, DiskMB: 8192, // controller cap; agents 512 for staging and the deployed tools. BytesOutPerMin counts encoded events handed to the store; blob bytes fetched from mirrors or pushed to agents are excluded, and are bounded by sync.bandwidth_kbps and the link's bulk token bucket instead
-	},
 	Default:  true, // core-default
 	Tables:   []string{"depot_entry", "depot_sync"},
 	Content:  []string{"depot/recipes", "depot/tools.json", "depot/index.d"},
@@ -8287,7 +8205,6 @@ module.Manifest{
 }
 ```
 
-The disk cap is a ceiling, not a measurement: the free disk on the controller host is question E14 in `docs/impl/invitational-data.md`. `shortcut: budget numbers are estimates, replace with Invitational measurements`.
 
 ##### 4. Configuration
 
@@ -8450,7 +8367,7 @@ Cache operations never touch a scored host. The dangerous parts are the package 
 
 Built: manifest validation, signing and verification (unsigned, tampered, wrong key), store (put, hash mismatch on write and on read, size bound, atomic write), pack and deploy (permissions, applet symlinks, missing blobs), run (clean environment, memfd execution, swap between check and exec), `FetchMissing` with fetch-at-init pins, gotools (`ps`, `ss`, `ls`, `lsof` against a fake `/proc`), package action tests with a fake runner (versions, dry-run, scored-removal refusal, depot-file hash checks, patch-window requirement).
 
-To build: index with `Kind`, `Priority`, `NeededBy` and priority-ordered sync (resume after kill, bandwidth cap, partial blob never visible), cache plan generation from a fixture manifest, cache-through record and the approval requirement, agent staging and verify loop, `pkg.reinstall`, `pkg.repair` against fixture broken states, install without a patch window, touches declaration from a package-to-service map, conformance (starts with no config; starts with default config on a fixture store; stops within 5 s; emits only declared kinds; budget; link-loss and reconfiguration; `go test -race`).
+To build: index with `Kind`, `Priority`, `NeededBy` and priority-ordered sync (resume after kill, bandwidth cap, partial blob never visible), cache plan generation from a fixture manifest, cache-through record and the approval requirement, agent staging and verify loop, `pkg.reinstall`, `pkg.repair` against fixture broken states, install without a patch window, touches declaration from a package-to-service map, conformance (starts with no config; starts with default config on a fixture store; stops within 5 s; emits only declared kinds; link-loss and reconfiguration; `go test -race`).
 
 Lab tests (matrix ids): T40 offline drill (cold start with the internet blocked, cache from a prior sync: plans, ledger lookups, restores and the Wazuh deploy work, and missing priorities show "waiting"), T-depot (build the tools, fill source hashes, pack and sign, run `depot verify` and `run` on each target OS image), and the Invitational questions E15 (internet from each host class: bandwidth, latency, TLS interception), O11 (does the offline state work in the real environment, how long does a sync take).
 
@@ -8520,10 +8437,6 @@ module.Manifest{
 	Roles:     []string{"controller"},
 	Consumes:  nil,
 	Emits: []event.Type{ /* wazuh.alert v1, wazuh.health v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 20, HeldMB: 16, EventsPerSec: 5, Burst: 50,
-		BytesOutPerMin: 1 << 20, DiskMB: 0, // encoded events handed to the store; the HTTPS bytes of the poll are excluded and bounded by poll_sec and min_level
-	},
 	Default:  false, // opt-in
 	Tables:   nil,
 	Content:  []string{"plans/wazuh.deploy.yaml", "plans/wazuh.evidence.yaml"},
@@ -8533,7 +8446,6 @@ module.Manifest{
 }
 ```
 
-The numbers are initial limits for the poller. The manager and the agents are separate processes on other hosts and are not charged to this budget; their cost is measured as host load (the RAM headroom question E14 in `docs/impl/invitational-data.md`). `shortcut: budget numbers are estimates`.
 
 ##### 4. Configuration
 
@@ -8652,7 +8564,7 @@ States: `disabled` when not enabled; `ok` when the manager is at or above the pi
 
 Built: client tests against a fake API and indexer (auth and re-auth, version parse and pin, agent newer than manager, health counts, groups, alert query, truncation), poller de-duplication at the boundary, the three actions with fakes (health pin and `min_active`, capture file set, test alert path and marker validation, append only), and plan validation of the two templates against the action catalogue.
 
-To build: the controller module (poll loop, health event on change, backoff), `wazuh.alert` conversion with the retrofit agent name, the uninstall plan, the memory-cap node, the kind declarations, conformance (starts with no config and with the integration disabled; default config against a fake API; stops within 5 s; emits only declared kinds; budget; link loss does not apply on the controller side, store errors do; reconfiguration; `go test -race`).
+To build: the controller module (poll loop, health event on change, backoff), `wazuh.alert` conversion with the retrofit agent name, the uninstall plan, the memory-cap node, the kind declarations, conformance (starts with no config and with the integration disabled; default config against a fake API; stops within 5 s; emits only declared kinds; link loss does not apply on the controller side, store errors do; reconfiguration; `go test -race`).
 
 Lab tests: T41 (deploy to all hosts, kill the manager, kill an agent), T40 offline drill (the Wazuh deploy works from the cache with the internet blocked), the first real run on ccdc27 without a failed Quotient round (the "needs the lab" list: the real 4.14.9 bundle and its hashes in the depot, indexer and API field names on the real build, RAM headroom for manager placement, the Windows service name `WazuhSvc` and the `ossec.conf` path per version). Invitational question E14 (resource headroom, `ubuntu-wkst` first) decides placement.
 
@@ -8703,10 +8615,6 @@ module.Manifest{
 	Roles:     []string{"controller"},
 	Consumes:  []string{"detect.alert", "auth_event", "winevt.sec_event", "process_start" /* opt-in */, "chains.chain", "devices.config", "devices.change", "devices.deny"},
 	Emits: []event.Type{ /* splunk.forwarder_state v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 30, HeldMB: 8, EventsPerSec: 1, Burst: 5,
-		BytesOutPerMin: 24 << 20, DiskMB: 0, // the forwarder's own HEC network cap; HEC bytes are outside the BytesOutPerMin definition (encoded events handed to the store); the figure is the forwarder's queue-and-batch bound on the wire
-	},
 	Default:  false, // opt-in
 	Tables:   nil,
 	Content:  []string{"plans/splunk.forwarding.yaml", "splunk/dashboards"},
@@ -8716,7 +8624,7 @@ module.Manifest{
 }
 ```
 
-The queue holds 1024 events and drops on overflow, so held memory is small. `shortcut: budget numbers are estimates, replace with Invitational measurements`.
+The queue holds 1024 events and drops on overflow, so held memory is small.
 
 ##### 4. Configuration
 
@@ -8849,7 +8757,7 @@ Splunk query and management on 8089 are scored. The module's scoring rules:
 
 Built: forwarder tests (batching by count, bytes and interval, retry on network error, 429 and 5xx with backoff, permanent on 400, 401, 403 and 404, overflow drops and counts, `Close` flushes within the deadline, TLS defaults); Splunk action tests with a fake API (index and token creation, refusal to rebind, refusal of a disabled token, built-in index refusal, HEC enable and rollback, verify).
 
-To build: the controller module (subscribe, convert, state events), `sec_event_categories` filtering, the dashboards install node, the scored-index refusal, the platform alert, conformance (starts disabled with no config; starts with a default config against a fake HEC; stops within 5 s and flushes; emits only declared kinds; budget; reconfiguration changes the forward list without losing the queue; `go test -race`).
+To build: the controller module (subscribe, convert, state events), `sec_event_categories` filtering, the dashboards install node, the scored-index refusal, the platform alert, conformance (starts disabled with no config; starts with a default config against a fake HEC; stops within 5 s and flushes; emits only declared kinds; reconfiguration changes the forward list without losing the queue; `go test -race`).
 
 Lab tests (no matrix id of its own; the conformance suite T46 covers the contract): HEC token creation on the scored Splunk, and confirmation that the `phylax` index is unscored and that the views load without a restart. A real Quotient round must pass during the setup (the "needs the lab" list). Invitational question E19 (Splunk specifics: indexes, forwarders, inputs, HEC and REST enabled, local users, RAM and CPU use, management exposure, the scored search content).
 
@@ -8897,10 +8805,6 @@ module.Manifest{
 	Roles:     []string{"controller"},
 	Consumes:  nil,
 	Emits: []event.Type{ /* suricata.alert v1, suricata.dns v1, suricata.http v1, suricata.zeek_conn v1, suricata.zeek_dns v1, suricata.run v1 */ },
-	Budget: module.Budget{
-		CPUMillisPerSec: 500, HeldMB: 256, EventsPerSec: 100, Burst: 2000, // only while a run is in progress
-		BytesOutPerMin: 8 << 20, DiskMB: 1024,
-	},
 	Default:  false, // opt-in, on demand
 	Tables:   nil,
 	Content:  []string{"suricata/config", "suricata/zeek"},
@@ -8910,7 +8814,6 @@ module.Manifest{
 }
 ```
 
-CPU and memory apply only while a run is in progress (the controller host is the workstation that also serves the UI), and the run is cancelled when it exceeds them. `shortcut: budget numbers are estimates, replace with Invitational measurements (O3, E14)`.
 
 ##### 4. Configuration
 
@@ -9012,7 +8915,7 @@ Offline and on the controller only. It sends no packet, opens no listener, touch
 
 Built: the Community ID against the official vector, `ReadEVE` over a recorded `eve.json` (alerts, context, severity-to-priority, sorting), Zeek JSON-lines and TSV with `Join`, an over-size line skipped and counted.
 
-To build: the runner (a fake tool script writing known output; timeout kills; exit codes; run directory removal), `suricata.analyze_pcap` argument validation (pcap path inside the evidence area, size cap, tool allowlist), the idempotence of a repeated run, the flags (a test that asserts `-k none` and `-C` are passed), the retrofit kind renames (no old name remains), conformance (starts disabled with no config; starts with a default config against fake tools; stops within 5 s and kills a running tool; emits only declared kinds; budget under a fixture pcap; reconfiguration; `go test -race`).
+To build: the runner (a fake tool script writing known output; timeout kills; exit codes; run directory removal), `suricata.analyze_pcap` argument validation (pcap path inside the evidence area, size cap, tool allowlist), the idempotence of a repeated run, the flags (a test that asserts `-k none` and `-C` are passed), the retrofit kind renames (no old name remains), conformance (starts disabled with no config; starts with a default config against fake tools; stops within 5 s and kills a running tool; emits only declared kinds; a fixture pcap; reconfiguration; `go test -race`).
 
 Lab tests (matrix id T60 supplies the C2 pcaps; no id of its own otherwise): real EVE and Zeek samples from a pulled pcap (the "needs the lab" list), the offloaded-NIC case (a capture with bad checksums must yield alerts and flows with the flags on and none with them off, to prove the flags matter), and the joined view for a purple-team campaign.
 
@@ -9274,7 +9177,7 @@ Dropped from v3's set because the capability is cut or absent from 2027: the pro
 
 | ID | Scenario | Pass when |
 | --- | --- | --- |
-| T46 | Conformance suite over every registered module (review N13.1) | All twelve checks of the module contract pass for every module; an injected sibling import, an undeclared event kind, an unknown config field and a module over budget each fail CI |
+| T46 | Conformance suite over every registered module (review N13.1) | All eleven checks of the module contract pass for every module; an injected sibling import, an undeclared event kind and an unknown config field each fail CI |
 | T47 | Relay end to end (multi-segment variant): an agent through a relay to the controller; a device-proxy splice to a lab device; a bootstrap download through the relay | The agent enrolls and streams; the device session works; the relay holds no keys and sees no plaintext; the connection cap holds. Gate for the relay's "built, no end-to-end test" status |
 | T48 | T+0 rehearsal with campaign 09: unpatched lab DC; console rotation of the interactive admin identities' default passwords; Zerologon first; then enrollment | The sprayed default credentials fail after rotation; Zerologon is mitigated before any domain rotation; first contact uses the new values; interactive sessions that predate the rotation are evicted and a session that owns a manifest service process is not; service and application accounts and scored users were not touched |
 | T49 | Eviction on scored accounts: a scorer session in flight, a session older than the measured round delay, an unclassifiable session | Only the old, non-scorer-labelled session is evicted; the unclassifiable one is flagged and survives; 0 failed scorer rounds; before a delay is measured, eviction is flag-only |
@@ -9293,13 +9196,13 @@ Dropped from v3's set because the capability is cut or absent from 2027: the pro
 | T62 | Sleep-masked Mythic and Cobalt Strike beacons (campaign 07) | Detected through denied egress and the per-executable allowlist, and by the scheduled memory scan; attributed to a process and hash; measured detection rate reported |
 | T63 | Docker-hosted ecom variant | Listener attribution through `docker-proxy`; process and ledger pins resolved inside the container; checks, backup and restore work; the content guard watches the volume |
 | T64 | Roundcube on the mail host | The webmail check and the Orange login flow pass; the Roundcube hardening and audit run; its database backs up and restores |
-| T65 | Known-bug regressions (Known bugs 1 to 2, 4 to 9, 12 to 23; bugs 3, 10 and 11 have no test, see below) | Each has a test that failed before the fix: `kernel.module_block` verify when built in; the rule-id registry (the D14 collision); the agent `fetch` handler; the real step executor is wired in `phylax agent`; ledger alerts reach D5d; `freeze_capture` is sent; a dead-man fire while connected is reconciled; the actions header; the nat redirect never pre-empts the deny log, and the sinkhole defaults off; the capture ring is inside the module's memory budget; a shadow would-drop never appears as `net.egress_denied`; the heartbeat carries the audit rules hash; the iputils ping pattern matches a 64-bit capture; a device commit inside its window is reverted by a red probe; bug 15, the import check fails on a sibling import (`depot` importing `integrity`, `gotools` importing `net`) and passes with `internal/signing` and `internal/sockets`; bug 17, every controller-origin module event is stored under agent `controller` and every emitted kind is declared (no old kind name remains); bug 18, a honeytoken hit emits `honeytokens.sighting` and a stored `detect.alert` event's hash is unchanged afterwards; bug 21, `pkg.install` on a package listed in `services.yml` `packages` declares the service touch and the lint rejects it inside a scored window; bug 22, the rule loader rejects `ir_template`; bug 23, the reference manifest renders with no `capture` role on a Windows host and no module `degraded`. Bugs 3, 10 and 11 have no regression test of their own: bug 3 is a deletion with no behaviour left to test, bug 10 is reference data that manifest CI covers by rendering the reference manifest with its scored DNS and FTP services, and bug 11 is guarded by the CI check "Known bug 11 guard" rather than a regression test |
+| T65 | Known-bug regressions (Known bugs 1 to 2, 4 to 9, 12 to 23; bugs 3, 10 and 11 have no test, see below) | Each has a test that failed before the fix: `kernel.module_block` verify when built in; the rule-id registry (the D14 collision); the agent `fetch` handler; the real step executor is wired in `phylax agent`; ledger alerts reach D5d; `freeze_capture` is sent; a dead-man fire while connected is reconciled; the actions header; the nat redirect never pre-empts the deny log, and the sinkhole defaults off; the capture ring stays within its configured ring and hold sizes; a shadow would-drop never appears as `net.egress_denied`; the heartbeat carries the audit rules hash; the iputils ping pattern matches a 64-bit capture; a device commit inside its window is reverted by a red probe; bug 15, the import check fails on a sibling import (`depot` importing `integrity`, `gotools` importing `net`) and passes with `internal/signing` and `internal/sockets`; bug 17, every controller-origin module event is stored under agent `controller` and every emitted kind is declared (no old kind name remains); bug 18, a honeytoken hit emits `honeytokens.sighting` and a stored `detect.alert` event's hash is unchanged afterwards; bug 21, `pkg.install` on a package listed in `services.yml` `packages` declares the service touch and the lint rejects it inside a scored window; bug 22, the rule loader rejects `ir_template`; bug 23, the reference manifest renders with no `capture` role on a Windows host and no module `degraded`. Bugs 3, 10 and 11 have no regression test of their own: bug 3 is a deletion with no behaviour left to test, bug 10 is reference data that manifest CI covers by rendering the reference manifest with its scored DNS and FTP services, and bug 11 is guarded by the CI check "Known bug 11 guard" rather than a regression test |
 | T66 | Pass-the-hash pack with the scorer's NTLM baseline (A7.Q7) | The scorer's NTLM and Kerberos logins raise nothing; the same account used from a non-scorer source raises the alert |
 | T67 | Per-executable egress allowlist (A1, A6.Q3) | Alert-only for a program outside the allowlist; the one-click "block this?" suggestion creates a plan; nothing blocks silently |
 | T68 | Opt-in `noexec` remount of temp directories | The pre-check refuses when a scored service execs from there; a live remount rolls back on failure |
 | T69 | Inventory snapshots, `probe.run`, drift adoption and the version matcher | Differential snapshots report added, removed and changed rows; a probe returns typed output; adopt writes to overrides and revert is a plan; a KEV fixture matches an installed version |
 | T70 | Observe mode (Invitational configuration) | With every module alert-only and safe mode on, host state before and after a full run is identical apart from three listed exceptions: the agent, the `decoys` module's listeners and the honeytoken files it plants (`file.plant`); no other firewall, account, service or file change |
-| T71 | Module budgets: self-reported against measured | The ratio of each module's reported CPU and held bytes to the cgroup or Job Object figure is reported (open question 9); no threshold yet |
+| T71 | Module usage: self-reported against measured | The ratio of each module's reported CPU and held bytes to the cgroup or Job Object figure is reported (open question 9); no threshold yet |
 | T72 | Reboot-survival preflight (hardening) | A change that would stop the host booting is flagged before apply; one that survives is not |
 | T73 | Controller executor, approval classes and standing approvals (builder check) | `Host.RunReadOnly` refuses a plan with a node that has `Touches`, a risk above `none` or no `ReadOnly` flag (rule `SS000`); a standing approval covers a backup dump inside its scope and refuses one outside it, after its expiry, and any `lockout`, `destructive` or `host.exec` node; a `creds` plan is never started without a click except the `resync` re-apply; an `auto` plan (A-AUTO) starts only from an allowlisted template, is refused when it holds a `destructive`, `proc.kill_tree`, krbtgt, device-revert or whole-service-restore node or when its probe cannot run (it becomes a click proposal), rolls back on a failed after-probe and halts its template after two rollbacks in 10 minutes; a controller-local action (`suricata.analyze_pcap`) runs in the controller executor with the same locks, lint and audit |
 | T74 | Controller facts (builder check) | A `control: fact` reaches the agent bus as `controller.fact` and is not spooled; a fact with an expired `ttl` or none received is unknown, and `respond` makes no tier-0 action and proposes tier 1 instead; a later fact with the same id replaces the earlier one; a `work_window` fact stamps the envelope `Tag` and ends at `until` with the link down; a `creds_txn` fact pauses a runner's checks for that account |
