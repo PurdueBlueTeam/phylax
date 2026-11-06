@@ -358,3 +358,56 @@ func TestDeadmanConfirmWaitsForAfterProbe(t *testing.T) {
 		}
 	})
 }
+
+// A restarted controller rebuilds the probe grouping lazily. A node whose
+// apply was in flight is still the agent's to finish (or to time out); failing
+// it as unstarted would roll back a change that is still being made.
+func TestProbeGroupingFailureLeavesRunningNodeAlone(t *testing.T) {
+	var applied atomic.Int32
+	x := newPlanCtl(t, nil, nil, Options{
+		ResumeGrace: 100 * time.Millisecond, StepTimeout: 30 * time.Second,
+		Probe: func(context.Context, string) error { return nil },
+		OnStepSent: func(_ string, s *link.Step) {
+			if s.Phase == plan.PhaseApply {
+				applied.Add(1)
+			}
+		},
+	})
+	newFakeStepAgent(t, x, "h1", true, nil) // hold the apply: the node stays running
+	p := plan.Plan{ID: "probe-running-resume", OnFailure: plan.RollbackPlan, Class: plan.ClassAuto,
+		Module: "ctltest", Template: "t1", Nodes: []plan.Node{
+			{ID: "a", Action: "file.write", Target: "h1", Risk: plan.RiskService,
+				Params: map[string]any{"path": "/tmp/phylax-resume-a", "content": "a"}},
+			{ID: "b", Action: "file.write", Target: "h1", Risk: plan.RiskService, Needs: []string{"a"},
+				Params: map[string]any{"path": "/tmp/phylax-resume-b", "content": "b"}},
+		}}
+	if err := x.c.CreatePlan(ctx, p, "driver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.c.approveNow(ctx, p.ID, "driver"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.c.Apply(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "a's apply to be in flight", func() bool {
+		d, err := x.c.PlanDetail(p.ID)
+		return applied.Load() > 0 && err == nil && d.Nodes["a"].State == plan.StateRunning
+	})
+
+	x.shutdown()
+	x.cfg.ManifestPath = filepath.Join(t.TempDir(), "missing") // grouping cannot be built
+	x.start()
+
+	waitFor(t, 10*time.Second, "b to be settled after the restart", func() bool {
+		d, err := x.c.PlanDetail(p.ID)
+		return err == nil && (d.Nodes["b"].State == plan.StateFailed || d.Nodes["b"].State == plan.StateSkipped)
+	})
+	d, err := x.c.PlanDetail(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Nodes["a"].State != plan.StateRunning {
+		t.Fatalf("a was failed while its apply was still in flight: %+v", d.Nodes["a"])
+	}
+}

@@ -1290,7 +1290,10 @@ func (rt *planRT) probeGroupingFailedLocked(reason string) {
 	applied := rt.anyAppliedLocked()
 	for _, n := range rt.p.Nodes {
 		switch rt.run.State(n.ID) {
-		case plan.StatePending, plan.StateApproved, plan.StateRunning:
+		case plan.StatePending, plan.StateApproved:
+			// A running node is still the agent's to finish (or to time out
+			// through the normal step path); failing it here would roll back a
+			// change that is still in flight.
 			if err := rt.run.FailUnstarted(n.ID, reason); err != nil {
 				rt.c.log.Error("probe grouping: cannot fail node", "plan", rt.p.ID, "node", n.ID, "err", err)
 				continue
