@@ -12,9 +12,6 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
-// maxFacts bounds the in-memory fact table; the oldest fact is evicted.
-const maxFacts = 1024
-
 // maxFactID bounds a fact id (the controller enforces the same bound).
 const maxFactID = 128
 
@@ -23,36 +20,22 @@ const maxFactID = 128
 // the controller's clock cannot shorten or extend it.
 type factStore struct {
 	mu    sync.Mutex
-	facts map[string]event.ControllerFact
-	at    map[string]time.Time
-	order []string
+	facts map[string]storedFact
 }
 
-// put stores f, replacing an earlier fact of the same id and evicting the
-// oldest when the table is full.
+type storedFact struct {
+	f  event.ControllerFact
+	at time.Time
+}
+
+// put stores f, replacing an earlier fact of the same id.
 func (s *factStore) put(f event.ControllerFact, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.facts == nil {
-		s.facts = map[string]event.ControllerFact{}
-		s.at = map[string]time.Time{}
+		s.facts = map[string]storedFact{}
 	}
-	if _, ok := s.facts[f.ID]; ok {
-		for i, id := range s.order {
-			if id == f.ID {
-				s.order = append(s.order[:i], s.order[i+1:]...)
-				break
-			}
-		}
-	} else if len(s.facts) >= maxFacts {
-		old := s.order[0]
-		s.order = s.order[1:]
-		delete(s.facts, old)
-		delete(s.at, old)
-	}
-	s.facts[f.ID] = f
-	s.at[f.ID] = at
-	s.order = append(s.order, f.ID)
+	s.facts[f.ID] = storedFact{f: f, at: at}
 }
 
 // get returns a fact by id; false when it was never received or its TTL,
@@ -60,14 +43,14 @@ func (s *factStore) put(f event.ControllerFact, at time.Time) {
 func (s *factStore) get(id string, now time.Time) (event.ControllerFact, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f, ok := s.facts[id]
+	sf, ok := s.facts[id]
 	if !ok {
 		return event.ControllerFact{}, false
 	}
-	if now.After(s.at[id].Add(f.TTL)) {
+	if now.After(sf.at.Add(sf.f.TTL)) {
 		return event.ControllerFact{}, false
 	}
-	return f, true
+	return sf.f, true
 }
 
 // clock is the agent's wall clock for facts. Tests replace it.
