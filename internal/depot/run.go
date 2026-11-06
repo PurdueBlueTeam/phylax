@@ -66,8 +66,9 @@ type IO struct {
 
 // Command verifies the named tool (an exact tool or a multi-call applet)
 // against the manifest and returns a command that runs exactly the bytes that
-// were hashed. On Linux that means an in-memory copy (memfd), so the file on
-// disk cannot be swapped between the check and the exec.
+// were hashed. On Linux that means a sealed memfd, or a private copy of the
+// bytes when `/proc` is mounted noexec, so the file on disk cannot be swapped
+// between the check and the exec.
 func (d *Deployed) Command(ctx context.Context, name string, args []string, extraEnv map[string]string, io IO) (*exec.Cmd, func(), error) {
 	e, applet, err := d.M.Lookup(d.GOOS, d.GOARCH, name)
 	if err != nil {
@@ -78,7 +79,7 @@ func (d *Deployed) Command(ctx context.Context, name string, args []string, extr
 		return nil, nil, fmt.Errorf("%w: %v", ErrTampered, err)
 	}
 	cmd := &exec.Cmd{Args: append([]string{applet}, args...)}
-	cleanup, err := prepareExec(cmd, d.BinDir()+string(os.PathSeparator)+e.File(), b)
+	cleanup, err := prepareExec(cmd, d.BinDir()+string(os.PathSeparator)+e.File(), d.Dir, b)
 	if err != nil {
 		return nil, nil, err
 	}
