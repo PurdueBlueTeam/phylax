@@ -1,6 +1,19 @@
-# Phylax v4 redesign: progress and where to resume
+# Phylax v4: progress and where to resume
 
-Status as of 2026-10-31. Branch `v4` (local only, not pushed). No product code has been written; David said not to start implementation yet.
+Status as of 2026-11-06. Branch `v4`, pushed; CI runs on it. Implementation is under way for the
+Invitational scope (W0, W1, W2, W12, W14), delegated per [README.md](README.md).
+
+Built and merged on `v4` (2026-11-06):
+- W0 proving: [w0-results.md](w0-results.md).
+- W1 module contract: Tasks 1-25 (with 2a, 3a, 4a, 8a, 9a, 11a, 13-22b, 5a, 8b, 11b), and the
+  review fixes. Per-module resource budgets removed by owner decision (usage is still reported).
+- W2 Invitational kit: Tasks 1-11, 3a, 13.
+- W12 enrollment: Task 1.
+- Design-review decisions: [design-review-2026-11-06.md](design-review-2026-11-06.md).
+
+Remaining for the Invitational: W1 Tasks 26-41 (27a-c, 32a); W2 Tasks 12, 14, 15 (rehearsal on
+the prox2 ccdc27 VMs); W12 Tasks 2-19; W14 Tasks 1-17 (bench); conformance check against the
+design. The sections below are the planning history (to 2026-11-06).
 
 ## Done
 
