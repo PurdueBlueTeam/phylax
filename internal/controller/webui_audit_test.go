@@ -41,6 +41,11 @@ func TestUIAuditExemptControlRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fleet safe-mode and kill-switch handlers land with their features;
+	// register stand-ins so the exemption list is tested end to end.
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	srv.Handle("POST /safe-mode", ok)
+	srv.Handle("POST /settings/kill-switch", ok)
 	pw, created, err := srv.EnsureAdmin(context.Background())
 	if err != nil || !created {
 		t.Fatalf("EnsureAdmin: %v %v", created, err)
@@ -69,6 +74,11 @@ func TestUIAuditExemptControlRoutes(t *testing.T) {
 	}
 	if w.Code != http.StatusNotFound { // no such connected agent; the handler ran
 		t.Fatalf("safe-mode route: %d %s", w.Code, w.Body)
+	}
+	for _, path := range []string{"/safe-mode", "/settings/kill-switch"} {
+		if w := u.do("POST", path, url.Values{"csrf_token": {tok}}); w.Code != http.StatusNoContent {
+			t.Fatalf("%s refused by the failing audit log: %d %s", path, w.Code, w.Body)
+		}
 	}
 
 	w = u.do("POST", "/plans", url.Values{"csrf_token": {tok}})

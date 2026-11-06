@@ -65,8 +65,15 @@ func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 	}
 	srv, err := ui.New(ui.Config{
 		Accounts: storeAccounts{c.st}, Audit: audit, Agents: c, Ops: ops,
-		AuditExempt: []string{"POST /agents/{host}/safemode"},
-		Addr:        opt.Addr, Logger: opt.Logger, Argon2: opt.Argon2, Now: opt.Now,
+		// The controls that stop a flood must work with a full disk: the
+		// per-host safe-mode toggle and the operator controls documented in
+		// ui.Config (the fleet safe mode and the kill switch).
+		AuditExempt: []string{
+			"POST /agents/{host}/safemode",
+			"POST /safe-mode",
+			"POST /settings/kill-switch",
+		},
+		Addr: opt.Addr, Logger: opt.Logger, Argon2: opt.Argon2, Now: opt.Now,
 	})
 	if err != nil {
 		return nil, nil, err
