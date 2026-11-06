@@ -57,18 +57,26 @@ func (d moduleDB) owns(name string) bool {
 }
 
 // checkOwnership refuses a statement that creates, alters, drops or writes a
-// table the module does not own. The prefix rule is a shortcut for a SQLite
-// authorizer: a module that needs dynamic SQL upgrades it.
+// table the module does not own.
+//
+// shortcut: table ownership is checked by name prefix with a regexp over the
+// statement text, upgrade to a SQLite authorizer if a module needs dynamic SQL
+// (an upsert's "DO UPDATE SET" and the inside of string literals are not table
+// references, so those are skipped).
 func (d moduleDB) checkOwnership(q string) error {
 	if !moduleNameRe.MatchString(d.module) {
 		return fmt.Errorf("store: bad module name %q", d.module)
 	}
-	for _, m := range tableRefRe.FindAllStringSubmatch(q, -1) {
-		open, name, close := m[1], m[2], m[3]
-		// A quoted name is not a table reference we can attribute: refuse it
-		// rather than guess (no module needs one).
+	for _, m := range tableRefRe.FindAllStringSubmatchIndex(q, -1) {
+		open, name, close := q[m[2]:m[3]], q[m[4]:m[5]], q[m[6]:m[7]]
 		if open != "" || close != "" {
+			// A quoted name is not a table reference we can attribute: refuse
+			// it rather than guess (no module needs one).
 			return fmt.Errorf("%w: quoted table name in module statement", ErrForeignTable)
+		}
+		before := strings.ToUpper(strings.TrimRight(q[:m[0]], " \t\r\n"))
+		if strings.HasSuffix(before, "DO") {
+			continue // "ON CONFLICT DO UPDATE SET col=?": no table named
 		}
 		if !d.owns(name) {
 			return fmt.Errorf("%w: %s (module %s)", ErrForeignTable, name, d.module)

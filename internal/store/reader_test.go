@@ -77,3 +77,30 @@ func TestModuleDBExecOwnTables(t *testing.T) {
 	}
 	rows.Close()
 }
+
+func TestModuleDBUpsertAllowed(t *testing.T) {
+	st, _ := open(t)
+	ctx := context.Background()
+	db := st.ModuleDB("deps")
+	if err := db.Migrate(ctx, []string{"CREATE TABLE deps_edge(a TEXT PRIMARY KEY, n INTEGER)"}); err != nil {
+		t.Fatal(err)
+	}
+	up := `INSERT INTO deps_edge(a, n) VALUES (?, ?) ON CONFLICT(a) DO UPDATE SET n=n+1`
+	for i := 0; i < 2; i++ {
+		if _, err := db.Exec(ctx, up, "x", 1); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+	var n int
+	rows, err := db.Query(ctx, `SELECT n FROM deps_edge WHERE a=?`, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatal("no row")
+	}
+	if err := rows.Scan(&n); err != nil || n != 2 {
+		t.Fatalf("n %d %v", n, err)
+	}
+}
