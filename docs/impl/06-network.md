@@ -4,7 +4,7 @@
 
 **Goal:** Put the four network modules (`firewall`, `egress`, `capture`, `devices`) on the module contract, break the `internal/actions` imports of `devices` and `firewall`, build what the design adds (inbound auto-enforce with allow-back, conntrack flush, quarantine, source blocks, shadow summarizer, egress ranking and suggestions, `freeze_capture`, TFTP and NTP parsers, device pollers and `D14`, backups, rotation, licence gating) and fix Known bugs 7, 12, 13, 14, 19 and 20.
 
-**Architecture:** Each module is one package (`internal/firewall`, `internal/egress`, `internal/capture`, `internal/devices`) with an agent registration in `internal/agent/mods/<name>.go` where it has an agent side and a `module.ControllerModule` where it has a controller side. A module that owns an action family registers it from its package (`actions.Register`), so `internal/actions` imports no module. Module backends reach actions through `actions.Env.Ext`, set by the code that builds the `Env` (the agent binary, the controller executor). Policy comes from the manifest renderer (`internal/manifest/render`, core) into the signed `AgentConfig`; the agent applies it only through plan nodes or, for the allow-back, under `act_enabled`.
+**Architecture:** Each module is one package (`internal/firewall`, `internal/egress`, `internal/capture`, `internal/devices`) with an agent registration in `internal/agent/mods/<name>.go` where it has an agent side and a `module.ControllerModule` where it has a controller side. A module that owns an action family registers it from its package (`actions.Register`), so `internal/actions` imports no module. Module backends reach actions through `actions.Env.Ext`, set by the code that builds the `Env` (the agent binary, the controller executor). Policy comes from the manifest renderer (`internal/manifest/render`, core) into the signed `AgentConfig`; the agent applies it only through plan nodes or, for the allow-back, as the `fw.apply{op: allow}` template at its `autonomy` with the engine's attempt ledger (S1; none of the four modules has an `act_enabled`).
 
 **Tech Stack:** Go 1.27.2 (mise), standard library, existing deps only (`github.com/google/nftables`, `github.com/mdlayher/netlink` (already in `go.mod`, becomes direct), `modernc.org/sqlite`, `gopkg.in/yaml.v3`, `golang.org/x/{net,sys,crypto}`). No new modules in `go.mod`.
 
@@ -14,12 +14,12 @@
 
 1. **`internal/devices` root becomes the module; the adapter types move to `internal/devices/adapter`.** `palo` and `vyos` import the `Adapter`, `Tx`, `SafeChange` types that live in the root today; the module imports `palo` and `vyos`, so the root cannot hold both. Appendix D gains `devices/adapter/`.
 2. **Actions leave `internal/actions`.** The exported hooks are W1 Task 2a's, under the one registration name: `actions.Register(f func() []Action)`, `actions.RegisterUndo(kind, fn)`, `actions.Unsupported(what string) error`, `(*Env).Now() time.Time` (the old field `Env.Now` is renamed `Env.Clock`) and `Env.Ext map[string]any` (backends owned by modules, keyed by module name). `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`, `DeviceDirectory` and `FirewallBackend` are deleted from `actions` here (Tasks 2 and 3). W11 uses the same hooks for `wazuh`. (This plan formerly called the registration hook `Register`; it is `Register` everywhere now.)
-3. **The inbound `gate: auto` is evaluated by the `firewall` controller module before it calls `RunAuto`**, because its condition reads the nested would-drop summary (groups by coverage), which the core's generic `gate: auto` (W1 Task 27a: time, probe, absence of an event) cannot express. The plan template `plans/firewall/enforce-inbound.yaml` holds only the enforce node and the probe; the module checks the shadow summary (no `coverage: scored` group), that safe mode is off and `act_enabled`, and then `RunAuto`; otherwise it `Propose`s. A template may still add a core `gate: auto` with `until: {after: ..., probe: '*'}` for the minimum shadow time.
+3. **The inbound `gate: auto` is evaluated by the `firewall` controller module before it calls `RunAuto`**, because its condition reads the nested would-drop summary (groups by coverage), which the core's generic `gate: auto` (W1 Task 27a: time, probe, absence of an event) cannot express. The plan template `plans/firewall/enforce-inbound.yaml` holds only the enforce node and the probe; the module checks the shadow summary (no `coverage: scored` group), that safe mode is off and that the template's `autonomy` (S1; `inbound.autonomy`, default `auto`) is not `propose`, and then `RunAuto`, whose engine conditions and attempt ledger do the rest (`shadow` records the would-be plan); otherwise it `Propose`s. A template may still add a core `gate: auto` with `until: {after: ..., probe: '*'}` for the minimum shadow time.
 4. **`module.Host.Manifest() *manifest.Manifest`** is W1 Task 17a's (`internal/module` may import `internal/manifest`: it imports no repo package). The shadow verdict (`declared`, `undeclared`, `scored`), the egress allow table and the device inventory all read the manifest.
 5. **`Host.Control` accepts `Type: "freeze_capture"`** from module `capture` only (`Data`: `rule`, `alert_time`, `addrs`; no `Fact`, `ID` or `TTL`). The design says a module may send only facts, but Known bug 7 needs the controller side of `capture` to send `freeze_capture`, and the core cannot know which agents saw a flow. `plan.ControlFreezeCapture = "freeze_capture"`; `link.ProtoMinor` rises by 1.
 6. **`fw.apply` takes `destinations`** (outbound destination blocks) beside `sources` (inbound). The design says "block the destination for this host (`fw.apply` with a drop in the `egress` group)" but names only `sources`. Exactly one of the two is given.
-7. **`firewall.allow_back` gains `probe`** (`ok`, `failed`, `unavailable`): the agent-side probe may not exist (no `Env.Probe` on the agent until W7), and the event must say so.
-8. **Prefix and group constants are core.** `render.PrefixShadowInput = "phylax-shadow-input: "`, `PrefixShadowOutput`, `PrefixInputDeny = "phylax-input-deny: "`, `PrefixEgressDeny = "phylax-egress-deny: "`, `DefaultDenyLogGroup = 100`, `DefaultShadowLogGroup = 101`. `net` (W3) reads them from `render`; it cannot import `firewall`.
+7. **`firewall.change{op: allow_back}` gains `probe`** (`ok`, `failed`, `unavailable`): the agent-side probe may not exist (no `Env.Probe` on the agent until W7), and the event must say so.
+8. **Prefix and group constants are core.** `render.PrefixShadowInput = "phylax-shadow-input: "`, `PrefixShadowOutput`, `PrefixInputDeny = "phylax-input-deny: "`, `PrefixEgressDeny = "phylax-egress-deny: "`, `DefaultDenyLogGroup = 100`. There is one NFLOG group (S4): the prefix, not a second group, tells shadow would-drops, ingress denials and egress denials apart. `net` (W3) reads the group and the prefixes from `render`; it cannot import `firewall`.
 9. **`learned_listeners` is written through W1's `Host.UpdateOverrides`** (Task 17a over `manifest.AppendOverrides`, Task 11a) as `manifest.LearnedListener{Host, Proto, Port, Reason, Observed}` entries of `overrides.yml`, rendered like a service listener into the `learned` group (any source). The controller side of `firewall` writes one when `learned_listeners` is true and a consumed `firewall.allow_back` event carries a scored port or scorer-like sender (Task 14).
 10. **Controller-scope rule evaluation is `detect`'s (W4).** `internal/controller/capture_ingest.go` is that evaluator; W6 only deletes the `net.flow` translation from it (capture emits `conn` itself) and moves rule content `D13e` and `D18b` to `rules/capture/` once W4 has moved `rules/network.yml` (Task 28 is ordered after W4's move).
 11. **`plans/egress/patch_window.yaml` uses W1's `expires_after` node option** (Task 22a: `expires_after: 30m` in a template; the dead-man machinery with the confirm turned off), so Task 19 writes the template and a real test.
@@ -38,6 +38,7 @@
 - Scored ports are allow-any-source in every mode (shadow, enforce, quarantine); a block never names an address the manifest lists as ours; a conntrack flush never touches a flow carrying the management mark `0x7068` or a flow on a scored port.
 - Windows: `capture` is unavailable (cut, review D235); firewall shadow is evaluated by `net`, not installed. Known limits carry `// shortcut: <limit>, <when to upgrade>`.
 - The design is authoritative; a forced design change edits `phylax_design.md` in the same commit with the reason.
+- S1-S4 (2026-11-06): no module here has a mode ladder, gate flag, loop or rate guard of its own. How far an action goes is the template's engine setting `autonomy: propose|shadow|auto` (`inbound.autonomy`, `outbound.autonomy`) and the engine's one attempt ledger keyed by (host, object, kind); none of `firewall`, `egress`, `capture` and `devices` has `act_enabled`. One action `fw.apply{op}` plus `fw.snapshot` is the whole firewall action set; one event kind `firewall.change{op}`; one NFLOG group with prefixes; `capture` emits the common `conn{source: capture}` and the core `evidence.blob` instead of kinds of its own.
 
 ## Review Focus
 
@@ -55,7 +56,7 @@
 | --- | --- | --- |
 | `internal/actions/{registry,env,win_env}.go` | `Register`, `RegisterUndo`, `Unsupported`, `Env.Now`, `Env.Ext` (W1 Task 2a); no module imports | W1 2a, 2, 3 |
 | `internal/firewall/events.go`, `manifest.go`, `config.go`, `module.go` | event payloads, manifest, config block, agent module | 1, 12 |
-| `internal/firewall/actions.go`, `actions_apply.go`, `actions_win.go` | `fw.*`, `firewall.allow`, `win.firewall` | 2, 9, 10 |
+| `internal/firewall/actions.go`, `actions_apply.go`, `actions_win.go` | `fw.apply{op}` (allow, policy, block, quarantine) and `fw.snapshot` | 2, 9, 10 |
 | `internal/firewall/{verdict,conntrack_linux}.go` | verdict function, conntrack flush | 8 |
 | `internal/firewall/allowback.go` | allow-back | 13 |
 | `internal/firewall/controller.go`, `shadow.go` | controller side, summarizer, inbound auto trigger | 14, 15 |
@@ -80,7 +81,7 @@ Done by a stronger model. Writes the package moves, exported hooks, kind declara
 **Files:**
 - Move (`git mv`, delete old paths, update every import): `internal/devices/{devices,runner,diff}.go` and `runner_test.go` → `internal/devices/adapter/` (package `adapter`); `palo` and `vyos` import `internal/devices/adapter`.
 - Create: `internal/firewall/{events,manifest,config,module,controller}.go`, `internal/egress/{events,manifest,config,module}.go`, `internal/capture/{kinds,manifest,config,controller}.go`, `internal/devices/{events,manifest,config,module}.go`, skipped test files named in later tasks (`storetest.New` is W1 Task 8a).
-- Modify: `internal/actions/{win_env.go,linux_env.go}` (delete `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`), `internal/module/host.go` (`freeze_capture`; `Manifest()` is W1's), `internal/plan/agentconfig.go` (`Modules.Firewall`, `Modules.Capture`), `internal/plan/control.go`, `internal/link/message.go` (`ProtoMinor`), `internal/module/all/all.go` (blank imports `firewall`, `egress`, `capture`, `devices`), `internal/module/conformance/allowed.go` (`ModulePackages`: the four; `PreContract`: add the four names, each deleted by its retrofit task), `phylax_design.md`.
+- Modify: `internal/actions/{win_env.go,linux_env.go}` (delete `WinEnv.Firewall`, `WinEnv.Devices`, `LinuxEnv.Firewall`), `internal/event/core.go` (`EvidenceBlob` ring-slice keys, only if W4 Task 1 did not), `internal/module/host.go` (`freeze_capture`; `Manifest()` is W1's), `internal/plan/agentconfig.go` (`Modules.Firewall`, `Modules.Capture`), `internal/plan/control.go`, `internal/link/message.go` (`ProtoMinor`), `internal/module/all/all.go` (blank imports `firewall`, `egress`, `capture`, `devices`), `internal/module/conformance/allowed.go` (`ModulePackages`: the four; `PreContract`: add the four names, each deleted by its retrofit task), `phylax_design.md`.
 - Test: `internal/actions/imports_test.go` (written in Task 3).
 
 **Interfaces:**
@@ -103,10 +104,10 @@ type FirewallSettings struct { // json block "firewall"
 	ConntrackFlush bool               `json:"conntrack_flush"`
 	QuarantineSec  int                `json:"quarantine_revert_sec,omitempty"`
 	DriftCheckSec  int                `json:"drift_check_sec,omitempty"`
-	ShadowLogGroup uint16             `json:"shadow_log_group,omitempty"`
-	InboundMode    string             `json:"inbound_mode,omitempty"`  // enforce | shadow (the block's inbound.mode)
-	OutboundMode   string             `json:"outbound_mode,omitempty"` // shadow | enforce
-	AllowBack      AllowBackSettings  `json:"allow_back"`
+	NflogGroup     uint16             `json:"nflog_group,omitempty"`        // the one NFLOG group (default 100); the log prefix tells shadow, ingress-deny and egress-deny apart (S4)
+	InboundAutonomy  string           `json:"inbound_autonomy,omitempty"`  // propose | shadow | auto (default auto): the enforce-inbound template's autonomy (S1)
+	OutboundAutonomy string           `json:"outbound_autonomy,omitempty"` // default propose
+	AllowBack      AllowBackSettings  `json:"allow_back"`                   // the ledger limit the fw.apply{op: allow} template carries, not a counter of the module's own
 	Block          []BlockEntry       `json:"block,omitempty"`
 	Policy         *render.HostPolicy `json:"policy,omitempty"`     // Linux
 	WinPolicy      *render.WinPolicy  `json:"win_policy,omitempty"` // Windows
@@ -140,17 +141,16 @@ type CaptureSettings struct { // json block "capture"; the design's struct plus 
 const (
 	PrefixShadowInput = "phylax-shadow-input: "; PrefixShadowOutput = "phylax-shadow-output: "
 	PrefixInputDeny = "phylax-input-deny: "; PrefixEgressDeny = "phylax-egress-deny: "
-	DefaultDenyLogGroup uint16 = 100; DefaultShadowLogGroup uint16 = 101
+	DefaultDenyLogGroup uint16 = 100 // the one NFLOG group; shadow would-drops use it with PrefixShadowInput/Output
 )
 
 // ---- internal/store/storetest: storetest.New(t, evs...) is W1 Task 8a's, consumed here ----
 
 // ---- kinds (Declare in init; Schema 1; priority and alert per the design's kind table) ----
-// firewall: firewall.applied (high), firewall.drift (high), firewall.restored (high), firewall.allow_back (critical, Alert true),
-//           firewall.quarantine (critical), firewall.shadow_summary (normal)
+// firewall: firewall.change (normal; high when op is allow_back; Alert true, so only allow_back becomes an alert row), firewall.drift (high), firewall.shadow_summary (normal)
 // egress:   egress.candidate (high), egress.suggest_block (normal)
-// capture:  capture.txn (normal), capture.flow (bulk), capture.scan (high), capture.http_request (normal),
-//           capture.evidence (high), capture.stats (normal), capture.source_check (high)
+// capture:  capture.txn (normal), capture.scan (high), capture.http_request (normal), capture.stats (normal), capture.source_check (high);
+//           no capture.flow (the flow record is the common conn{source: capture}) and no capture.evidence (ring slices are the core evidence.blob)
 // devices:  devices.config (high), devices.change (high), devices.deny (normal), devices.traffic (normal),
 //           devices.backup (normal), devices.version (normal), devices.finding (high), devices.capture (high)
 ```
@@ -159,22 +159,25 @@ Payload structs (one per kind, `<Kind>Event`, JSON tags are the design's key-fie
 
 ```go
 // internal/firewall/events.go
-type AppliedEvent struct {
-	Host string `json:"host"`; Mode string `json:"mode"`; Node string `json:"node,omitempty"`
-	PrevHash string `json:"prev_hash,omitempty"`; Hash string `json:"hash"`; Changed bool `json:"changed"`
-	DeadmanArmed bool `json:"deadman_armed"`; ForeignTables []ForeignTable `json:"foreign_tables,omitempty"`
+// ChangeEvent is the one firewall.change kind (S4): Op is applied | restored | allow_back | quarantine. Priority normal, high for allow_back (Alert true, so only allow_back becomes an alert row).
+type ChangeEvent struct {
+	Op   string `json:"op"`
+	Host string `json:"host"`
+	Node string `json:"node,omitempty"`
+	Hash string `json:"hash,omitempty"`
+	// op applied
+	Mode string `json:"mode,omitempty"`; PrevHash string `json:"prev_hash,omitempty"`; Changed bool `json:"changed,omitempty"`
+	DeadmanArmed bool `json:"deadman_armed,omitempty"`; ForeignTables []ForeignTable `json:"foreign_tables,omitempty"`
+	// op restored: Reason deadman | verify_failed | drift | panic_open; op allow_back: Reason scored_port | scorer_like; op quarantine: the operator's reason
+	Reason string `json:"reason,omitempty"`
+	// op allow_back
+	Port uint16 `json:"port,omitempty"`; Proto string `json:"proto,omitempty"`; Source string `json:"source,omitempty"`; RuleAdded string `json:"rule_added,omitempty"`
+	DroppedSinceMS int64 `json:"dropped_since_ms,omitempty"`; Proposal string `json:"proposal,omitempty"`; Probe string `json:"probe,omitempty"` // ok | failed | unavailable
+	// op quarantine
+	Expires string `json:"expires,omitempty"`; FlowsDeleted int `json:"flows_deleted,omitempty"`
 }
 type DriftEvent struct {
 	Group string `json:"group"`; Diff []string `json:"diff"`; ForeignMayBlock bool `json:"foreign_may_block,omitempty"`
-}
-type RestoredEvent struct{ Reason, Node, Hash string } // json reason (deadman|verify_failed|drift|panic_open), node, hash
-type AllowBackEvent struct {
-	Host string `json:"host"`; Port uint16 `json:"port"`; Proto string `json:"proto"`; Source string `json:"source"`
-	Reason string `json:"reason"` /* scored_port | scorer_like */; RuleAdded string `json:"rule_added"`
-	DroppedSinceMS int64 `json:"dropped_since_ms"`; Proposal string `json:"proposal,omitempty"`; Probe string `json:"probe"`
-}
-type QuarantineEvent struct {
-	Host string `json:"host"`; Reason string `json:"reason"`; Expires string `json:"expires"`; FlowsDeleted int `json:"flows_deleted"`
 }
 type ShadowGroup struct {
 	Dir, Proto, Src, Dst string; DPort uint16; Count int; First, Last, Process, Coverage string // json dir, proto, src, dst, dport, count, first, last, process, coverage
@@ -196,7 +199,7 @@ type SuggestBlockEvent struct {
 }
 ```
 
-`capture.*` and `devices.*` payload structs carry exactly the keys the code writes today (`capture/events.go`, `httpevent.go`, `freeze.go`, `module.go`; `devices.ConfigEvent` fields for `devices.config`) plus the design's key-field list for the new kinds (`devices.deny`, `devices.traffic`, `devices.backup`, `devices.version`, `devices.finding`, `devices.capture`, `capture.source_check {agree, sample, firewall_sources, recovered}`). `capture.flow` keeps its private shape; the common `conn` kind is W1's.
+`capture.*` and `devices.*` payload structs carry exactly the keys the code writes today (`capture/events.go`, `httpevent.go`, `freeze.go`, `module.go`; `devices.ConfigEvent` fields for `devices.config`) plus the design's key-field list for the new kinds (`devices.deny`, `devices.traffic`, `devices.backup`, `devices.version`, `devices.finding`, `devices.capture`, `capture.source_check {agree, sample, firewall_sources, recovered}`). The common `conn` kind and the core `evidence.blob` are W1's and W4's; `evidence.blob` gains the ring-slice keys `id`, `rule`, `alert_time`, `from`, `to`, `ips`, `path`, `packets`, `final`, `evicted` in `internal/event/core.go` (this task adds them if W4 Task 1 has not).
 
 Manifests are the design's part 3 of each module, verbatim (Budget numbers, `Default`, `Tables`, `Content`, `Actions`, `Pages`, `Evidence`), with `Emits` the kinds above and `Consumes` as the design lists. Config structs are the design's part 4 (`firewall.Config` and `devices.Config` as written; `egress.Config` as written; `capture.Config` with the YAML keys of part 4), each embedding `module.Common` inline. Module types: `firewall.Controller` (controller side, `module.Register` in `init`; agent side is the factory of Task 12), `egress.Module`, `capture.Controller`, `devices.Module` with `Attach(dir Directory)`; all with stub bodies returning an `unavailable` health with the gap `{"module", "not built (W6 Task N)"}`.
 
@@ -218,10 +221,10 @@ Open as its own pull request into `v4`; merge after review.
 
 ---
 
-### Task 2: Firewall actions leave `internal/actions`
+### Task 2: Firewall actions leave `internal/actions` and become `fw.apply{op: allow}`
 
 **Files:**
-- Move: `internal/actions/linux_firewall.go`, `linux_firewall_linux.go`, `win_firewall.go` → `internal/firewall/actions.go`, `actions_linux.go`, `actions_win.go` (package `firewall`); their tests (`linux_*_test.go` cases for `firewall.allow`, the `win.firewall` cases of `win_misc_test.go`, `fakeFW` of `win_fakes_test.go`) → `internal/firewall/actions_test.go`, `actions_win_test.go`
+- Move and rename (`firewall.allow` and `win.firewall` become `fw.apply{op: allow}`): `internal/actions/linux_firewall.go`, `linux_firewall_linux.go`, `win_firewall.go` → `internal/firewall/actions.go`, `actions_linux.go`, `actions_win.go` (package `firewall`); their tests (`linux_*_test.go` cases for `firewall.allow`, the `win.firewall` cases of `win_misc_test.go`, `fakeFW` of `win_fakes_test.go`) → `internal/firewall/actions_test.go`, `actions_win_test.go`
 - Modify: `internal/actions/{win_env.go,linux_env.go,registry_win.go,registry_linux.go,win_native_windows.go}` (delete `WinEnv.Firewall`, `LinuxEnv.Firewall`, `FirewallBackend`, the registrations and the import of `internal/firewall`); `internal/firewall/module.go` (the `init` registration)
 - Test: `internal/firewall/actions_test.go`
 
@@ -244,16 +247,19 @@ func SetDeclared(hp *render.HostPolicy)                  // package state shared
 func Declared() *render.HostPolicy
 ```
 
-Behaviour is unchanged: `firewall.allow` and `win.firewall` keep names, params, rollback kinds (`firewall.allow.undo` is renamed `fw.restore.undo`; `win.firewall.restore` unchanged); `NftFirewall` becomes the default `Backend` built from `Declared`/`SetDeclared` instead of a field on `LinuxEnv`.
+The two built actions are renamed and merged (S4): `firewall.allow` (Linux) and `win.firewall` (Windows) become `fw.apply{op: allow}`, one action with one backend per OS, registered here with the `op` enum holding `allow` only (Tasks 9 and 10 add `policy`, `block` and `quarantine` to the same action; one name has one registration). Params and behaviour of the allow stay (inbound allow keyed by comment tag, `from: any` required on a scored port); the rollback kinds become the dead-man handler kinds the design names, `fw.nft.restore` (was `firewall.allow.undo`) and `fw.win.restore` (was `win.firewall.restore`), which are handler kinds the dead-man journal names, not plan actions. `NftFirewall` becomes the default `Backend` built from `Declared`/`SetDeclared` instead of a field on `LinuxEnv`.
 
 - [ ] **Step 1: Move the tests first and make them fail to compile against the new package** (they use `firewall.Backend`, `env.Ext`). The assertions stay (inbound allow added keyed by comment tag, `from: any` required on a scored port, rollback restores kernel and declared policy). Add one new test:
 
 ```go
 func TestRegisteredFromPackage(t *testing.T) {
 	reg := actions.Core() // blank import of this package registers the family
-	for _, n := range []string{"firewall.allow", "win.firewall"} {
-		if _, err := reg.Get(n); err != nil {
-			t.Fatalf("%s: %v", n, err)
+	if _, err := reg.Get("fw.apply"); err != nil {
+		t.Fatalf("fw.apply: %v", err)
+	}
+	for _, gone := range []string{"firewall.allow", "win.firewall"} {
+		if _, err := reg.Get(gone); err == nil {
+			t.Fatalf("%s must be renamed into fw.apply{op: allow} (S4)", gone)
 		}
 	}
 }
@@ -262,7 +268,7 @@ func TestRegisteredFromPackage(t *testing.T) {
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Allow|WinFirewall|Registered' -v`. Expected: FAIL (compile errors, then the registration missing).
 - [ ] **Step 3: Move the files and fix the references** with the W1 Task 2a hooks (`registerUndo` → `actions.RegisterUndo`, `env.now()` → `env.Now()`, `unsupported(...)` → `actions.Unsupported(...)`, `pkgNameRe` → a local `regexp` of the same pattern, `env.lx().Firewall` and `env.Win.Firewall` → `BackendFor(env)` / `env.Ext["firewall.win"]`). `init` calls `actions.Register(familyActions)`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/ ./internal/actions/ && GOOS=windows go vet ./internal/firewall/ ./internal/actions/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "firewall: own firewall.allow and win.firewall; actions no longer import firewall"`
+- [ ] **Step 5: Commit.** `git commit -am "firewall: own the allow actions as fw.apply op allow; actions no longer import firewall"`
 
 ---
 
@@ -325,7 +331,7 @@ W11 appends `internal/wazuh` to the list. The moved tests keep their assertions 
 ### Task 4: Egress and firewall policy move to module blocks; dead limits deleted (Known bug 13, part 1)
 
 **Files:**
-- Create: `manifest/2027/modules/firewall.yml`, `egress.yml`, `capture.yml`, `devices.yml` (the YAML of each design part 4, `enabled: true`, `act_enabled: false`, egress `sinkhole: { enabled: false, port: 7480 }`)
+- Create: `manifest/2027/modules/firewall.yml`, `egress.yml`, `capture.yml`, `devices.yml` (the YAML of each design part 4, `enabled: true`, no `act_enabled` (none of the four acts on its own), egress `sinkhole: { enabled: false, port: 7480 }`)
 - Modify: `internal/manifest/types.go` (delete `Policy.Egress`, `Limits.PacketRingMaxBytes`, `PacketRingFreePct`, keep `Policy.Firewall` for the lint), `internal/manifest/helpers.go` (`Policy.DenyLogGroup`, `SinkholePort` become methods of `Manifest` reading the egress block), `manifest/2027/policy.yml` and `manifest/two-segment/policy.yml` (delete `egress:` and `limits:`), `manifest/schema/policy.yml.schema.json`, `internal/manifest/render/{policy,nft}.go` and `internal/manifest` callers of `Policy.Egress`
 - Test: `internal/manifest/modules_net_test.go`
 
@@ -387,9 +393,9 @@ func TestEgressBlockRendersSameHostPolicy(t *testing.T) {
 const GroupBlock Group = "block"
 type BlockSpec struct{ CIDR netip.Prefix; Reason, Owner, Added, Expires string }
 // Rule gains: Block *BlockSpec `json:"block,omitempty"`
-// HostPolicy gains: ShadowLogGroup uint16 `json:"shadow_log_group,omitempty"`; InputDenyLog bool `json:"input_deny_log,omitempty"` (inbound default-drop logs through DenyLogGroup with PrefixInputDeny)
+// HostPolicy gains: InputDenyLog bool `json:"input_deny_log,omitempty"` (inbound default-drop logs through DenyLogGroup with PrefixInputDeny)
 func (hp *HostPolicy) WithBlocks(in []BlockSpec, out []BlockSpec) (*HostPolicy, error) // adds GroupBlock drop rules ahead of service accepts; Dir In for sources, Out for destinations; refuses an empty Reason, Owner or Added
-func BuildHostPolicy(m *manifest.Manifest, name string) (*HostPolicy, error)           // now sets ShadowLogGroup = DefaultShadowLogGroup and InputDenyLog = true for servers
+func BuildHostPolicy(m *manifest.Manifest, name string) (*HostPolicy, error)           // now sets InputDenyLog = true for servers (one NFLOG group, DenyLogGroup, for every log rule)
 const (
 	RuleBlockOwnAddress = "FW111" // a block names an address the manifest lists as ours (controller, agents, Kali, devices)
 	RuleBlockWide       = "FW112" // a block CIDR wider than /24 (warning)
@@ -434,9 +440,9 @@ func TestScoredUDPAcceptedFromAnySource(t *testing.T) { // Review Focus 1
 func TestUnscoredUDPDropped(t *testing.T) {
 	// the same host without those services scored: no accept rule for udp/69 or udp/123 in the policy
 }
-func TestServersLogInputDenyOnShadowGroup(t *testing.T) {
+func TestServersLogInputDenyOnTheOneGroup(t *testing.T) {
 	hp := mustPolicy(t, "rocky-ecom")
-	if !hp.InputDenyLog || hp.ShadowLogGroup != 101 || hp.DenyLogGroup != 100 {
+	if !hp.InputDenyLog || hp.DenyLogGroup != 100 {
 		t.Fatalf("%+v", hp)
 	}
 }
@@ -445,7 +451,7 @@ func TestServersLogInputDenyOnShadowGroup(t *testing.T) {
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/manifest/render/ -run 'Block|UDP|InputDeny' -v`. Expected: FAIL.
 - [ ] **Step 3: Implement.** `nft.go` and `windows.go` render `GroupBlock` rules (drop, with a comment `block: <reason> owner=<owner> added=<date>`); the nft text of an inbound default-drop host ends the input chain with a rate-limited log rule (`limit rate 100/second burst 200`, group `DenyLogGroup`, prefix `PrefixInputDeny`) before the policy.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/manifest/...`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "render: block group, input-deny log, FW111-FW113, shadow log group"`
+- [ ] **Step 5: Commit.** `git commit -am "render: block group, input-deny log, FW111-FW113"`
 
 ---
 
@@ -456,7 +462,7 @@ func TestServersLogInputDenyOnShadowGroup(t *testing.T) {
 - Test: `internal/firewall/translate_linux_test.go`, `internal/firewall/kernel_linux_test.go` (privileged cases)
 
 **Interfaces:**
-- Consumes: Task 5 (`ShadowLogGroup`, `InputDenyLog`, `GroupBlock`, prefixes).
+- Consumes: Task 5 (`InputDenyLog`, `GroupBlock`, prefixes).
 - Produces:
 
 ```go
@@ -469,12 +475,12 @@ func (o ApplyOptions) modes() (in, out Mode)
 - [ ] **Step 1: Write the failing tests.**
 
 ```go
-func TestShadowUsesOwnLogGroup(t *testing.T) { // Known bug 14
+func TestShadowUsesShadowPrefixOnTheOneGroup(t *testing.T) { // Known bug 14 (S4: one NFLOG group, the prefix tells the kinds apart)
 	rs := translate(t, serverPolicy(), ApplyOptions{Mode: ModeShadow})
-	deny := logGroups(rs, "phylax-egress-deny: ")
-	shadow := logGroups(rs, render.PrefixShadowOutput)
-	if len(shadow) != 1 || shadow[0] != 101 || len(deny) != 0 {
-		t.Fatalf("shadow %v deny %v: a would-drop must not use the deny group", shadow, deny)
+	deny := logRules(rs, render.PrefixEgressDeny)
+	shadow := logRules(rs, render.PrefixShadowOutput)
+	if len(shadow) != 1 || shadow[0].Group != render.DefaultDenyLogGroup || len(deny) != 0 {
+		t.Fatalf("shadow %v deny %v: a would-drop carries the shadow prefix and never the deny prefix", shadow, deny)
 	}
 }
 func TestEnforceInboundShadowOutbound(t *testing.T) { // T77 shape
@@ -508,9 +514,9 @@ func TestBlockRulesBeforeServiceAccepts(t *testing.T) { /* Task 5 policy with a 
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Shadow|Sinkhole|EnforceInbound|BlockRules' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** in `Translate`: the per-hook `shadow` flag from `modes()`; `shadowGroup(hp)` returns `hp.ShadowLogGroup` (default 101, never the deny group); the outbound deny log only when the out hook is enforced; the inbound deny log (`PrefixInputDeny`, `limit rate 100/second burst 200`, group `DenyLogGroup`) only when the in hook is enforced; the nat chain gets a rate-limited NFLOG rule (deny group, `PrefixEgressDeny`) immediately before the redirect, after the allow-return rules. `ApplyRuleset` reads the modes only through `Translate`.
+- [ ] **Step 3: Implement** in `Translate`: the per-hook `shadow` flag from `modes()`; every log rule uses `hp.DenyLogGroup` and only the prefix differs (a shadow hook logs `PrefixShadowInput`/`PrefixShadowOutput`, never `PrefixEgressDeny`); the outbound deny log only when the out hook is enforced; the inbound deny log (`PrefixInputDeny`, `limit rate 100/second burst 200`, group `DenyLogGroup`) only when the in hook is enforced; the nat chain gets a rate-limited NFLOG rule (deny group, `PrefixEgressDeny`) immediately before the redirect, after the allow-return rules. `ApplyRuleset` reads the modes only through `Translate`.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS (privileged kernel tests skip with reason without root).
-- [ ] **Step 5: Commit.** `git commit -am "firewall: per-direction modes, own shadow log group, nat log before redirect (bugs 12, 14)"`
+- [ ] **Step 5: Commit.** `git commit -am "firewall: per-direction modes, shadow prefix on the one NFLOG group, nat log before redirect (bugs 12, 14)"`
 
 ---
 
@@ -640,7 +646,7 @@ func TestConntrackNetnsFlush(t *testing.T) { t.Skip("needs root and a network na
 
 ---
 
-### Task 9: `fw.snapshot`, `fw.restore`, `fw.apply` (policy)
+### Task 9: `fw.snapshot` and `fw.apply{op: policy}`
 
 **Files:**
 - Create: `internal/firewall/actions_apply.go`
@@ -653,17 +659,16 @@ func TestConntrackNetnsFlush(t *testing.T) { t.Skip("needs root and a network na
 
 | Action | Params | Spec |
 | --- | --- | --- |
-| `fw.apply` | `op` enum `policy`\|`block`\|`unblock` default `policy`; `mode` enum `shadow`\|`enforce`; `in_mode`, `out_mode` same enum; `sources`, `destinations`, `ports` (Task 10) | `Risk: RiskLockout`, `Runs: RunsAgent`, `Locks: [LockFirewall]` |
+| `fw.apply` | `op` enum `policy`\|`allow`\|`block`\|`quarantine` default `policy` (Task 2 registered `allow`; Task 10 adds `block` and `quarantine`); for `op: policy`: `mode` enum `shadow`\|`enforce`; `in_mode`, `out_mode` same enum; `from` enum `declared`\|`snapshot` default `declared` and `snapshot` path (the restore: tier 0 and the operator reapply the declared policy or a snapshot with this op, there is no `fw.restore` action) | `Risk: RiskLockout`, `Runs: RunsAgent`, `Locks: [LockFirewall]` |
 | `fw.snapshot` | none | `Risk: RiskNone`, `ReadOnly: true`, writes `<evidence>/fw-snapshot-<ts>.json` atomically |
-| `fw.restore` | `from` enum `declared`\|`snapshot` default `declared`; `snapshot` path | `Risk: RiskLockout` |
 
 ```go
 // internal/firewall (package state, bounded)
-func appliedQueue() chan AppliedEvent // cap 16, drop-oldest; drained by the agent module (Task 12)
-// rollback kind registered with actions.RegisterUndo: "fw.restore.undo" (kernel snapshot and declared policy)
+func appliedQueue() chan ChangeEvent // Op applied | restored, cap 16, drop-oldest; drained by the agent module (Task 12)
+// dead-man handler kinds registered with actions.RegisterUndo: "fw.nft.restore" (kernel snapshot and declared policy) and "fw.win.restore" (Task 2); they are handler kinds, not plan actions
 ```
 
-Behaviour of `fw.apply op: policy`: Plan computes the diff between current kernel state and the translated declared policy (`changed: false` when equal, the no-op case); Capture takes the snapshot (`Backend.Snapshot`) as the rollback; Apply translates (refusing a default-drop policy without management, `ErrNoManagement`), replaces in one batch, reads back (a mismatch returns `ErrVerify` after rolling back), calls `FlushAffected` with the previous declared policy when `conntrack_flush` and the new policy tightens, records the new declared policy and pushes an `AppliedEvent`; Verify compares the kernel hash with the declared hash. `mode` sets both directions; `in_mode`/`out_mode` override per hook. On Windows `mode: shadow` is accepted and installs nothing (`shortcut: Windows shadow is evaluated by net from sensor data, not installed; upgrade only if a lab run shows would-drops it missed`), `enforce` applies `WinPolicy` through `WinManager`.
+Behaviour of `fw.apply op: policy`: Plan computes the diff between current kernel state and the translated declared policy (`changed: false` when equal, the no-op case); Capture takes the snapshot (`Backend.Snapshot`) as the rollback; Apply translates (refusing a default-drop policy without management, `ErrNoManagement`), replaces in one batch, reads back (a mismatch returns `ErrVerify` after rolling back), calls `FlushAffected` with the previous declared policy when `conntrack_flush` and the new policy tightens, records the new declared policy and pushes a `ChangeEvent{Op: "applied"}`; Verify compares the kernel hash with the declared hash. `mode` sets both directions; `in_mode`/`out_mode` override per hook. On Windows `mode: shadow` is accepted and installs nothing (`shortcut: Windows shadow is evaluated by net from sensor data, not installed; upgrade only if a lab run shows would-drops it missed`), `enforce` applies `WinPolicy` through `WinManager`.
 
 - [ ] **Step 1: Write the failing tests** (a fake `Backend` at the kernel edge; Windows uses the existing `fakeFW` backend).
 
@@ -709,22 +714,22 @@ func TestApplyEmitsAppliedEvent(t *testing.T) {
 	env, _ := testEnv(t, serverPolicy())
 	run(t, env, "fw.apply", map[string]any{"mode": "enforce"})
 	ev := <-appliedQueue()
-	if ev.Mode != "enforce" || !ev.Changed || ev.Hash == "" {
+	if ev.Op != "applied" || ev.Mode != "enforce" || !ev.Changed || ev.Hash == "" {
 		t.Fatalf("%+v", ev)
 	}
 }
-func TestSnapshotThenRestore(t *testing.T) { /* fw.snapshot writes the file; fw.restore from: snapshot returns the backend to it; from: declared reapplies Declared() */ }
+func TestSnapshotThenRestore(t *testing.T) { /* fw.snapshot writes the file; fw.apply{op: policy, from: snapshot} returns the backend to it; from: declared reapplies Declared(); no fw.restore action is registered */ }
 func TestWindowsApplyAndShadow(t *testing.T) { /* fakeFW: enforce applies WinPolicy rules in the Phylax groups only; shadow changes nothing and reports "evaluated" */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Apply|Snapshot|WindowsApply' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** the three actions and the shared helper `applyPolicy(ctx, env, be, hp, opts) (changed bool, err error)` used again by Tasks 10 and 13.
+- [ ] **Step 3: Implement** the `policy` op, `fw.snapshot` and the shared helper `applyPolicy(ctx, env, be, hp, opts) (changed bool, err error)` used again by Tasks 10 and 13.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "firewall: fw.apply policy, fw.snapshot, fw.restore as module actions"`
+- [ ] **Step 5: Commit.** `git commit -am "firewall: fw.apply policy op and fw.snapshot as module actions"`
 
 ---
 
-### Task 10: `fw.apply` source and destination blocks; `fw.quarantine`
+### Task 10: `fw.apply` op block (sources and destinations) and op quarantine
 
 **Files:**
 - Modify: `internal/firewall/actions_apply.go`
@@ -736,12 +741,12 @@ func TestWindowsApplyAndShadow(t *testing.T) { /* fakeFW: enforce applies WinPol
 - Produces:
 
 ```go
-// fw.apply params for op block|unblock: sources (comma list of addresses/CIDRs, inbound), destinations (outbound), ports ("non_scored" or empty), reason, owner (required for block)
-// fw.quarantine params: reason; the revert window is FirewallSettings.QuarantineSec (default 600); Risk RiskLockout; refuses the controller host
+// fw.apply params for op block: sources (comma list of addresses/CIDRs, inbound), destinations (outbound), ports ("non_scored" or empty), reason, owner (required), remove (bool: remove the listed entries)
+// fw.apply params for op quarantine: reason; the revert window is FirewallSettings.QuarantineSec (default 600); Risk RiskLockout; refuses the controller host (S4: quarantine is an op of fw.apply, not an action)
 func Quarantine(hp *render.HostPolicy, scored []uint16) *render.HostPolicy // management, ICMP, DHCP, scored inbound open to any source, declared dependency egress of scored services, drop everything else
 ```
 
-Lint inside Plan: exactly one of `sources`, `destinations`; every address parses; a CIDR wider than /24 adds a warning to the plan output; an address in the manifest's own set (via `Env.Guard`/`Declared()` management peers) is refused; `ports: non_scored` expands to the host's unscored ports so no scored port is dropped; `unblock` removes entries by CIDR. A block on a destination that is a declared dependency of a scored service on this host is refused.
+Lint inside Plan: exactly one of `sources`, `destinations`; every address parses; a CIDR wider than /24 adds a warning to the plan output; an address in the manifest's own set (via `Env.Guard`/`Declared()` management peers) is refused; `ports: non_scored` expands to the host's unscored ports so no scored port is dropped; `remove: true` with the same `sources` or `destinations` removes entries by CIDR. A block on a destination that is a declared dependency of a scored service on this host is refused.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -765,7 +770,7 @@ func TestBlockRefusesOwnAddress(t *testing.T) {
 func TestBlockDestinationNeverCutsDependency(t *testing.T) {
 	// destinations: the DC address of a declared depends_on edge of a scored service -> error naming the dependency
 }
-func TestUnblockRemovesEntry(t *testing.T) { /* block then unblock: declared policy equals the original */ }
+func TestBlockRemoveRemovesEntry(t *testing.T) { /* block then the same call with remove: true: declared policy equals the original */ }
 func TestBlockWideCIDRWarns(t *testing.T) { /* /23 -> Output.Warnings contains FW112 text; the apply still succeeds */ }
 func TestQuarantineKeepsScoredAndMgmt(t *testing.T) {
 	q := Quarantine(serverPolicy(), []uint16{80, 22})
@@ -776,14 +781,14 @@ func TestQuarantineKeepsScoredAndMgmt(t *testing.T) {
 		t.Fatal("everything else must drop")
 	}
 }
-func TestQuarantineRevertsAfterWindow(t *testing.T) { /* action rollback data restores the previous declared policy and kernel snapshot; QuarantineEvent.Expires = now + 10m */ }
+func TestQuarantineRevertsAfterWindow(t *testing.T) { /* action rollback data restores the previous declared policy and kernel snapshot; ChangeEvent{Op: "quarantine"}.Expires = now + 10m */ }
 func TestQuarantineRefusedOnController(t *testing.T) { /* Env.Host is the controller host in the guard -> error "refused: quarantining the controller host would cut every agent" */ }
 ```
 
-- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Block|Quarantine|Unblock' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Blocks go into `FirewallSettings.Block`'s declared form (`render.BlockSpec`) held in the package state with the declared policy, so drift compares against the new intent and rollback restores both. A `QuarantineEvent` is pushed on a second package queue drained by the module.
+- [ ] **Step 2: Run, expect FAIL.** Run: `go test ./internal/firewall/ -run 'Block|Quarantine' -v`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Blocks go into `FirewallSettings.Block`'s declared form (`render.BlockSpec`) held in the package state with the declared policy, so drift compares against the new intent and rollback restores both. A `ChangeEvent{Op: "quarantine"}` is pushed on the same queue the module drains.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "firewall: source and destination blocks, fw.quarantine with auto-revert"`
+- [ ] **Step 5: Commit.** `git commit -am "firewall: fw.apply op block and op quarantine with auto-revert"`
 
 ---
 
@@ -806,7 +811,7 @@ type Stage0 struct{ ManagementPorts []uint16; TeamSubnets []netip.Prefix }
 func (wp *WinPolicy) WithStage0(m *manifest.Manifest, host string, s Stage0) (*WinPolicy, []manifest.Finding) // allow-inbound plus blocks of ManagementPorts minus every scored port, from outside TeamSubnets; FW113 error if a scored port would be blocked
 ```
 
-Rendering: `Policy` for non-Windows hosts, `WinPolicy` for Windows, `Deadman` default 90s, `ConntrackFlush` from the block (default true), `QuarantineSec` 600, `DriftCheckSec` 60, `ShadowLogGroup` 101, `InboundMode`/`OutboundMode` from `inbound.mode`/`outbound.mode`, `AllowBack{Enabled, MaxPerHour 5}`, `Block` from the block's `block:` list. `Enabled` follows `Manifest.ModuleEnabled(host, "firewall", true)`.
+Rendering: `Policy` for non-Windows hosts, `WinPolicy` for Windows, `Deadman` default 90s, `ConntrackFlush` from the block (default true), `QuarantineSec` 600, `DriftCheckSec` 60, `NflogGroup` 100, `InboundAutonomy`/`OutboundAutonomy` from `inbound.autonomy` (default `auto`) and `outbound.autonomy` (default `propose`), `AllowBack{Enabled, MaxPerHour 5}` (the allow template's ledger limit), `Block` from the block's `block:` list. `Enabled` follows `Manifest.ModuleEnabled(host, "firewall", true)`.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -817,10 +822,10 @@ func TestFirewallSettingsRenderedForEveryHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := cfg.Modules.Firewall
-	if f == nil || !f.Enabled || f.Policy == nil || f.Deadman != 90*time.Second || f.ShadowLogGroup != 101 || f.QuarantineSec != 600 || f.DriftCheckSec != 60 {
+	if f == nil || !f.Enabled || f.Policy == nil || f.Deadman != 90*time.Second || f.NflogGroup != 100 || f.QuarantineSec != 600 || f.DriftCheckSec != 60 {
 		t.Fatalf("%+v", f)
 	}
-	if f.InboundMode != "enforce" || f.OutboundMode != "shadow" || !f.AllowBack.Enabled || f.AllowBack.MaxPerHour != 5 {
+	if f.InboundAutonomy != "auto" || f.OutboundAutonomy != "propose" || !f.AllowBack.Enabled || f.AllowBack.MaxPerHour != 5 {
 		t.Fatalf("%+v", f)
 	}
 	win, _, _ := BuildAgentConfig(refInputs(t), "ad")
@@ -887,8 +892,8 @@ func TestDriftEmitsPerGroup(t *testing.T) {
 }
 func TestManagementDriftReportedSeparately(t *testing.T) { /* a removed mgmt rule emits a DriftEvent with Group "mgmt" and Health becomes error */ }
 func TestForeignTableReportedOnce(t *testing.T) { /* a foreign table that may block -> one DriftEvent{ForeignMayBlock:true} across three ticks, Health degraded with a gap naming it */ }
-func TestAppliedAndRestoredEvents(t *testing.T) { /* run fw.apply then a deadman-style restore through the harness: firewall.applied then firewall.restored{Reason:"deadman"} */ }
-func TestInboundShadowIsDegraded(t *testing.T) { /* InboundMode shadow -> Health.State degraded; OutboundMode shadow alone -> ok */ }
+func TestAppliedAndRestoredEvents(t *testing.T) { /* run fw.apply then a deadman-style restore through the harness: firewall.change{op: applied} then firewall.change{op: restored, reason: deadman}, both normal priority */ }
+func TestInboundShadowIsDegraded(t *testing.T) { /* the last apply left inbound in shadow -> Health.State degraded; outbound in shadow alone -> ok */ }
 func TestFirewallConformance(t *testing.T) {
 	conformance.Agent(t, conformance.AgentCase{Factory: Factory(), Default: cfgWithFirewall(false), Reconfig: cfgWithFirewall(true), KeepKey: "firewall.declared", Load: nil})
 }
@@ -909,26 +914,28 @@ func TestFirewallConformance(t *testing.T) {
 - Test: `internal/firewall/allowback_test.go`
 
 **Interfaces:**
-- Consumes: `net.ingress_denied` (W3 seams; payload keys `raddr`, `lport`, `proto`, `scored_port`, `scorer_like`), Task 9 `applyPolicy`, `Env.Subscribe(buf, kinds...)`.
+- Consumes: `net.ingress_denied` (W3 seams; payload keys `raddr`, `lport`, `proto`, `scored_port`, `scorer_like`), Task 9 `applyPolicy`, `Env.Subscribe(buf, kinds...)`, the engine's attempt ledger as the agent keeps it in its state directory for tier-0 actions that run with the link down (S1; W1/W4 supply it as `agent.Env.Ledger`, one entry per (host, object, kind) with count, window and breaker).
 - Produces:
 
 ```go
-type allowBack struct{ /* per-host hourly counter, bounded */ }
-func (a *allowBack) onDenied(ctx context.Context, ev event.Event) error // scored_port or scorer_like true: add an any-source accept for lport/proto keyed by comment tag "phylax:allow:<port>/<proto>"; flush nothing; push AllowBackEvent; run Env.Probe when present
-// Rule: requires FirewallSettings.ActEnabled and AllowBack.Enabled; at most MaxPerHour (default 5) per host per rolling hour; beyond that or without act_enabled it emits the alert event with RuleAdded "" and changes nothing; an allow-back is never undone automatically.
+type allowBack struct{ /* bounded; no counter of its own */ }
+func (a *allowBack) onDenied(ctx context.Context, ev event.Event) error // scored_port or scorer_like true: run fw.apply{op: allow} (an any-source accept for lport/proto keyed by comment tag "phylax:allow:<port>/<proto>"); flush nothing; push ChangeEvent{Op: "allow_back"}; run Env.Probe when present
+// Rule (S1): the apply goes through the ledger key (host, port, kind "fw.apply.allow") with the limit AllowBack.MaxPerHour (default 5 per hour) that the allow template carries; the template's autonomy
+// (FirewallSettings.InboundAutonomy) decides how far it goes: auto applies, shadow records the would-be rule in the event (RuleAdded empty, Reason prefixed "shadow"), propose emits the alert with RuleAdded "" and changes nothing.
+// A refused attempt (ledger breaker open, or the lock wait expired) emits the same alert with RuleAdded "" and changes nothing; an allow-back is never undone automatically.
 ```
 
-`AllowBackEvent.Probe`: `ok`, `failed` (still keeps the rule, alerts), `unavailable` (no probe). `Proposal` is the manifest fix text ("add scored listener tcp/<port> to services.yml") — the controller side (Task 14) turns the event into a `Propose`.
+`ChangeEvent.Probe`: `ok`, `failed` (still keeps the rule, alerts), `unavailable` (no probe). `Proposal` is the manifest fix text ("add scored listener tcp/<port> to services.yml") — the controller side (Task 14) turns the event into a `Propose`.
 
 - [ ] **Step 1: Write the failing tests.**
 
 ```go
 func TestAllowBackOnScoredPort(t *testing.T) { // T77 core
-	h, be := harness(t, inboundEnforced(), settings(withAct(true)))
+	h, be := harness(t, inboundEnforced(), settings(withAutonomy("auto")))
 	h.Publish(ingressDenied("203.0.113.9", 8443, "tcp", true, false))
-	ev := h.WaitFor("firewall.allow_back", 2*time.Second)[0]
-	a, _ := event.Decode[AllowBackEvent](ev, "firewall.allow_back")
-	if a.Port != 8443 || a.Reason != "scored_port" || a.RuleAdded == "" || a.Probe != "unavailable" {
+	ev := h.WaitFor("firewall.change", 2*time.Second)[0]
+	a, _ := event.Decode[ChangeEvent](ev, "firewall.change")
+	if a.Op != "allow_back" || a.Port != 8443 || a.Reason != "scored_port" || a.RuleAdded == "" || a.Probe != "unavailable" || ev.Priority != event.PriorityHigh {
 		t.Fatalf("%+v", a)
 	}
 	if Verdict(be.declared, flowIn("198.51.100.1:5", "172.20.241.30:8443")) != render.Accept {
@@ -937,31 +944,32 @@ func TestAllowBackOnScoredPort(t *testing.T) { // T77 core
 }
 func TestAllowBackOnScorerLikeSender(t *testing.T) { /* scorer_like true on an unlisted port -> Reason "scorer_like" and the same rule */ }
 func TestAllowBackIgnoresPlainDeny(t *testing.T) { /* scored_port false, scorer_like false: nothing changes, no event */ }
-func TestAllowBackRateLimited(t *testing.T) { // Review Focus 3
-	h, _ := harness(t, inboundEnforced(), settings(withAct(true), withMaxPerHour(5)))
+func TestAllowBackRateLimited(t *testing.T) { // Review Focus 3: the limit is the engine's attempt ledger, not a counter here
+	h, _ := harness(t, inboundEnforced(), settings(withAutonomy("auto"), withMaxPerHour(5)))
 	for i := 0; i < 8; i++ {
 		h.Publish(ingressDenied("203.0.113.9", uint16(9000+i), "tcp", true, false))
 	}
-	evs := h.WaitFor("firewall.allow_back", 2*time.Second)
+	evs := h.WaitFor("firewall.change", 2*time.Second)
 	added := 0
 	for _, e := range evs {
-		if a, _ := event.Decode[AllowBackEvent](e, "firewall.allow_back"); a.RuleAdded != "" {
+		if a, _ := event.Decode[ChangeEvent](e, "firewall.change"); a.Op == "allow_back" && a.RuleAdded != "" {
 			added++
 		}
 	}
 	if added != 5 || len(evs) != 8 {
-		t.Fatalf("rules added %d of %d events; beyond the limit it alerts without changing the policy", added, len(evs))
+		t.Fatalf("rules added %d of %d events; beyond the ledger limit it alerts without changing the policy", added, len(evs))
 	}
 }
-func TestAllowBackNeedsActEnabled(t *testing.T) { /* act_enabled false: event with RuleAdded "" , policy unchanged */ }
+func TestAllowBackKeyedByHostPortKind(t *testing.T) { /* five attempts on one port count against one ledger key; a different port has its own key, so the limit is per (host, port, kind) */ }
+func TestAllowBackProposeAndShadowChangeNothing(t *testing.T) { /* autonomy propose or shadow: event with RuleAdded "", declared policy unchanged; shadow names the would-be rule */ }
 func TestAllowBackWorksWithLinkDown(t *testing.T) { /* harness EmitErr returns an error: the rule is still added (local behaviour) */ }
 func TestAllowBackProbeRuns(t *testing.T) { /* Env.Probe set: a green probe -> Probe "ok"; a red one -> "failed" and the rule stays */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/firewall/ -run AllowBack -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** with the lock `LockFirewall` shared with plan nodes (an allow-back waits for a running node's lock for at most 5 s, then is dropped with a `telemetry_gap`). `shortcut: rate limit and counters are in memory per agent run, upgrade if a lab run shows restarts resetting the limit`.
+- [ ] **Step 3: Implement** with the lock `LockFirewall` shared with plan nodes (an allow-back waits for a running node's lock for at most 5 s, then is dropped with a `telemetry_gap`). The ledger survives restarts (it lives in the agent's state directory), so no in-memory limit is kept here.
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS.
-- [ ] **Step 5: Commit.** `git commit -am "firewall: automatic allow-back for dropped scored-port and scorer-like inbound"`
+- [ ] **Step 5: Commit.** `git commit -am "firewall: automatic allow-back as fw.apply op allow behind the attempt ledger"`
 
 ---
 
@@ -1005,15 +1013,15 @@ func TestOutboundUndeclaredProposesEdge(t *testing.T) { /* module run with a fak
 func TestNoSourceRestrictionOnScoredPort(t *testing.T) { /* no proposal whose params restrict a scored port */ }
 func TestInboundUndeclaredNoProposalWithoutListener(t *testing.T) {}
 func TestShadowSummaryTableIsProjection(t *testing.T) { /* delete the table rows, replay the module's events through the writer -> same rows */ }
-func TestLearnedListenerWrittenToOverrides(t *testing.T) { /* config learned_listeners true; a consumed firewall.allow_back (reason scored_port, host h1, port 8081/tcp) calls Host.UpdateOverrides once: Manifest().Overrides.LearnedListeners holds {h1, tcp, 8081}; the same event replayed adds no second entry; learned_listeners false writes nothing */ }
-func TestAllowBackEventProposesManifestFix(t *testing.T) { /* a firewall.allow_back event consumed by the controller side yields one Proposal with the Proposal text as Reason */ }
+func TestLearnedListenerWrittenToOverrides(t *testing.T) { /* config learned_listeners true; a consumed firewall.change with op allow_back (reason scored_port, host h1, port 8081/tcp) calls Host.UpdateOverrides once: Manifest().Overrides.LearnedListeners holds {h1, tcp, 8081}; the same event replayed adds no second entry; learned_listeners false writes nothing */ }
+func TestAllowBackEventProposesManifestFix(t *testing.T) { /* a firewall.change{op: allow_back} event consumed by the controller side yields one Proposal with the Proposal text as Reason */ }
 func TestFirewallControllerConformance(t *testing.T) {
 	conformance.Controller(t, conformance.ControllerCase{Module: &Controller{}, Config: "enabled: true\n", Seed: shadowFixture(), Now: fixtureNow})
 }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/firewall/ -run 'Summarize|Coverage|Proposes|NoSource|Projection|LearnedListener|ControllerConformance' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `Consumes` also lists the module's own `firewall.allow_back` and `firewall.shadow_summary` (declared table kinds; the writer reads them). When `Config.LearnedListeners` is true, an `allow_back` event with a rule added appends a `manifest.LearnedListener{Host, Proto, Port, Reason, Observed}` through `Host.UpdateOverrides` (skipped when an entry with the same host, proto and port exists; W1 Tasks 11a and 17a).
+- [ ] **Step 3: Implement.** `Consumes` also lists the module's own `firewall.change` and `firewall.shadow_summary` (declared table kinds; the writer reads them). When `Config.LearnedListeners` is true, a `firewall.change` event with `op: allow_back` and a rule added appends a `manifest.LearnedListener{Host, Proto, Port, Reason, Observed}` through `Host.UpdateOverrides` (skipped when an entry with the same host, proto and port exists; W1 Tasks 11a and 17a).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "firewall: controller side with would-drop summarizer and proposals"`
 
@@ -1035,13 +1043,13 @@ func TestFirewallControllerConformance(t *testing.T) {
 func (c *Controller) enforceInbound(ctx context.Context, host string) error // precondition then RunAuto("enforce-inbound", {"host": host}); else Propose with Reason = the failed condition
 ```
 
-Preconditions (all must hold; the first failing one is the `Reason`): `act_enabled`; the host has an `ok` or `degraded` firewall health with inbound `shadow` installed (a `firewall.applied` event with `mode: shadow` after the last enforce); `Summarize` over the host has no group with `coverage: scored`; `FirewallSettings.InboundMode == "enforce"`. Called when `firewall.applied` with `mode: shadow` arrives for a host (the install-in-shadow step of `enforce-host`) and when the operator accepts the proposal.
+Preconditions (all must hold; the first failing one is the `Reason`): the host has an `ok` or `degraded` firewall health with inbound `shadow` installed (a `firewall.change` event with `op: applied`, `mode: shadow` after the last enforce); `Summarize` over the host has no group with `coverage: scored`; `FirewallSettings.InboundAutonomy` is not `propose` (at `propose` the module creates the click proposal directly; at `auto` and `shadow` it calls `RunAuto`, and the engine's auto conditions, attempt ledger and `shadow` would-be recording do the rest). Called when `firewall.change` with `op: applied`, `mode: shadow` arrives for a host (the install-in-shadow step of `enforce-host`) and when the operator accepts the proposal.
 
 - [ ] **Step 1: Write the failing tests.**
 
 ```go
 func TestInboundAutoWhenClean(t *testing.T) { // T77: no review click inbound
-	h := newHost(t, withAct(true), withSummary(cleanSummary()))
+	h := newHost(t, withAutonomy("auto"), withSummary(cleanSummary()))
 	if err := (&Controller{}).enforceInboundWith(h, "rocky-ecom"); err != nil {
 		t.Fatal(err)
 	}
@@ -1050,23 +1058,23 @@ func TestInboundAutoWhenClean(t *testing.T) { // T77: no review click inbound
 	}
 }
 func TestInboundProposesWhenScoredCoverage(t *testing.T) {
-	h := newHost(t, withAct(true), withSummary(scoredSummary()))
+	h := newHost(t, withAutonomy("auto"), withSummary(scoredSummary()))
 	_ = (&Controller{}).enforceInboundWith(h, "rocky-ecom")
 	if h.autoRuns != 0 || h.proposals != 1 || !strings.Contains(h.lastReason, "scored") {
 		t.Fatalf("%+v", h)
 	}
 }
-func TestInboundProposesWithoutActEnabled(t *testing.T) { /* act_enabled false: proposal, no RunAuto */ }
+func TestInboundProposesAtProposeAutonomy(t *testing.T) { /* InboundAutonomy propose: proposal, no RunAuto; shadow: RunAuto called and the result is the engine's recorded would-be plan, no proposal */ }
 func TestInboundProposesOnErrProposed(t *testing.T) { /* RunAuto returns module.ErrProposed (probe cannot run): no second proposal is created by the module */ }
 func TestOutboundEnforceNeverAuto(t *testing.T) {
 	// no code path calls RunAuto with a template that sets out_mode enforce: parse every plans/firewall/*.yaml,
-	// templates on the module's auto allowlist ("enforce-inbound") have no node with params out_mode: enforce
+	// the outbound enforce node sits behind enforce-host's gate: approval and OutboundAutonomy defaults to propose; enforce-inbound has no node with params out_mode: enforce
 }
 func TestPlanTemplatesLoadAndLint(t *testing.T) { /* each template parses (unknown fields are errors), names module: firewall, nodes use registered actions with valid params; enforce-host has exactly one gate: approval node between the shadow and the out_mode enforce node */ }
 ```
 
 - [ ] **Step 2: Run, expect FAIL.** Run: `go test -short ./internal/firewall/ -run 'Inbound|Outbound|PlanTemplates' -v`. Expected: FAIL.
-- [ ] **Step 3: Implement** the trigger on the module's `Subscribe` of its own `firewall.applied` events (`Consumes` includes it) and the templates. The module block's `auto:` default is `[enforce-inbound]`.
+- [ ] **Step 3: Implement** the trigger on the module's `Subscribe` of its own `firewall.change` events (`Consumes` includes it) and the templates. The `enforce-inbound` template's `autonomy` is `inbound.autonomy` (default `auto`) and `enforce-host`'s outbound enforce node carries `outbound.autonomy` (default `propose`); there is no `auto:` allowlist (S1).
 - [ ] **Step 4: Run, expect PASS.** Run: `go test -race ./internal/firewall/ ./plans/`. Expected: PASS.
 - [ ] **Step 5: Commit.** `git commit -am "firewall: inbound auto-enforce behind the shadow-summary check; enforce plans"`
 
@@ -1320,7 +1328,7 @@ func TestPatchWindowTemplate(t *testing.T) { /* LoadModuleTemplate(plansRoot, "e
 
 **Interfaces:**
 - Consumes: Task 1 payloads, `event.New`, `event.KindConn`/`event.Conn`.
-- Produces: `capture.txn`, `capture.flow`, `capture.scan`, `capture.http_request`, `capture.evidence`, `capture.stats` built with `event.New` (the Converter returns typed values); for every ended flow where the host's addresses are known the module also emits `conn` with `Op: "closed"`, `Source: "capture"`, `Dir` set, `State` = the handshake value, `CommunityID`, `DurationMS`, `BytesOut`, `BytesIn`, `Service`; the old kind strings appear nowhere (`grep -rn '"net.txn"\|"net.flow"\|"net.scan"\|"http_request"' --include='*.go' --include='*.yml' .` is empty outside `docs/`).
+- Produces: `capture.txn`, `capture.scan`, `capture.http_request`, `capture.stats` built with `event.New` (the Converter returns typed values); the ring slices are the core `evidence.blob` kind (Task 26) and there is no `capture.flow` or `capture.evidence` kind (S4); for every ended flow where the host's addresses are known the module emits `conn` with `Op: "closed"`, `Source: "capture"`, `Dir` set, `State` = the handshake value, `CommunityID`, `DurationMS`, `BytesOut`, `BytesIn`, `Service`; the old kind strings appear nowhere (`grep -rn '"net.txn"\|"net.flow"\|"net.scan"\|"http_request"' --include='*.go' --include='*.yml' .` is empty outside `docs/`).
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -1336,7 +1344,10 @@ func TestEmittedKindsAreDeclaredCaptureKinds(t *testing.T) {
 		}
 	}
 }
-func TestFlowAlsoEmitsConn(t *testing.T) {
+func TestEndedFlowEmitsConn(t *testing.T) { // the only flow record: no capture.flow kind exists
+	if _, ok := event.Lookup("capture.flow"); ok {
+		t.Fatal("capture.flow folds into conn (S4)")
+	}
 	evs := runFixtureCapture(t, "testdata/http_session.pcap")
 	c := firstOfKind(t, evs, "conn")
 	cn, err := event.Decode[event.Conn](c, "conn")
@@ -1344,7 +1355,7 @@ func TestFlowAlsoEmitsConn(t *testing.T) {
 		t.Fatalf("%+v %v", cn, err)
 	}
 }
-func TestNoConnWhenLocalAddrsUnknown(t *testing.T) { /* cfg.LocalAddrs empty and no interface addresses: capture.flow only, no conn (dir would be unknown) */ }
+func TestNoConnWhenLocalAddrsUnknown(t *testing.T) { /* cfg.LocalAddrs empty and no interface addresses: no flow record at all (dir would be unknown); the shed is counted in capture.stats */ }
 func TestControllerNoLongerTranslatesFlows(t *testing.T) { /* internal/controller: the scan test from capture_test.go still raises P88 from the module's conn events; grep for kindFlow in capture_ingest.go is empty */ }
 func TestHoneytokenAkiaReadsCaptureHTTPRequest(t *testing.T) { /* existing akia tests with the new kind */ }
 ```
@@ -1608,17 +1619,17 @@ func TestHostControlOnlyCaptureMaySendFreeze(t *testing.T) { /* controller.hostF
 func TestFreezeControlFreezesRing(t *testing.T) { // end to end on the agent harness
 	h := captureHarness(t, finiteSourceWithPackets("198.51.100.7"))
 	h.Control(freezeControl("D13e", time.Now(), []string{"198.51.100.7"})) // signed control through the harness
-	ev := h.WaitFor("capture.evidence", 3*time.Second)[0]
-	e, _ := event.Decode[EvidenceEvent](ev, "capture.evidence")
-	if e.Rule != "D13e" || e.Packets == 0 || e.Path == "" {
+	ev := h.WaitFor("evidence.blob", 3*time.Second)[0] // the core kind (S4); the module emits it because it owns the ring
+	e, _ := event.Decode[event.EvidenceBlob](ev, "evidence.blob")
+	if e.Collector != "freeze_ring" || e.Rule != "D13e" || e.Packets == 0 || e.Path == "" {
 		t.Fatalf("%+v", e)
 	}
 }
 func TestFreezeCaptureRepeatExtendsHold(t *testing.T) { // Review Focus 5
-	/* send the same control twice: Freezer holds one window (same id), a final evidence event once, Skipped() == 0 */
+	/* send the same control twice: Freezer holds one window (same id), a final evidence.blob event (`final: true`) once, Skipped() == 0 */
 }
 func TestFreezeCaptureNoMatchingPackets(t *testing.T) {
-	/* an address in no ring: a capture.evidence event with Error set and Packets 0; the module keeps running */
+	/* an address in no ring: an evidence.blob event with Error set and Packets 0; the module keeps running */
 }
 func TestUnknownControlStillRefused(t *testing.T) {} // regression: agent.control_refused for a made-up kind
 ```
@@ -2098,7 +2109,7 @@ func TestKaliPathTemplateLoads(t *testing.T) {}
 
 Run on the BTaP replica (`stacks/ccdc`: `rocky-ecom`, `ubuntu-email` and `ubuntu-wkst` as Linux hosts, `win11` and `ad` as Windows hosts, the Kali, the licensed PAN-OS VM and a VyOS 1.4 image, the Palo in `palo1`), from a build of the merged branch. Record date, commit, VMIDs, test id, pass/fail, measured values and what was not run; open an issue for every failure. This task does not block the merge.
 
-- [ ] **Step 1: T77 (inbound enforcement and allow-back).** Enforce inbound-only on `rocky-ecom` with `enforce-inbound` under `act_enabled`: an unlisted port is dropped, scored ports, management, dependency flows stay, outbound stays in shadow (`net.shadow_drop` events appear, no `net.egress_denied`). Plant a scorer-like probe (the Kali sending Quotient-shaped checks) to an unrendered port: `firewall.allow_back` within seconds, the port open. Force a failure (kill the agent link before confirm): the dead-man rolls the policy back. Confirm no `out_mode: enforce` runs without the review gate click.
+- [ ] **Step 1: T77 (inbound enforcement and allow-back).** Enforce inbound-only on `rocky-ecom` with the `enforce-inbound` template at `autonomy: auto`: an unlisted port is dropped, scored ports, management, dependency flows stay, outbound stays in shadow (`net.shadow_drop` events appear, no `net.egress_denied`). Plant a scorer-like probe (the Kali sending Quotient-shaped checks) to an unrendered port: `firewall.change{op: allow_back}` within seconds, the port open. Force a failure (kill the agent link before confirm): the dead-man rolls the policy back. Confirm no `out_mode: enforce` runs without the review gate click.
 - [ ] **Step 2: T02 and T17.** Disable the host firewall with a timer: tier 0 (`respond`, W4) restores it; record latency. Cut the link during an enforce plan: the agent dead-man rolls back, the controller reconciles a fire that happened while connected (W2's fix).
 - [ ] **Step 3: T05, T06, T62, T67.** With default-deny egress on `rocky-ecom` and `win11`, run an implant callback (Linux binary, Windows service): `D12` fires with owner and hash (5157 on Windows); `egress.candidate` ranks the new binary first; a sleep-masked Mythic and Cobalt Strike beacon (campaign 07) is detected through denied egress and the per-executable allowlist (`D4c`, W4); the "block this?" proposals appear and nothing blocks until a click. Record detection rate and latency.
 - [ ] **Step 4: T13 and T44.** Add a Palo rule as a second admin: `D14` fires, latency reported. Run the safe-change protocol on the licensed PAN-OS VM and the VyOS image: failed health rolls back, a foreign pending change blocks the node, the soft-revert timer fires when the connection is lost, a red scorer-mimic probe reverts the commit (bug 20 on real devices). Record whether `commit-confirm action reload` exists on VyOS 1.4.0 and what the Palo capture parameter set needs (stages, limits).
@@ -2112,7 +2123,7 @@ Run on the BTaP replica (`stacks/ccdc`: `rocky-ecom`, `ubuntu-email` and `ubuntu
 
 **1. Spec coverage** (module sections, all four, part by part):
 
-- `firewall` part 2 table: nft translate/apply/snapshot/restore/drift built and kept (Task 6, 9, 12); registered `fw.apply`, `fw.snapshot`, `fw.restore`, `fw.quarantine` (Tasks 9, 10); conntrack flush (8); `fw.quarantine` (10); source blocks (5, 10); Windows shadow evaluation is `net` work (W3), `fw.apply` Windows shadow is a no-op with a shortcut (9); would-drop summarizer (14); periodic drift (12); `firewall.allow` and `win.firewall` (2). Part 4 settings and block (4, 11); part 5 events (1, 12-14); part 6 inbound auto, allow-back, scored allow-any-source, blocks, shadow groups, apply protocol, quarantine, restore, drift, stage 0 (5, 6, 9-13, 15); part 8 UI page, grid column and tile: **not planned** (the UI registrar is W1; the `/firewall` page, the grid column `firewall applied` and the Overview tile are one follow-up task for whoever owns the Traffic and Platform pages, W10; recorded in the report); part 9 health (12); part 11 tests (each task); part 12 Docker forward chain and Rocky coexistence are open items, untouched.
+- `firewall` part 2 table: nft translate/apply/snapshot/restore/drift built and kept (Task 6, 9, 12); registered `fw.apply{op}` (allow in 2, policy in 9, block and quarantine in 10) and `fw.snapshot` (9), with no `fw.restore` or `fw.quarantine` action (S4); conntrack flush (8); source blocks (5, 10); Windows shadow evaluation is `net` work (W3), `fw.apply` Windows shadow is a no-op with a shortcut (9); would-drop summarizer (14); periodic drift (12); the built `firewall.allow` and `win.firewall` renamed into `fw.apply{op: allow}` (2). Part 4 settings and block (4, 11); part 5 events (1, 12-14); part 6 inbound auto, allow-back, scored allow-any-source, blocks, shadow groups, apply protocol, quarantine, restore, drift, stage 0 (5, 6, 9-13, 15); part 8 UI page, grid column and tile: **not planned** (the UI registrar is W1; the `/firewall` page, the grid column `firewall applied` and the Overview tile are one follow-up task for whoever owns the Traffic and Platform pages, W10; recorded in the report); part 9 health (12); part 11 tests (each task); part 12 Docker forward chain and Rocky coexistence are open items, untouched.
 - `egress`: config, sinkhole bug 12 (4, 6, 16), allow table (17), ranking (18), suggestions (19), `D4c` and `D13c` (W4, noted), sinkhole decision (W13), patch window (deferred, deviation 11), Traffic page folding (W10).
 - `capture`: kinds and `conn` (20), settings and role/Windows (21), bug 19 (22), TFTP/NTP (23, 24), bug 13 (4, 21, 25), bug 7 (26), source check (27), rules move (28), `fetch` (W11), seal distribution (open, shortcut in 21).
 - `devices`: module (29), pollers and `D14` (30), deny/traffic (31), probe bug 20 (32), rotate, revert, licence (33), backups and `ftd.export` (34), capture and audit (35), manifest block and T+0 checklist rows (Task 4 for the block; checklist rows are core Enrollment, W12).
@@ -2120,7 +2131,7 @@ Run on the BTaP replica (`stacks/ccdc`: `rocky-ecom`, `ubuntu-email` and `ubuntu
 
 **2. Step scan.** Every step names its file, signature and test; no "TBD". Test bodies that are comments describe fixture setup the implementer writes from the named helper (`harness`, `testEnv`, `moduleWithPalo`, `deviceEnv`, `storetest.New`); the seams task creates each helper listed in the skipped test files.
 
-**3. Type consistency.** `Backend` (Task 2) is used by 9, 10, 13; `applyPolicy` (9) by 10 and 13; `Verdict`, `Flow`, `Conntrack` (8) by 9, 10, 13 and the quarantine test; `BlockSpec` (5) by 10 and 11; `AppliedEvent`, `AllowBackEvent`, `QuarantineEvent`, `ShadowSummaryEvent` (1) by 9, 10, 12-14; `CaptureSettings` (1) by 21, 25; `Directory` (3) by 29-35; `probeExtra` only in 32. Names in the lab task match.
+**3. Type consistency.** `Backend` (Task 2) is used by 9, 10, 13; `applyPolicy` (9) by 10 and 13; `Verdict`, `Flow`, `Conntrack` (8) by 9, 10, 13 and the quarantine test; `BlockSpec` (5) by 10 and 11; `ChangeEvent`, `DriftEvent`, `ShadowSummaryEvent` (1) by 9, 10, 12-14; `CaptureSettings` (1) by 21, 25; `Directory` (3) by 29-35; `probeExtra` only in 32. Names in the lab task match.
 
 **4. Review Focus.** Five lines, each with a named test in the owning task (5, 8, 13, 32, 26).
 
