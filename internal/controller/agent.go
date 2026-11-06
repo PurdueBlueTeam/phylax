@@ -191,6 +191,10 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	if err != nil {
 		return err
 	}
+	// The watch sees every accepted connection, not the refused ones (those
+	// alert in authorize); it checks the reported binary hash and withdraws
+	// the host's bundle.
+	c.enrollConnected(h.Host, h.BinarySHA256)
 	st := c.state(h.Host)
 	ag, err := c.st.Agent(ctx, h.Host)
 	if err != nil {

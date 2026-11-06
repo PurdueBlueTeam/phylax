@@ -71,6 +71,9 @@ type Options struct {
 	Probe func(ctx context.Context, service string) error
 	// GatePoll is how often an auto gate is re-evaluated (default 1s).
 	GatePoll time.Duration
+	// EnrollTimer arms the enrollment window timer (WatchEnrollment); default
+	// time.AfterFunc. Tests drive it so no test waits a real window.
+	EnrollTimer func(d time.Duration, f func()) (stop func())
 }
 
 const alertRing = 256
@@ -102,6 +105,9 @@ type Controller struct {
 	cfgs    cfgState                // agent config generation (agentconfig.go)
 	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
 	checks  *ChecksHub
+
+	enrWatchMu sync.Mutex
+	enrWatch   *enrollWatch // the active enrollment watch (enrollwatch.go), nil when none
 
 	honey    honeyState // honeytoken registry (deception_registry.go)
 	honeyGen sync.Mutex // serialises GenerateHoneytokens
@@ -306,6 +312,12 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 // controller on the same data dir resumes them.
 func (c *Controller) Close() error {
 	c.closed.Store(true)
+	c.enrWatchMu.Lock()
+	if c.enrWatch != nil && c.enrWatch.stop != nil {
+		c.enrWatch.stop()
+	}
+	c.enrWatch = nil
+	c.enrWatchMu.Unlock()
 	c.pmu.Lock()
 	for k, pd := range c.pend {
 		if pd.timer != nil {
