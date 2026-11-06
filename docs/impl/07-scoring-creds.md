@@ -1605,7 +1605,7 @@ func TestNextScanAtPreWindow(t *testing.T) { /* pre [14:00]: at 13:40 with inter
 - Test: `internal/vantage/verify_test.go`, `internal/vantage/rdpauth_test.go`
 
 **Interfaces:**
-- Consumes: the agent `probe.run` handler (W3 Task 35: `probe.run{name, params}` is a read-only core action; its dispatch looks a name up in signed table content. `pcr_verify` is code-backed, so Task 1 adds the one hook `actions.RegisterProbeStep(name string, fn func(ctx context.Context, params json.RawMessage, secrets map[string]vault.Secret) (json.RawMessage, error))`; `// shortcut: one code-backed probe name, upgrade to a registry when a second module needs one`), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
+- Consumes: the agent `probe.run` handler (W3 Task 35: `probe.run{name, params}` is a read-only core action; its dispatch looks a name up in signed table content. `pcr_verify` is a content entry that runs the existing probe types of `internal/checks/probe` (the `probes` table) in `probe.AuthOnly` mode; no new hook), `actions.WithSecrets`, `Active()` (Task 31), `probe.AuthOnly`, `probe.Allowlist`.
 - Produces:
 
 ```go
