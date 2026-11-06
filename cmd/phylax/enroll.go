@@ -40,8 +40,9 @@ const enrollUsage = `usage: phylax enroll [-config FILE | -data-dir DIR] [-relea
   push -ctl HOST:PORT [-parallel N] HOST...    install the Linux agent over SSH
   status                                       print each manifest host: enrolled, connected, revoked
 
-The command reads the controller's data dir (the same tokens, identity and
-store serve uses); it can run while serve is running.
+The command uses the controller's data dir (the same tokens, identity and
+store serve uses) and refuses while serve is running: use the Operator page
+then.
 `
 
 // enrollPushAddr is the SSH address of a manifest host. Tests replace it to
@@ -72,6 +73,11 @@ func runEnroll(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
+	unlock, err := enroll.LockDataDir(base.cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("enroll: %w", err)
+	}
+	defer unlock()
 	switch sub {
 	case "line":
 		return enrollLine(base, subargs, stdout)

@@ -1,36 +1,34 @@
 package enroll
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// dataLock is the exclusive advisory lock on <DataDir>/enroll.lock. Every
-// read-modify-write of a shared enrollment file takes it, so `phylax enroll`
-// and `phylax serve` can share one data dir.
-type dataLock struct{ f *os.File }
+// ErrServeRunning reports a data dir whose single-writer lock is held.
+var ErrServeRunning = errors.New("serve is running; use the Operator page")
 
-func lockDataDir(dir string) (*dataLock, error) {
+// LockDataDir takes the single-writer lock on <dir>/data.lock without
+// waiting. serve holds it for its lifetime and the enroll commands for their
+// run, so only one process ever writes the enrollment files. The kernel drops
+// the lock if the holder dies. A held lock is ErrServeRunning.
+func LockDataDir(dir string) (release func(), err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("enroll: lock: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "enroll.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "data.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("enroll: lock: %w", err)
 	}
-	if err := lockFile(f); err != nil {
+	ok, err := tryLockFile(f)
+	if err != nil || !ok {
 		f.Close()
-		return nil, fmt.Errorf("enroll: lock: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("enroll: lock: %w", err)
+		}
+		return nil, ErrServeRunning
 	}
-	return &dataLock{f: f}, nil
-}
-
-func (l *dataLock) Unlock() {
-	if l == nil || l.f == nil {
-		return
-	}
-	unlockFile(l.f)
-	l.f.Close()
-	l.f = nil
+	return func() { unlockFile(f); f.Close() }, nil
 }

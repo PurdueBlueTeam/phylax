@@ -74,6 +74,16 @@ func runServe(ctx context.Context, args []string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("%w (use -config or -data-dir)", err)
 	}
+	// serve is the single writer of the data dir while it runs; the enroll
+	// commands refuse until it stops.
+	unlock, err := enroll.LockDataDir(cfg.DataDir)
+	if errors.Is(err, enroll.ErrServeRunning) {
+		return fmt.Errorf("serve: data dir %s is locked by another phylax serve or enroll", cfg.DataDir)
+	}
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	opt := controller.Options{Logger: log, Version: version, Advertise: *advertise}
 	var m *manifest.Manifest

@@ -111,12 +111,7 @@ func (e *Enroller) HostNameSecret(host string) ([]byte, error) {
 	e.nameMu.Lock()
 	defer e.nameMu.Unlock()
 	if e.nameSecret == nil {
-		lk, err := lockDataDir(e.opt.DataDir)
-		if err != nil {
-			return nil, err
-		}
 		sec, err := loadOrCreateNameSecret(e.opt.DataDir)
-		lk.Unlock()
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +123,7 @@ func (e *Enroller) HostNameSecret(host string) ([]byte, error) {
 }
 
 // loadOrCreateNameSecret reads the controller secret or creates a random one.
-// The caller holds the data-dir lock.
+// The data-dir lock (LockDataDir) makes this process the only writer.
 func loadOrCreateNameSecret(dir string) ([]byte, error) {
 	path := filepath.Join(dir, nameSecretFile)
 	b, err := os.ReadFile(path)

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
+	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
 )
@@ -116,6 +117,26 @@ func TestEnrollLinePrintsPinnedLine(t *testing.T) {
 	}
 	if strings.Contains(string(b), tok) {
 		t.Fatal("tokens.json holds the token in clear")
+	}
+}
+
+func TestEnrollLineRefusesWhileServeRuns(t *testing.T) {
+	releaseDir := writeReleaseDir(t, []byte("fake agent"))
+	dataDir := newEnrollDataDir(t, "", releaseDir)
+	// The lock serve takes at startup and holds for its lifetime.
+	unlock, err := enroll.LockDataDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runEnrollCmd(t, "-data-dir", dataDir, "-release-dir", releaseDir,
+		"line", "-os", "linux", "-ctl", "10.0.0.5:7443", "h1")
+	if err == nil || !strings.Contains(err.Error(), "serve is running; use the Operator page") {
+		t.Fatalf("err = %v, want the serve-is-running refusal", err)
+	}
+	unlock()
+	if _, err := runEnrollCmd(t, "-data-dir", dataDir, "-release-dir", releaseDir,
+		"line", "-os", "linux", "-ctl", "10.0.0.5:7443", "h1"); err != nil {
+		t.Fatalf("after serve stopped: %v", err)
 	}
 }
 

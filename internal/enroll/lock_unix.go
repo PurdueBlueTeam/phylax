@@ -9,17 +9,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// lockFile takes a blocking exclusive advisory lock. flock locks belong to the
-// open file description, so they exclude other processes and other descriptors
-// opened in this process; the kernel drops the lock if the process dies.
-func lockFile(f *os.File) error {
-	for {
-		err := unix.Flock(int(f.Fd()), unix.LOCK_EX)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		return err
+// tryLockFile takes a non-blocking exclusive flock. flock locks belong to the
+// open file description, so they also exclude other descriptors in this
+// process.
+func tryLockFile(f *os.File) (bool, error) {
+	err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return false, nil
 	}
+	return err == nil, err
 }
 
 func unlockFile(f *os.File) { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }
