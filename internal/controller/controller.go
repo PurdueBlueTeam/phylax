@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
@@ -94,6 +95,7 @@ type Controller struct {
 	plans   map[string]*planRT
 	pend    map[stepKey]*pending
 	ctlMu   sync.Mutex // serialises control signing and queueing
+	chainMu sync.Mutex // serialises the controller-origin event chain (chain.go)
 	closed  atomic.Bool
 	cfgs    cfgState                // agent config generation (agentconfig.go)
 	dx      atomic.Pointer[devExec] // controller-side device/Splunk execution (devexec_run.go)
@@ -125,6 +127,12 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	}
 	st, err := store.Open(ctx, cfg.DataDir+string(os.PathSeparator)+"phylax.db")
 	if err != nil {
+		return nil, err
+	}
+	// The controller's own events live on a chain like an agent's, keyed by the
+	// controller identity (chain.go). Enrolling is idempotent.
+	if err := st.EnrollAgent(ctx, ControllerAgent, id.Pin[:]); err != nil {
+		st.Close()
 		return nil, err
 	}
 	tok, err := OpenTokens(cfg.DataDir+string(os.PathSeparator)+"tokens.json", cfg.MaxLiveTokens)
@@ -179,6 +187,11 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		return nil, err
 	}
 	for _, a := range ags {
+		// The controller's own chain is not an agent: no liveness state, so
+		// the silence watcher and the agents page never see it.
+		if a.ID == ControllerAgent {
+			continue
+		}
 		// Known agents start "last seen now" so a controller restart does not
 		// instantly report every agent silent.
 		s := c.stateLocked(a.ID)
@@ -219,6 +232,28 @@ func (c *Controller) alert(host, kind, detail string) {
 	c.mu.Unlock()
 	if c.opt.OnAlert != nil {
 		c.opt.OnAlert(a)
+	}
+	c.alertEvent(host, kind, detail)
+}
+
+// alertEvent puts an operator alert on the controller's event chain when the
+// kind is a declared event kind: the alert then survives in the store, with
+// its alert-queue row, instead of only in the ring. Kinds that are not
+// declared (store.chain_error, config.generate_failed, sla.*) stay ring-only,
+// and a declared kind whose payload is not {host, detail} is not forced into
+// one.
+func (c *Controller) alertEvent(host, kind, detail string) {
+	ty, ok := event.Lookup(kind)
+	if !ok {
+		return
+	}
+	e := event.Event{Kind: kind, Schema: ty.Schema, Priority: ty.Priority,
+		Fields: map[string]any{"host": host, "detail": detail}}
+	if err := event.Validate(e); err != nil {
+		return
+	}
+	if _, err := c.EmitController(context.Background(), e); err != nil {
+		c.log.Error("cannot emit alert event", "host", host, "kind", kind, "err", err)
 	}
 }
 

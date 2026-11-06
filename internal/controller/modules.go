@@ -4,15 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
-
-// EmitController stores an event on the controller-origin chain.
-func (c *Controller) EmitController(ctx context.Context, e event.Event) (event.Event, error) {
-	panic("unimplemented: W1 Task 16")
-}
 
 // RunModules runs every enabled controller module until ctx ends.
 func (c *Controller) RunModules(ctx context.Context, mods []module.ControllerModule) error {

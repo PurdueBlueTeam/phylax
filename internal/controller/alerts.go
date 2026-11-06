@@ -71,9 +71,37 @@ func (c *Controller) ingestHook(ctx context.Context, tx *store.IngestTx, evs []e
 				// The in-memory SLA streak moves only once the row is committed.
 				tx.OnCommit(func() { c.checks.observeEvent(e) })
 			}
+		default:
+			// A kind declared alert-class lands in the operator queue with the
+			// event that caused it (detect.alert keeps its own path above).
+			if row, ok := declaredAlertRow(e); ok {
+				if _, err := tx.InsertAlertOnce(row); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// declaredAlertRow turns a stored event into an operator alert row when its
+// kind is declared with the alert flag and carries a high or critical
+// priority. The rule is the kind and the host is the event's host field, or
+// the agent when the kind has none.
+func declaredAlertRow(e event.Event) (store.AlertRow, bool) {
+	ty, ok := event.Lookup(e.Kind)
+	if !ok || !ty.Alert || (e.Priority != event.PriorityHigh && e.Priority != event.PriorityCritical) {
+		return store.AlertRow{}, false
+	}
+	host := fstr(e.Fields, "host")
+	if host == "" {
+		host = e.Agent
+	}
+	sev := SeverityLevel("high")
+	if e.Priority == event.PriorityCritical {
+		sev = SeverityLevel("critical")
+	}
+	return store.AlertRow{Rule: e.Kind, Host: host, Severity: sev, Time: e.Time, Agent: e.Agent, Seq: e.Seq}, true
 }
 
 // replayAgentAlerts queues every stored detect.alert event that has no queue

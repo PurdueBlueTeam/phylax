@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
+	"github.com/PurdueBlueTeam/phylax/internal/store"
 )
 
 func TestEmitControllerChain(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 16")
 	c := newTestController(t)
 	e1, err := c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
 	if err != nil {
@@ -21,7 +21,6 @@ func TestEmitControllerChain(t *testing.T) {
 }
 
 func TestEmitControllerAfterRestart(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 16")
 	dir := t.TempDir()
 	c := newTestControllerAt(t, dir)
 	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
@@ -34,15 +33,22 @@ func TestEmitControllerAfterRestart(t *testing.T) {
 }
 
 func TestEmitControllerAlertRow(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 16")
 	c := newTestController(t)
 	_, _ = c.EmitController(ctx, mustNew(t, "agent.silent", event.AgentSilent{Host: "h1", Detail: "no message"}))
 	_, _ = c.EmitController(ctx, mustNew(t, "agent.resumed", event.AgentResumed{Host: "h1"}))
-	// want: exactly one alert row (list rows with the store method alerts.go uses), rule "agent.silent", host "h1"
+	rows, err := c.st.Alerts(ctx, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("alert rows: %+v", rows)
+	}
+	if rows[0].Rule != "agent.silent" || rows[0].Host != "h1" || rows[0].Agent != "controller" {
+		t.Fatalf("row %+v", rows[0])
+	}
 }
 
 func TestEmitControllerRejectsUndeclared(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 16")
 	c := newTestController(t)
 	if _, err := c.EmitController(ctx, event.Event{Kind: "nope"}); !errors.Is(err, event.ErrUndeclared) {
 		t.Fatalf("got %v", err)
@@ -50,8 +56,21 @@ func TestEmitControllerRejectsUndeclared(t *testing.T) {
 }
 
 func TestDeclaredAlertBecomesEvent(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 16")
 	c := newTestController(t)
 	c.alert("h1", "agent.silent", "no message for 30s")
-	// want: c.st.Latest(ctx, "controller", "agent.silent") returns an event with Fields["host"] == "h1"
+	e, err := c.st.Latest(ctx, "controller", "agent.silent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Fields["host"] != "h1" || e.Fields["detail"] != "no message for 30s" {
+		t.Fatalf("%+v", e.Fields)
+	}
+	// An undeclared alert kind stays in the ring: nothing to store.
+	c.alert("h1", "store.chain_error", "seq 4 hash mismatch")
+	if _, err := c.st.Latest(ctx, "controller", "store.chain_error"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("undeclared kind stored: %v", err)
+	}
+	if n := len(c.Alerts()); n != 2 {
+		t.Fatalf("ring holds %d alerts, want 2", n)
+	}
 }
