@@ -14,7 +14,6 @@ func rec(sec int, mark string) Record {
 }
 
 func TestLogRoundTrip(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "bench.jsonl")
 	l, err := OpenLog(p, 1<<20)
 	if err != nil {
@@ -36,7 +35,6 @@ func TestLogRoundTrip(t *testing.T) {
 }
 
 func TestLogRotationBounded(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "bench.jsonl")
 	l, _ := OpenLog(p, 1000)
 	for i := 0; i < 200; i++ {
@@ -58,7 +56,6 @@ func TestLogRotationBounded(t *testing.T) {
 }
 
 func TestLogReopenAppends(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "bench.jsonl")
 	l, _ := OpenLog(p, 1<<20)
 	l.Write(rec(0, "a"))
@@ -72,7 +69,6 @@ func TestLogReopenAppends(t *testing.T) {
 }
 
 func TestReadSkipsTornLine(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "b.jsonl")
 	os.WriteFile(p, []byte(`{"t":"2023-11-14T22:13:20Z","kind":"mark","mark":"a"}`+"\n"+`{"t":"2023-11-14T22:1`), 0o600)
 	got, err := ReadFiles(p)
@@ -86,7 +82,6 @@ func TestReadSkipsTornLine(t *testing.T) {
 }
 
 func TestReadRefusesHugeLine(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "b.jsonl")
 	os.WriteFile(p, []byte(strings.Repeat("x", 2<<20)+"\n"), 0o600)
 	if _, err := ReadFiles(p); err == nil {
@@ -95,7 +90,6 @@ func TestReadRefusesHugeLine(t *testing.T) {
 }
 
 func TestAppendMark(t *testing.T) {
-	t.Skip("unimplemented: W14 Task 3")
 	p := filepath.Join(t.TempDir(), "marks.jsonl")
 	AppendMark(p, "partition_start", time.Unix(1700000000, 0))
 	AppendMark(p, "partition_end", time.Unix(1700000060, 0))
