@@ -78,8 +78,8 @@ func (c *Controller) OpenProposals(ctx context.Context) ([]store.ProposalRow, er
 	return c.st.OpenProposals(ctx)
 }
 
-// AcceptProposal creates the proposed plan with the click class, approves and
-// applies it, then closes the proposal as accepted.
+// AcceptProposal creates the proposed plan with the click class, runs its dry
+// run, approves and applies it, then closes the proposal as accepted.
 func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (string, error) {
 	row, err := c.st.Proposal(ctx, id)
 	if err != nil {
@@ -100,7 +100,10 @@ func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (s
 	if err := c.CreatePlan(ctx, p, by); err != nil {
 		return "", err
 	}
-	if err := c.approveNow(ctx, p.ID, by); err != nil {
+	if _, err := c.DryRun(ctx, p.ID); err != nil {
+		return "", err
+	}
+	if err := c.ApprovePlan(ctx, p.ID, by); err != nil {
 		return "", err
 	}
 	if err := c.Apply(ctx, p.ID); err != nil {
