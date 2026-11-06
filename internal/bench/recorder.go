@@ -74,10 +74,6 @@ func (r *Recorder) Sample(ctx context.Context, now time.Time) error {
 		interval = r.interval // a zero or absurd window would divide by zero
 	}
 	cpu, rss := r.proc()
-	prevCPU := r.cpuBase
-	if r.prev == nil {
-		prevCPU = 0
-	}
 	ags := r.src.Agents()
 	c := &Ctl{
 		IntervalMS: interval.Milliseconds(),
@@ -89,7 +85,7 @@ func (r *Recorder) Sample(ctx context.Context, now time.Time) error {
 		GapEvents:  delta.GapEvents,
 		Connects:   delta.Connects,
 		Down:       delta.Down,
-		CPUMs:      subU(cpu, prevCPU),
+		CPUMs:      subU(cpu, r.cpuBase), // cumulative process CPU, 0 at the first sample
 		RSSBytes:   rss,
 		StoreBytes: r.src.StoreBytes(),
 		Agents:     len(ags),
