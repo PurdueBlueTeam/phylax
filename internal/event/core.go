@@ -187,12 +187,12 @@ type EnrollAlert struct {
 // operator action that changes what a module's table holds. Record is the
 // full new value, never a diff.
 type OperatorEdit struct {
-	Module  string         `json:"module"`
-	Op      string         `json:"op"`
-	Subject string         `json:"subject,omitempty"`
-	Record  map[string]any `json:"record,omitempty"`
-	By      string         `json:"by"`
-	At      string         `json:"at"`
+	Module  string `json:"module"`
+	Op      string `json:"op"`
+	Subject string `json:"subject,omitempty"`
+	Record  any    `json:"record,omitempty"`
+	By      string `json:"by"`
+	At      string `json:"at"`
 }
 
 // The core inventory kinds (design: Event kinds).

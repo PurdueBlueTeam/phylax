@@ -322,14 +322,13 @@ func TestEnrollAlertsAreStoredAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"h1": event.ReasonHashMismatch, "h2": event.ReasonNoShow}
+	want := map[string]bool{"h1": true, "h2": true}
 	for _, r := range rows {
-		host, ok := want[r.Host]
-		if !ok || r.Rule != event.KindEnrollAlert {
+		if !want[r.Host] || r.Rule != event.KindEnrollAlert {
 			continue
 		}
 		if r.Agent != ControllerAgent || r.Seq == 0 {
-			t.Errorf("alert row %+v, want host %s on the controller chain", r, host)
+			t.Errorf("alert row %+v, want host %s on the controller chain", r, r.Host)
 		}
 		delete(want, r.Host)
 	}
