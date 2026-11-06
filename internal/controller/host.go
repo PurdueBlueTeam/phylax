@@ -188,7 +188,7 @@ func (h *moduleHost) RunStanding(approvalID, template string, params map[string]
 	return h.c.RunStanding(context.Background(), h.name, approvalID, template, params)
 }
 func (h *moduleHost) RunAuto(template string, params map[string]string) (string, error) {
-	panic("unimplemented: W1 Task 26")
+	return h.c.RunAuto(context.Background(), h.name, template, params)
 }
 func (h *moduleHost) Control(m module.ControlMsg) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

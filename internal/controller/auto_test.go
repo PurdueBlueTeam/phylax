@@ -8,20 +8,23 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/module"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
 
 func TestRunAutoNeedsActEnabled(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 26")
 	c := newAutoController(t, "enabled: true\nact_enabled: false\nauto: [t1]\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	_, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"})
 	if !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "act_enabled") {
 		t.Fatalf("got %v", err)
 	}
+	open, err := c.OpenProposals(ctx)
+	if err != nil || len(open) != 1 || open[0].Module != "ctltest" || !strings.Contains(open[0].Reason, "act_enabled") {
+		t.Fatalf("proposals %+v %v", open, err)
+	}
 }
 
 func TestRunAutoNotOnAllowlist(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 26")
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [other]\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
@@ -30,7 +33,6 @@ func TestRunAutoNotOnAllowlist(t *testing.T) {
 }
 
 func TestRunAutoUnknownSafeModeProposes(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 26")
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
 	if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
@@ -47,7 +49,6 @@ func TestRunAutoUnknownSafeModeProposes(t *testing.T) {
 }
 
 func TestRunAutoLintAndProbe(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 26")
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t2, bad]\n")
 	setHeartbeat(c, "h1", false, time.Now())
 	if _, err := c.RunAuto(ctx, "ctltest", "bad", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) {
@@ -60,7 +61,6 @@ func TestRunAutoLintAndProbe(t *testing.T) {
 }
 
 func TestRunAutoStarts(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 26")
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }
 	setHeartbeat(c, "h1", false, time.Now())
@@ -68,5 +68,12 @@ func TestRunAutoStarts(t *testing.T) {
 	if err != nil || id == "" {
 		t.Fatalf("%q %v", id, err)
 	}
-	// want: stored plan Class auto, OnFailure rollback_plan, Approver "auto:ctltest/t1 trigger h1:7"
+	d, err := c.PlanDetail(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Plan.Class != plan.ClassAuto || d.Plan.OnFailure != plan.RollbackPlan ||
+		d.Plan.Approver != "auto:ctltest/t1 trigger h1:7" {
+		t.Fatalf("plan %+v", d.Plan)
+	}
 }

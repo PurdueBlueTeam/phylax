@@ -211,10 +211,6 @@ func (c *Controller) ModuleHealth() map[string]module.Health {
 	return out
 }
 
-func (c *Controller) RunAuto(ctx context.Context, mod, template string, params map[string]string) (string, error) {
-	panic("unimplemented: W1 Task 26")
-}
-
 func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by string) error {
 	panic("unimplemented: W1 Task 28")
 }

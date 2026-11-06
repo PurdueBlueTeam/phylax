@@ -122,12 +122,23 @@ func newStandingController(t *testing.T) *Controller {
 
 func newAutoController(t *testing.T, block string) *Controller {
 	t.Helper()
-	return newTestControllerWithPlans(t, map[string]string{
-		"modules/ctltest.yml": block,
-		"ctltest/t1.yml":      "id: t1\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hosts}}\n",
-		"ctltest/t2.yml":      "id: t2\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.write, target: '${host}', params: {path: /tmp/phylax-t2, content: x}}\n",
-		"ctltest/bad.yml":     "id: bad\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: host.exec, target: '${host}', params: {argv: [/bin/true]}}\n",
-	})
+	c := newTestControllerWithManifest(t, map[string]string{"modules/ctltest.yml": block})
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"ctltest/t1.yml":  "id: t1\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hosts}}\n",
+		"ctltest/t2.yml":  "id: t2\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.write, target: '${host}', params: {path: /tmp/phylax-t2, content: x}}\n",
+		"ctltest/bad.yml": "id: bad\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: host.exec, target: '${host}', params: {argv: [/bin/true]}}\n",
+	} {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.cfg.PlansPath = dir
+	return c
 }
 
 func setHeartbeat(c *Controller, host string, safeMode bool, at time.Time) {
