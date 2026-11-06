@@ -36,7 +36,7 @@ func TestAgentHealthFromHeartbeat(t *testing.T) {
 	if err := x.c.SetConfigInputs(context.Background(), ConfigInputs{Manifest: m}); err != nil {
 		t.Fatal(err)
 	}
-	tok, err := x.c.MintToken("h1", time.Minute)
+	tok, err := x.c.Enroller().MintToken("h1", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	phyagent "github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -101,7 +102,7 @@ func newIdent(t *testing.T, name string) *link.Identity {
 func watchForTest(t *testing.T, x *ctl, hosts []string, window time.Duration) (dir, servedHash string) {
 	t.Helper()
 	dir = t.TempDir()
-	if err := x.c.WriteBundles(dir, hosts, BundleOptions{Controllers: []string{"127.0.0.1:7443"}}); err != nil {
+	if err := x.c.Enroller().WriteBundles(dir, hosts, enroll.BundleOptions{Controllers: []string{"127.0.0.1:7443"}}); err != nil {
 		t.Fatal(err)
 	}
 	served := writeServed(t, t.TempDir(), "phylax", "the served agent binary")
@@ -209,7 +210,7 @@ func TestWatchNoShowAndCleanup(t *testing.T) {
 
 	// A hello after the window is over is handled normally (a fresh token is
 	// needed: the served bundle is gone) and raises no enrollment alert.
-	tok, err := x.c.MintToken("h2", time.Hour)
+	tok, err := x.c.Enroller().MintToken("h2", time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

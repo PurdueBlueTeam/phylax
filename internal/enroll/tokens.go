@@ -1,4 +1,4 @@
-package controller
+package enroll
 
 import (
 	"crypto/rand"
@@ -17,12 +17,12 @@ import (
 )
 
 var (
-	ErrTokenInvalid  = errors.New("controller: enrollment token invalid")
-	ErrTokenExpired  = errors.New("controller: enrollment token expired")
-	ErrTokenUsed     = errors.New("controller: enrollment token already used")
-	ErrTokenHost     = errors.New("controller: enrollment token is bound to a different host")
-	ErrTooManyTokens = errors.New("controller: too many live enrollment tokens")
-	ErrUnknownHost   = errors.New("controller: host is not in the manifest")
+	ErrTokenInvalid  = errors.New("enroll: enrollment token invalid")
+	ErrTokenExpired  = errors.New("enroll: enrollment token expired")
+	ErrTokenUsed     = errors.New("enroll: enrollment token already used")
+	ErrTokenHost     = errors.New("enroll: enrollment token is bound to a different host")
+	ErrTooManyTokens = errors.New("enroll: too many live enrollment tokens")
+	ErrUnknownHost   = errors.New("enroll: host is not in the manifest")
 )
 
 // DefaultTokenTTL is the enrollment token lifetime (design: 10 minutes).
@@ -62,7 +62,7 @@ func OpenTokens(path string, maxLive int) (*Tokens, error) {
 	}
 	var recs []*tokenRec
 	if err := json.Unmarshal(b, &recs); err != nil {
-		return nil, fmt.Errorf("controller: token file %s: %w", path, err)
+		return nil, fmt.Errorf("enroll: token file %s: %w", path, err)
 	}
 	for _, r := range recs {
 		t.recs[r.Hash] = r
@@ -108,7 +108,7 @@ func (t *Tokens) liveLocked() int {
 // The plaintext is returned once and never stored.
 func (t *Tokens) Mint(host string, ttl time.Duration) (string, error) {
 	if host == "" || len(host) > 253 {
-		return "", errors.New("controller: token needs a host name")
+		return "", errors.New("enroll: token needs a host name")
 	}
 	if ttl <= 0 {
 		ttl = DefaultTokenTTL
@@ -160,4 +160,22 @@ func (t *Tokens) Consume(tok, host string, pin link.Pin) error {
 		return err
 	}
 	return nil
+}
+
+// Peek returns the host a live, unconsumed token is bound to. It does not
+// change the token.
+func (t *Tokens) Peek(tok string) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r, ok := t.recs[hashToken(tok)]
+	if !ok {
+		return "", ErrTokenInvalid
+	}
+	if r.UsedBy != "" {
+		return "", ErrTokenUsed
+	}
+	if t.now().After(r.Expires) {
+		return "", ErrTokenExpired
+	}
+	return r.Host, nil
 }

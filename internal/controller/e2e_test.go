@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/spool"
@@ -273,11 +274,11 @@ func waitFor(t *testing.T, d time.Duration, what string, f func() bool) {
 
 func TestEndToEnd(t *testing.T) {
 	x := newCtl(t)
-	tok, err := x.c.MintToken("h1", 0)
+	tok, err := x.c.Enroller().MintToken("h1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := x.c.MintToken("ghost", 0); !errors.Is(err, ErrUnknownHost) {
+	if _, err := x.c.Enroller().MintToken("ghost", 0); !errors.Is(err, enroll.ErrUnknownHost) {
 		t.Fatalf("mint for host outside manifest: %v", err)
 	}
 	a := newAgent(t, x, "h1", tok)
@@ -440,7 +441,7 @@ func TestEnrollmentRefusals(t *testing.T) {
 	if tryHello(t, x, id(), "h2", "NOTAREALTOKEN") {
 		t.Fatal("bogus token admitted")
 	}
-	tok, _ := x.c.MintToken("h2", 0)
+	tok, _ := x.c.Enroller().MintToken("h2", 0)
 	if tryHello(t, x, id(), "other", tok) {
 		t.Fatal("token for h2 enrolled host other")
 	}
@@ -464,7 +465,7 @@ func TestEnrollmentRefusals(t *testing.T) {
 		t.Error("no alert for a new key claiming an existing host")
 	}
 	// A token alone cannot re-key an enrolled host, and a key cannot enroll as a second host.
-	tok2, _ := x.c.MintToken("h3", 0)
+	tok2, _ := x.c.Enroller().MintToken("h3", 0)
 	if tryHello(t, x, k1, "h3", tok2) {
 		t.Fatal("enrolled key enrolled as a second host")
 	}
@@ -485,7 +486,7 @@ func TestEnrollmentRefusals(t *testing.T) {
 
 func TestSilenceAndClockSkew(t *testing.T) {
 	x := newCtl(t)
-	tok, _ := x.c.MintToken("h4", 0)
+	tok, _ := x.c.Enroller().MintToken("h4", 0)
 	a := newAgent(t, x, "h4", tok)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -508,7 +509,7 @@ func TestSilenceAndClockSkew(t *testing.T) {
 // prefix, and not take the controller down.
 func TestChainErrorAlerts(t *testing.T) {
 	x := newCtl(t)
-	tok, _ := x.c.MintToken("h5", 0)
+	tok, _ := x.c.Enroller().MintToken("h5", 0)
 	id, _ := link.GenerateIdentity("h5")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

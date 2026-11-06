@@ -278,7 +278,7 @@ func (c *Controller) authorize(ctx context.Context, h *link.Hello, pin link.Pin)
 			return refuse("enroll.key_reuse", fmt.Errorf("key already enrolled as %q", o.ID))
 		}
 	}
-	if err := c.tok.Consume(h.Token, h.Host, pin); err != nil {
+	if err := c.enr.Tokens().Consume(h.Token, h.Host, pin); err != nil {
 		return refuse("enroll.refused", err)
 	}
 	if err := c.st.EnrollAgent(ctx, h.Host, pin[:]); err != nil {

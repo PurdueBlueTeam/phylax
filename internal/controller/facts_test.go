@@ -51,7 +51,7 @@ func newFactController(t *testing.T) (*ctl, *agent, func() []*link.Control) {
 			sent = append(sent, c)
 			mu.Unlock()
 		}})
-	tok, err := x.c.MintToken("h1", 0)
+	tok, err := x.c.Enroller().MintToken("h1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

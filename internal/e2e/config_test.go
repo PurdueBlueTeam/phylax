@@ -166,7 +166,7 @@ func TestAgentConfigEndToEnd(t *testing.T) {
 	if err := h.c.SetConfigInputs(ctx, loadRealInputs(t, nil)); err != nil {
 		t.Fatal(err)
 	}
-	tok, err := h.c.MintToken(host, time.Minute)
+	tok, err := h.c.Enroller().MintToken(host, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

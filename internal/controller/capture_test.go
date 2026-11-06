@@ -247,7 +247,7 @@ func TestCaptureSYNScanEndToEndThroughSpoolAndLink(t *testing.T) {
 	if err := x.c.SetConfigInputs(context.Background(), ConfigInputs{Manifest: realManifest(t), Rules: realRules(t)}); err != nil {
 		t.Fatal(err)
 	}
-	tok, err := x.c.MintToken(capHost, 0)
+	tok, err := x.c.Enroller().MintToken(capHost, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

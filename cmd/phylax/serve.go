@@ -15,6 +15,7 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
+	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
@@ -154,7 +155,7 @@ func runServe(ctx context.Context, args []string) error {
 // writeBundles writes one bootstrap bundle per manifest host, named
 // <host>.json, so a person can download it on the console host and enroll.
 func writeBundles(c *controller.Controller, m *manifest.Manifest, dir, advertise string, ttl time.Duration, safe bool) error {
-	return c.WriteBundles(dir, manifestHosts(m), controller.BundleOptions{Controllers: []string{advertise}, TTL: ttl, Safe: safe})
+	return c.Enroller().WriteBundles(dir, manifestHosts(m), enroll.BundleOptions{Controllers: []string{advertise}, TTL: ttl, Safe: safe})
 }
 
 // manifestHosts lists the manifest's host names, sorted.

@@ -1,4 +1,4 @@
-package controller
+package enroll
 
 import (
 	"encoding/hex"
@@ -33,13 +33,13 @@ func readBundle(t *testing.T, dir, host string) (*phyagent.Bundle, os.FileMode) 
 }
 
 func TestWriteBundles_ParseAndEnroll(t *testing.T) {
-	x := newCtl(t)
+	x := newEnroller(t)
 	dir := bundleDir(t)
 	opts := BundleOptions{Controllers: []string{"10.0.0.5:7443"}, TTL: time.Hour, Safe: true}
-	if err := x.c.WriteBundles(dir, []string{"h1", "h2"}, opts); err != nil {
+	if err := x.e.WriteBundles(dir, []string{"h1", "h2"}, opts); err != nil {
 		t.Fatal(err)
 	}
-	wantKey := hex.EncodeToString(x.c.PlanPublicKey())
+	wantKey := hex.EncodeToString(x.e.opt.PlanKey)
 	tokens := map[string]string{}
 	for _, host := range []string{"h1", "h2"} {
 		b, mode := readBundle(t, dir, host)
@@ -61,8 +61,8 @@ func TestWriteBundles_ParseAndEnroll(t *testing.T) {
 		pin, err := link.ParsePin(b.ControllerPin)
 		if err != nil {
 			t.Errorf("%s: ControllerPin: %v", host, err)
-		} else if pin != x.c.Pin() {
-			t.Errorf("%s: ControllerPin %s, want %s", host, pin, x.c.Pin())
+		} else if pin != x.e.opt.Identity.Pin {
+			t.Errorf("%s: ControllerPin %s, want %s", host, pin, x.e.opt.Identity.Pin)
 		}
 		if b.PlanKey != wantKey {
 			t.Errorf("%s: PlanKey %q, want %q", host, b.PlanKey, wantKey)
@@ -80,9 +80,9 @@ func TestWriteBundles_ParseAndEnroll(t *testing.T) {
 }
 
 func TestWriteBundles_UnknownHostWritesNothing(t *testing.T) {
-	x := newCtl(t)
+	x := newEnroller(t)
 	dir := bundleDir(t)
-	err := x.c.WriteBundles(dir, []string{"h1", "ghost"}, BundleOptions{Controllers: []string{"10.0.0.5:7443"}})
+	err := x.e.WriteBundles(dir, []string{"h1", "ghost"}, BundleOptions{Controllers: []string{"10.0.0.5:7443"}})
 	if !errors.Is(err, ErrUnknownHost) {
 		t.Fatalf("err %v, want ErrUnknownHost", err)
 	}
@@ -94,15 +94,15 @@ func TestWriteBundles_UnknownHostWritesNothing(t *testing.T) {
 		t.Fatalf("dir has %d entries, want none", len(ents))
 	}
 	// A token minted after the refused call must still work: nothing was spent.
-	if _, err := x.c.MintToken("h1", 0); err != nil {
+	if _, err := x.e.MintToken("h1", 0); err != nil {
 		t.Fatalf("MintToken after refusal: %v", err)
 	}
 }
 
 func TestWriteBundles_RequiresController(t *testing.T) {
-	x := newCtl(t)
+	x := newEnroller(t)
 	dir := bundleDir(t)
-	if err := x.c.WriteBundles(dir, []string{"h1"}, BundleOptions{}); err == nil {
+	if err := x.e.WriteBundles(dir, []string{"h1"}, BundleOptions{}); err == nil {
 		t.Fatal("empty Controllers: no error")
 	}
 	ents, rerr := os.ReadDir(dir)

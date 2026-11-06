@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
+	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -89,7 +90,7 @@ type Controller struct {
 	log   *slog.Logger
 	id    *link.Identity
 	st    *store.Store
-	tok   *Tokens
+	enr   *enroll.Enroller
 	now   func() time.Time
 	clk   clock
 	enrMu sync.Mutex // serialises enrollment decisions
@@ -158,11 +159,6 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		st.Close()
 		return nil, err
 	}
-	tok, err := OpenTokens(cfg.DataDir+string(os.PathSeparator)+"tokens.json", cfg.MaxLiveTokens)
-	if err != nil {
-		st.Close()
-		return nil, err
-	}
 	pk, err := loadPlanKey(filepath.Join(cfg.DataDir, "plan.key"))
 	if err != nil {
 		st.Close()
@@ -180,10 +176,21 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	if opt.ResumeGrace <= 0 {
 		opt.ResumeGrace = opt.StepTimeout
 	}
-	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now, clk: realClock{},
+	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, now: time.Now, clk: realClock{},
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
+	enr, err := enroll.New(enroll.Options{
+		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
+		PlanKey:   pk.Public().(ed25519.PublicKey),
+		HostKnown: opt.HostKnown, Emit: c.EmitController, Alert: c.alert,
+		Connected: func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
+	})
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	c.enr = enr
 	used := opt.QuotaUsed
 	if used == nil {
 		used = func() (float64, error) { return diskUsedPct(cfg.DataDir) }
@@ -236,13 +243,8 @@ func (c *Controller) Pin() link.Pin { return c.id.Pin }
 // Store exposes the event store.
 func (c *Controller) Store() *store.Store { return c.st }
 
-// MintToken creates a one-time enrollment token for a manifest host.
-func (c *Controller) MintToken(host string, ttl time.Duration) (string, error) {
-	if c.opt.HostKnown != nil && !c.opt.HostKnown(host) {
-		return "", ErrUnknownHost
-	}
-	return c.tok.Mint(host, ttl)
-}
+// Enroller exposes the core enrollment path.
+func (c *Controller) Enroller() *enroll.Enroller { return c.enr }
 
 // Alerts returns the most recent alerts, oldest first.
 func (c *Controller) Alerts() []Alert {

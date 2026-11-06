@@ -377,7 +377,7 @@ func (h *harness) addHost(name string) *testHost {
 			t.Fatal(err)
 		}
 	}
-	tok, err := h.c.MintToken(name, time.Minute)
+	tok, err := h.c.Enroller().MintToken(name, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
