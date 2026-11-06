@@ -27,13 +27,6 @@ const (
 	releaseWindows = "phylax-windows-amd64.exe"
 )
 
-// releaseFile is one cached release hash, refreshed when size or mtime moves.
-type releaseFile struct {
-	size int64
-	mod  time.Time
-	sha  string
-}
-
 // release returns the path and sha256 of the agent binary for osName.
 func (e *Enroller) release(osName string) (string, string, error) {
 	name := ""
@@ -56,11 +49,6 @@ func (e *Enroller) release(osName string) (string, string, error) {
 	if fi.Size() > 64<<20 {
 		return "", "", fmt.Errorf("enroll: release file %s is larger than 64 MiB", path)
 	}
-	e.relMu.Lock()
-	defer e.relMu.Unlock()
-	if r := e.releases[osName]; r != nil && r.size == fi.Size() && r.mod.Equal(fi.ModTime()) {
-		return path, r.sha, nil
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", fmt.Errorf("enroll: release file %s: %w", path, err)
@@ -71,7 +59,6 @@ func (e *Enroller) release(osName string) (string, string, error) {
 		return "", "", fmt.Errorf("enroll: release file %s: %w", path, err)
 	}
 	sha := hex.EncodeToString(h.Sum(nil))
-	e.releases[osName] = &releaseFile{size: fi.Size(), mod: fi.ModTime(), sha: sha}
 	return path, sha, nil
 }
 

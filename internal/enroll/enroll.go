@@ -50,9 +50,6 @@ type Enroller struct {
 	nameMu     sync.Mutex // guards the lazy controller-wide install-name secret
 	nameSecret []byte
 
-	relMu    sync.Mutex
-	releases map[string]*releaseFile
-
 	failMu sync.Mutex
 	fails  map[string]failEntry
 
@@ -94,11 +91,7 @@ func New(o Options) (*Enroller, error) {
 		return nil, err
 	}
 	e := &Enroller{opt: o, tokens: tokens, revoked: revoked, hostKeys: hostKeys,
-		releases: map[string]*releaseFile{}, fails: map[string]failEntry{},
-		pending: map[string]pendingAnnounce{}}
-	// Hash the release files now; release() refreshes them when they move.
-	_, _, _ = e.release(OSLinux)
-	_, _, _ = e.release(OSWindows)
+		fails: map[string]failEntry{}, pending: map[string]pendingAnnounce{}}
 	return e, nil
 }
 
