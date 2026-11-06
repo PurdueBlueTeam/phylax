@@ -30,6 +30,7 @@ type Options struct {
 	Emit          func(ctx context.Context, e event.Event) (event.Event, error) // Controller.EmitController
 	Alert         func(host, reason, detail string)                             // the enroll.alert reasons
 	Connected     func(host string) bool                                        // true when the host's agent has a live session
+	Disconnect    func(host string)                                             // closes a live session (Revoke and ReenrollAll)
 	Now           func() time.Time                                              // nil means time.Now
 }
 

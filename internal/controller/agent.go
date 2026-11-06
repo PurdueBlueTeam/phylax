@@ -438,15 +438,22 @@ func (c *Controller) RevokeAgent(ctx context.Context, host string) error {
 	if err := c.enr.Revoke(ctx, host); err != nil {
 		return err
 	}
+	c.disconnectAgent(host)
+	return nil
+}
+
+// disconnectAgent closes host's live session, if any. The key is already
+// revoked or about to be; the session table is the controller's side.
+func (c *Controller) disconnectAgent(host string) {
 	c.mu.Lock()
 	s := c.agents[host]
 	c.mu.Unlock()
-	if s != nil {
-		s.mu.Lock()
-		if s.sess != nil {
-			s.sess.sess.Close()
-		}
-		s.mu.Unlock()
+	if s == nil {
+		return
 	}
-	return nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sess != nil {
+		s.sess.sess.Close()
+	}
 }

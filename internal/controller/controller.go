@@ -216,7 +216,8 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		ReleaseDir: cfg.ReleaseDir,
 		Advertise:  opt.Advertise,
 		HostKnown:  opt.HostKnown, Emit: c.EmitController, Alert: c.enrollAlert,
-		Connected: func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
+		Connected:  func(h string) bool { s, ok := c.AgentStatus(h); return ok && s.Connected },
+		Disconnect: c.disconnectAgent,
 	})
 	if err != nil {
 		st.Close()

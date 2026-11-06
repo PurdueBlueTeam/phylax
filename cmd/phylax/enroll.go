@@ -38,6 +38,7 @@ const enrollUsage = `usage: phylax enroll [-config FILE | -data-dir DIR] [-relea
 
   line -os linux|windows -ctl HOST:PORT HOST   print the pinned console one-liner (mints a token)
   push -ctl HOST:PORT [-parallel N] HOST...    install over SSH (Linux) or WinRM (Windows)
+  reenroll-all -ctl HOST:PORT [-yes]           revoke and reinstall every host in dependency order
   status                                       print each manifest host: enrolled, connected, revoked
 
 The command uses the controller's data dir (the same tokens, identity and
@@ -83,6 +84,8 @@ func runEnroll(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return enrollLine(base, subargs, stdout)
 	case "push":
 		return enrollPush(ctx, base, vaultPath, subargs, stdout)
+	case "reenroll-all":
+		return enrollReenrollAll(ctx, base, vaultPath, subargs, stdout)
 	case "status":
 		return enrollStatus(ctx, base, subargs, stdout)
 	}
@@ -318,6 +321,120 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 	}
 	if failed > 0 {
 		return fmt.Errorf("enroll: push failed for %d of %d hosts", failed, len(results))
+	}
+	return nil
+}
+
+// enrollHostMethod is how a host is finished: a console-only host has no
+// default credential, else Windows uses WinRM and the rest use SSH.
+func enrollHostMethod(h manifest.Host) string {
+	switch {
+	case h.DefaultCredential == "":
+		return "console"
+	case h.IsWindows():
+		return "winrm"
+	default:
+		return "ssh"
+	}
+}
+
+func enrollReenrollAll(ctx context.Context, b *enrollBase, vaultPath string, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("enroll reenroll-all", flag.ContinueOnError)
+	ctl := fs.String("ctl", "", "controller host:port the agent will dial")
+	yes := fs.Bool("yes", false, "run the destructive re-enrollment")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || *ctl == "" {
+		return errors.New("usage: phylax enroll reenroll-all -ctl HOST:PORT [-yes]")
+	}
+	if b.m == nil {
+		return errors.New("enroll reenroll-all needs a manifest (manifest_path)")
+	}
+	e, err := b.enroller(nil)
+	if err != nil {
+		return err
+	}
+	order := enroll.ReenrollOrder(b.m)
+	method := func(host string) string { return enrollHostMethod(b.m.Hosts[host]) }
+	fmt.Fprintln(stdout, "re-enrollment order:")
+	for i, host := range order {
+		fmt.Fprintf(stdout, "%d. %s %s\n", i+1, host, method(host))
+	}
+	fmt.Fprintln(stdout, "repeat the T+0 console phase first (design: Re-enrollment after a reset)")
+	if !*yes {
+		fmt.Fprintln(stdout, "nothing changed; re-run with -yes to revoke and push")
+		return nil
+	}
+	if len(b.planKey) == 0 {
+		return fmt.Errorf("enroll reenroll-all: no plan key in %s (run phylax serve first)", b.cfg.DataDir)
+	}
+
+	var v *vault.Vault
+	credential := func(host string) (user, pass string, err error) {
+		h := b.m.Hosts[host]
+		if v == nil {
+			if vaultPath == "" {
+				return "", "", errors.New("enroll reenroll-all: -vault is required for the manifest's default credentials")
+			}
+			if v, err = openVault(vaultPath); err != nil {
+				return "", "", fmt.Errorf("enroll reenroll-all: vault: %w", err)
+			}
+		}
+		sec, _, err := v.Get(h.DefaultCredential)
+		if err != nil {
+			return "", "", fmt.Errorf("enroll reenroll-all: host %s: vault secret %s: %w", host, h.DefaultCredential, err)
+		}
+		user, pass, ok := strings.Cut(sec.Reveal(), ":")
+		if !ok || user == "" {
+			return "", "", fmt.Errorf("enroll reenroll-all: host %s: vault secret %s must be user:password", host, h.DefaultCredential)
+		}
+		return user, pass, nil
+	}
+	sshPusher := &enroll.SSHPusher{Controller: *ctl, Timeout: 30 * time.Second}
+	winrmPusher := &enroll.WinRMPusher{Controller: *ctl, Timeout: 120 * time.Second}
+	push := func(ctx context.Context, host string) error {
+		h := b.m.Hosts[host]
+		user, pass, err := credential(host)
+		if err != nil {
+			return err
+		}
+		t := enroll.Target{Host: host, User: user, Pass: vault.NewSecretString(pass), Hostname: host}
+		if h.IsWindows() {
+			t.Addr = h.IP
+			if t.Addr == "" {
+				t.Addr = host
+			}
+			return winrmPusher.Push(ctx, e, enroll.WinRMTarget{Target: t, Port: 5985})
+		}
+		t.Addr = enrollPushAddr(h)
+		return sshPusher.Push(ctx, e, t)
+	}
+	results := e.ReenrollAll(ctx, order, method, push)
+	failed := 0
+	for _, r := range results {
+		host := r.Target.Host
+		if r.Err == nil {
+			if method(host) == "console" {
+				fmt.Fprintf(stdout, "%s console: key revoked; finish it with the console one-liner\n", host)
+			} else {
+				fmt.Fprintf(stdout, "%s ok\n", host)
+			}
+			continue
+		}
+		failed++
+		var pe *enroll.PushError
+		if errors.As(r.Err, &pe) {
+			if pe.Class == enroll.ClassHostKey {
+				fmt.Fprintf(stdout, "!!! %s: SSH HOST KEY CHANGED; possible man in the middle, nothing was sent\n", host)
+			}
+			fmt.Fprintf(stdout, "%s FAIL %s: %s\n", host, pe.Class, pe.Next())
+			continue
+		}
+		fmt.Fprintf(stdout, "%s FAIL: %v\n", host, r.Err)
+	}
+	if failed > 0 {
+		return fmt.Errorf("enroll: re-enroll failed for %d of %d hosts", failed, len(results))
 	}
 	return nil
 }
