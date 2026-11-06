@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/chains"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -42,12 +41,12 @@ type UIOptions struct {
 	PlansDir string // plan templates
 	Chains   chains.Config
 	Logger   *slog.Logger
-	// Argon2 overrides the password hashing cost (tests only).
-	Argon2 ui.Argon2Params
-	Now    func() time.Time
 	// Audit overrides the store-backed audit log (tests only).
 	Audit ui.AuditLog
 }
+
+// uiArgon2 is the password hashing cost of the operator UI; tests lower it.
+var uiArgon2 = ui.DefaultArgon2
 
 // NewUI builds the operator web UI on this controller: store-backed accounts
 // and audit log, and the operator pages on real data. It returns the server
@@ -73,7 +72,7 @@ func (c *Controller) NewUI(opt UIOptions) (*ui.Server, *WebOps, error) {
 			"POST /safe-mode",
 			"POST /settings/kill-switch",
 		},
-		Addr: opt.Addr, Logger: opt.Logger, Argon2: opt.Argon2, Now: opt.Now,
+		Addr: opt.Addr, Logger: opt.Logger, Argon2: uiArgon2,
 	})
 	if err != nil {
 		return nil, nil, err

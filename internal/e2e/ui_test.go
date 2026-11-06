@@ -15,7 +15,6 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/controller"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
-	"github.com/PurdueBlueTeam/phylax/internal/ui"
 )
 
 type webClient struct {
@@ -59,8 +58,7 @@ func (w *webClient) post(path string, form url.Values) *httptest.ResponseRecorde
 
 func newWebClient(t *testing.T, h *harness, plansDir string) *webClient {
 	t.Helper()
-	srv, _, err := h.c.NewUI(controller.UIOptions{Addr: "127.0.0.1:8443", PlansDir: plansDir,
-		Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv, _, err := h.c.NewUI(controller.UIOptions{Addr: "127.0.0.1:8443", PlansDir: plansDir})
 	if err != nil {
 		t.Fatal(err)
 	}

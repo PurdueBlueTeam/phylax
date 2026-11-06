@@ -37,7 +37,7 @@ func TestUIAuditExemptControlRoutes(t *testing.T) {
 	c := newBareController(t, filepath.Join(t.TempDir(), "data"))
 	t.Cleanup(func() { c.Close() })
 	au := &switchAudit{}
-	srv, _, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", Audit: au, Argon2: ui.Argon2Params{Time: 1, Memory: 8, Threads: 1}})
+	srv, _, err := c.NewUI(UIOptions{Addr: "127.0.0.1:8443", Audit: au})
 	if err != nil {
 		t.Fatal(err)
 	}
