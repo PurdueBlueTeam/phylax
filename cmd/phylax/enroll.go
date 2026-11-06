@@ -311,6 +311,9 @@ func enrollPush(ctx context.Context, b *enrollBase, vaultPath string, args []str
 		failed++
 		var pe *enroll.PushError
 		if errors.As(r.Err, &pe) {
+			if pe.Class == enroll.ClassHostKey {
+				fmt.Fprintf(stdout, "!!! %s: SSH HOST KEY CHANGED; possible man in the middle, nothing was sent\n", r.Target.Host)
+			}
 			fmt.Fprintf(stdout, "%s FAIL %s: %s\n", r.Target.Host, pe.Class, pe.Next())
 			continue
 		}

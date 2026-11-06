@@ -97,6 +97,10 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 		conn.Close()
 		switch {
 		case errors.Is(err, ErrHostKeyChanged):
+			// Refused hard: a changed key may be a man in the middle.
+			if e.opt.Alert != nil {
+				e.opt.Alert(t.Host, "enroll.hostkey_changed", err.Error())
+			}
 			return fail(ClassHostKey, err.Error())
 		case ctx.Err() != nil:
 			return fail(ClassTimeout, "handshake: "+err.Error())

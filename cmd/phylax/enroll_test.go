@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/enroll"
 	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/vault"
+	"golang.org/x/crypto/ssh"
 )
 
 const enrollRelease = "phylax-linux-amd64"
@@ -207,6 +209,56 @@ func TestEnrollPushAgainstFakeSSH(t *testing.T) {
 	}
 	if !strings.Contains(install, "--secret-file") {
 		t.Errorf("the install command does not use --secret-file: %q", install)
+	}
+}
+
+func TestEnrollPushHostKeyChangedIsLoud(t *testing.T) {
+	manifestDir := writeEnrollManifest(t)
+	releaseDir := writeReleaseDir(t, []byte("fake agent binary"))
+	dataDir := newEnrollDataDir(t, manifestDir, releaseDir)
+	cfgPath := writeEnrollConfig(t, dataDir, manifestDir, releaseDir)
+
+	fake := &sshFake{user: "root", pass: "pw", hostname: "h1"}
+	addr := startSSHFake(t, fake)
+	prev := enrollPushAddr
+	enrollPushAddr = func(manifest.Host) string { return addr }
+	defer func() { enrollPushAddr = prev }()
+
+	// An earlier contact recorded a different key for h1.
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kh, _ := json.Marshal(map[string]string{"h1": string(ssh.MarshalAuthorizedKey(old))})
+	if err := os.WriteFile(filepath.Join(dataDir, "known_hosts.json"), kh, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	vaultPath := filepath.Join(t.TempDir(), "vault.age")
+	v, err := vault.Create(vaultPath, []byte("pass"), vault.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Put("host.a", vault.NewSecretString("root:pw"), ""); err != nil {
+		t.Fatal(err)
+	}
+	v.Lock()
+	t.Setenv("PHYLAX_VAULT_PASSPHRASE", "pass")
+
+	out, err := runEnrollCmd(t, "-config", cfgPath, "-vault", vaultPath,
+		"push", "-ctl", "10.0.0.5:7443", "h1")
+	if err == nil {
+		t.Fatal("push to a host with a changed key returned nil")
+	}
+	if !strings.Contains(out, "!!! h1: SSH HOST KEY CHANGED") || !strings.Contains(out, "h1 FAIL hostkey_changed") {
+		t.Errorf("stdout lacks the loud host-key message:\n%s", out)
+	}
+	if n := len(fake.commands()); n != 0 {
+		t.Errorf("the fake saw %d commands after a changed host key", n)
 	}
 }
 
