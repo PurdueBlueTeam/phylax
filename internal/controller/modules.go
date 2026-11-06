@@ -228,18 +228,6 @@ func (c *Controller) RunStanding(ctx context.Context, mod, approvalID, template 
 	panic("unimplemented: W1 Task 24")
 }
 
-func (c *Controller) Propose(ctx context.Context, p module.Proposal) (int64, error) {
-	panic("unimplemented: W1 Task 25")
-}
-
-func (c *Controller) AcceptProposal(ctx context.Context, id int64, by string) (string, error) {
-	panic("unimplemented: W1 Task 25")
-}
-
-func (c *Controller) DismissProposal(ctx context.Context, id int64, by string) error {
-	panic("unimplemented: W1 Task 25")
-}
-
 func (c *Controller) RunAuto(ctx context.Context, mod, template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 26")
 }

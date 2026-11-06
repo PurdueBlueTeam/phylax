@@ -663,6 +663,43 @@ func (o *WebOps) Rollback(ctx context.Context, id, by string) error {
 	return planErr(o.c.RollbackPlan(ctx, id))
 }
 
+// ---- proposals ----
+
+func proposalErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, store.ErrNoProposal):
+		return ui.ErrNotFound
+	case errors.Is(err, ErrProposalClosed):
+		return fmt.Errorf("%w: %v", ui.ErrConflict, err)
+	}
+	return err
+}
+
+func (o *WebOps) Proposals(ctx context.Context) ([]ui.ProposalRow, error) {
+	rows, err := o.c.OpenProposals(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ui.ProposalRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ui.ProposalRow{ID: r.ID, Module: r.Module, Title: r.Title, Template: r.Template,
+			Params: r.Params, Evidence: r.Evidence, Reason: r.Reason, Created: r.Created,
+			State: r.State, PlanID: r.PlanID, By: r.By})
+	}
+	return out, nil
+}
+
+func (o *WebOps) AcceptProposal(ctx context.Context, id int64, by string) (string, error) {
+	p, err := o.c.AcceptProposal(ctx, id, by)
+	return p, proposalErr(err)
+}
+
+func (o *WebOps) DismissProposal(ctx context.Context, id int64, by string) error {
+	return proposalErr(o.c.DismissProposal(ctx, id, by))
+}
+
 // waiting says what a plan needs from the operator next.
 func waiting(d PlanDetail) (string, []string) {
 	var pend []string

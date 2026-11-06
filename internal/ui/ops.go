@@ -39,6 +39,9 @@ type Ops interface {
 
 	Templates(ctx context.Context) ([]TemplateInfo, error)
 	CreatePlan(ctx context.Context, template, planID, by string) (string, error)
+	Proposals(ctx context.Context) ([]ProposalRow, error)
+	AcceptProposal(ctx context.Context, id int64, by string) (string, error)
+	DismissProposal(ctx context.Context, id int64, by string) error
 	Plans(ctx context.Context) ([]PlanBrief, error)
 	Plan(ctx context.Context, id string) (PlanView, error)
 	DryRun(ctx context.Context, id string) error
@@ -232,6 +235,21 @@ type ItemRow struct {
 type TemplateInfo struct {
 	Name, Title string
 	Nodes       int
+}
+
+// ProposalRow is one open one-click plan suggestion.
+type ProposalRow struct {
+	ID       int64
+	Module   string
+	Title    string
+	Template string
+	Params   map[string]string
+	Evidence []string // "agent:seq"
+	Reason   string
+	Created  time.Time
+	State    string
+	PlanID   string
+	By       string
 }
 
 // PlanBrief is a plan list row.

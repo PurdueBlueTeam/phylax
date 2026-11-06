@@ -224,18 +224,22 @@ CREATE TABLE module_migrations (
   applied INTEGER NOT NULL
 );
 `,
-	// 7: controller quota skipped runs (W1 Task 8b). An event refused by the
-	// disk quota is chain-verified and acknowledged past but its body is not
-	// stored; one row records each contiguous skipped run.
+	// 7: one-click proposals (W1 Task 25). Evidence is a list of "agent:seq"
+	// references; params is the template's parameter map.
 	`
-CREATE TABLE quota_skips (
-  id       INTEGER PRIMARY KEY AUTOINCREMENT,
-  agent    TEXT NOT NULL REFERENCES agents(id),
-  from_seq INTEGER NOT NULL,
-  to_seq   INTEGER NOT NULL,
-  reason   TEXT NOT NULL,
-  at       INTEGER NOT NULL
+CREATE TABLE proposals (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  module     TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  template   TEXT NOT NULL,
+  params     TEXT NOT NULL DEFAULT '{}',
+  evidence   TEXT NOT NULL DEFAULT '[]',
+  reason     TEXT NOT NULL DEFAULT '',
+  created_ns INTEGER NOT NULL,
+  state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'accepted', 'dismissed')),
+  plan_id    TEXT NOT NULL DEFAULT '',
+  "by"       TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX quota_skips_agent ON quota_skips(agent, from_seq);
+CREATE INDEX proposals_state_created ON proposals(state, created_ns);
 `,
 }

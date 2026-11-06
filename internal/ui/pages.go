@@ -23,6 +23,7 @@ func (s *Server) routes() {
 	s.Handle("GET /dashboard/live", http.HandlerFunc(s.getDashboardLive))
 	s.Handle("GET /agents/table", http.HandlerFunc(s.getAgentsTable))
 	s.opsRoutes()
+	s.proposalRoutes()
 	s.Handle("GET /account", http.HandlerFunc(s.getAccount))
 	s.Handle("POST /account/password", http.HandlerFunc(s.postPassword))
 	s.Handle("POST /logout", http.HandlerFunc(s.postLogout))

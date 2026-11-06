@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -67,6 +68,16 @@ func (f *fakeOps) CreatePlan(_ context.Context, tpl, id, by string) (string, err
 	}
 	return "p-1", f.rec("create:" + tpl + ":" + by)
 }
+func (f *fakeOps) Proposals(context.Context) ([]ProposalRow, error) {
+	return []ProposalRow{{ID: 1, Module: "ctltest", Title: "<script>x</script>", Template: "fix", Reason: "tier 1",
+		Evidence: []string{"h1:7"}, Created: time.Unix(0, 0), State: "open"}}, nil
+}
+func (f *fakeOps) AcceptProposal(_ context.Context, id int64, by string) (string, error) {
+	return "p-1", f.rec("acceptproposal:" + strconv.FormatInt(id, 10) + ":" + by)
+}
+func (f *fakeOps) DismissProposal(_ context.Context, id int64, by string) error {
+	return f.rec("dismissproposal:" + strconv.FormatInt(id, 10) + ":" + by)
+}
 func (f *fakeOps) Plans(context.Context) ([]PlanBrief, error) {
 	return []PlanBrief{{ID: "p-1", State: "dryrun", Waiting: "plan approval"}}, nil
 }
@@ -121,6 +132,7 @@ func TestOpsPagesRender(t *testing.T) {
 var opsPosts = []string{
 	"/agents/h1/safemode", "/alerts/7/trace", "/alerts/7/state", "/plans",
 	"/plans/p-1/dryrun", "/plans/p-1/approve", "/plans/p-1/nodes/n1/approve", "/plans/p-1/apply", "/plans/p-1/rollback",
+	"/proposals/1/accept", "/proposals/1/dismiss",
 }
 
 func TestOpsRoutesRequireAuthAndCSRF(t *testing.T) {
@@ -131,7 +143,7 @@ func TestOpsRoutesRequireAuthAndCSRF(t *testing.T) {
 			t.Errorf("anonymous POST %s: %d", p, w.Code)
 		}
 	}
-	for _, p := range []string{"/agents/h1", "/alerts", "/alerts/7", "/chains", "/chains/1", "/plans", "/plans/p-1", "/plans/p-1/nodes", "/dashboard/live"} {
+	for _, p := range []string{"/agents/h1", "/alerts", "/alerts/7", "/chains", "/chains/1", "/plans", "/plans/p-1", "/plans/p-1/nodes", "/proposals", "/dashboard/live"} {
 		if w := anon.do("GET", p, nil, nil); w.Code != 303 {
 			t.Errorf("anonymous GET %s: %d", p, w.Code)
 		}

@@ -175,7 +175,11 @@ func (h *moduleHost) stopSubscriptions() {
 	}
 }
 
-func (h *moduleHost) Propose(p module.Proposal) error { panic("unimplemented: W1 Task 25") }
+func (h *moduleHost) Propose(p module.Proposal) error {
+	p.Module = h.name
+	_, err := h.c.Propose(context.Background(), p)
+	return err
+}
 func (h *moduleHost) RunReadOnly(template string, params map[string]string) (string, error) {
 	panic("unimplemented: W1 Task 23")
 }
