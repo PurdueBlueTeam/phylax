@@ -2,8 +2,10 @@ package conformance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"testing"
 	"time"
@@ -13,6 +15,9 @@ import (
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 )
+
+// errLinkDown is what the harness emit returns while check 6 runs.
+var errLinkDown = errors.New("conformance: link down")
 
 // AgentCase is one agent module under test.
 type AgentCase struct {
@@ -53,6 +58,9 @@ func runAgentChecks(c AgentCase) map[string]error {
 		{"no_config", checkNoConfig},
 		{"default_config", checkDefaultConfig},
 		{"stops_cleanly", checkStopsCleanly},
+		{"health", checkHealth},
+		{"declared_kinds", checkDeclaredKinds},
+		{"link_loss", checkLinkLoss},
 	}
 	errs := make(map[string]error, len(checks))
 	for _, ch := range checks {
@@ -162,6 +170,149 @@ func checkDefaultConfig(c AgentCase) error {
 // check cancels its context; a module reporting ok while still starting would
 // otherwise race the stop check.
 const agentSettle = 100 * time.Millisecond
+
+// settled reports health that has left the start-up window.
+func settled(hl module.Health, present bool) bool {
+	if !present {
+		return false
+	}
+	return !(hl.State == module.StateDegraded && hl.Detail == "starting")
+}
+
+// gapReported reports the state a module must show for a platform or privilege
+// it cannot serve here: unavailable or degraded, naming the gap.
+func gapReported(hl module.Health) bool {
+	return (hl.State == module.StateUnavailable || hl.State == module.StateDegraded) && len(hl.Gaps) > 0
+}
+
+// runningAsRoot reports whether this process can serve a root-privilege module.
+func runningAsRoot() bool {
+	return runtime.GOOS != "windows" && os.Geteuid() == 0
+}
+
+// checkHealth is check 4: a health block appears within 5 s, and an OS the
+// manifest does not run here, or root privilege without root, is a reported gap.
+func checkHealth(c AgentCase) error {
+	h, cleanup, err := newHarness(c, nil)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+	h.Apply(c.Default)
+	hl, ok := waitFor(h, c.Factory.Name, 5*time.Second, settled)
+	if !ok {
+		return fmt.Errorf("%s: no health block within 5s", c.Factory.Name)
+	}
+	for _, goos := range c.Factory.Manifest.OS {
+		if goos == runtime.GOOS {
+			continue
+		}
+		if !gapReported(hl) {
+			return fmt.Errorf("%s: manifest runs on %s, this host is %s, but health is %q with gaps %v",
+				c.Factory.Name, goos, runtime.GOOS, hl.State, hl.Gaps)
+		}
+	}
+	if c.Factory.Manifest.Privilege == "root" && !runningAsRoot() && !gapReported(hl) {
+		return fmt.Errorf("%s: needs root, this process is not root, but health is %q with gaps %v",
+			c.Factory.Name, hl.State, hl.Gaps)
+	}
+	return nil
+}
+
+// checkDeclaredKinds is checks 5 and 11: a consumed kind is declared, and
+// every emitted kind is in the manifest and validates against its declaration
+// (so a non-canonical field such as conn.src_ip is refused).
+func checkDeclaredKinds(c AgentCase) error {
+	for _, k := range c.Factory.Manifest.Consumes {
+		if _, ok := event.Lookup(k); !ok {
+			return fmt.Errorf("%s: consumes undeclared kind %q", c.Factory.Name, k)
+		}
+	}
+	h, cleanup, err := newHarness(c, nil)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+	h.Apply(c.Default)
+	waitFor(h, c.Factory.Name, 2*time.Second, running)
+	time.Sleep(agentSettle)
+	emits := make(map[string]bool, len(c.Factory.Manifest.Emits))
+	for _, t := range c.Factory.Manifest.Emits {
+		emits[t.Kind] = true
+	}
+	for _, e := range h.Emitted() {
+		if e.Kind == "agent.module_crash" {
+			continue // the supervisor's own event, not the module's
+		}
+		if !emits[e.Kind] {
+			return fmt.Errorf("%s: emits %q, which its manifest does not declare", c.Factory.Name, e.Kind)
+		}
+		if err := event.Validate(e); err != nil {
+			return fmt.Errorf("%s: emitted %s does not validate: %v", c.Factory.Name, e.Kind, err)
+		}
+	}
+	return nil
+}
+
+// crashCount counts the supervisor's crash events for one module.
+func crashCount(h *agent.Harness, name string) int {
+	n := 0
+	for _, e := range h.Emitted() {
+		if e.Kind == "agent.module_crash" && e.Fields["module"] == name {
+			n++
+		}
+	}
+	return n
+}
+
+// checkLinkLoss is check 6: while every emit fails, a module that consumes
+// input stays ok and is never restarted. The full window runs when the case
+// supplies input; without input a short smoke window still catches a module
+// that crashes on its first emit.
+func checkLinkLoss(c AgentCase) error {
+	window := agentSettle
+	if len(c.Load) > 0 {
+		window = LinkLoss
+		if testing.Short() {
+			window = 2 * time.Second
+		}
+	}
+	h, cleanup, err := newHarness(c, func() error { return errLinkDown })
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go h.Run(ctx)
+	h.Apply(c.Default)
+	for _, e := range c.Load {
+		h.Publish(e)
+	}
+	deadline := time.Now().Add(window)
+	for {
+		hl, present := h.Health(c.Factory.Name)
+		if !present {
+			return fmt.Errorf("%s: no health block under link loss", c.Factory.Name)
+		}
+		if n := crashCount(h, c.Factory.Name); n > 0 {
+			return fmt.Errorf("%s: restarted %d times while emits fail", c.Factory.Name, n)
+		}
+		if hl.State != module.StateOK {
+			return fmt.Errorf("%s: state %q under link loss: %s", c.Factory.Name, hl.State, hl.Detail)
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
 
 // checkStopsCleanly is check 3: after cancel, Run returns within 5 s and the
 // goroutine set returns to the pre-start set within 1 s.
