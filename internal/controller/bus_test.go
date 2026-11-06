@@ -8,7 +8,6 @@ import (
 )
 
 func TestHostSubscribeCommitted(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 18")
 	c := newTestControllerWithManifest(t, nil)
 	h := c.hostFor(testMod())
 	ch, stop := h.Subscribe([]string{"agent.resumed", "agent.silent"}, 8)
@@ -26,7 +25,6 @@ func TestHostSubscribeCommitted(t *testing.T) {
 }
 
 func TestHostSubscribeSlowConsumer(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 18")
 	c := newTestControllerWithManifest(t, nil)
 	_, stop := c.hostFor(testMod()).Subscribe([]string{"agent.resumed"}, 1)
 	defer stop()

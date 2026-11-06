@@ -49,6 +49,10 @@ func (c *Controller) recordAgentAlert(ctx context.Context, e event.Event) error 
 // logged, never failed, so one malformed event cannot block an agent; a
 // database error rolls the batch back and the agent resends it.
 func (c *Controller) ingestHook(ctx context.Context, tx *store.IngestTx, evs []event.Event) error {
+	if len(evs) > 0 {
+		committed := append([]event.Event(nil), evs...)
+		tx.OnCommit(func() { c.bus.publish(committed) })
+	}
 	for _, e := range evs {
 		switch e.Kind {
 		case kindDetectAlert:

@@ -169,7 +169,7 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 	c := &Controller{cfg: cfg, opt: opt, log: opt.Logger, id: id, st: st, tok: tok, now: time.Now,
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
-		bus: &eventBus{}, mods: map[string]*moduleRunState{}, running: map[string]bool{}}
+		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{}}
 	c.checks = newChecksHub(c)
 	if err := c.loadConfigRecs(); err != nil {
 		st.Close()

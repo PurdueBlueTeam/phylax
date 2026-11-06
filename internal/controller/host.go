@@ -229,15 +229,6 @@ func (c *Controller) moduleRunning(name string) bool {
 	return c.running[name]
 }
 
-// eventBus is the committed-event fan-out to controller modules (bus.go).
-type eventBus struct{}
-
-func (b *eventBus) dropped(module string) uint64 { return 0 }
-func (b *eventBus) publish(evs []event.Event)    {}
-func (b *eventBus) subscribe(module string, kinds []string, buf int) (<-chan event.Event, func()) {
-	panic("unimplemented: W1 Task 18")
-}
-
 // hostsMatching resolves a label expression against the loaded manifest.
 func (c *Controller) hostsMatching(expr string) ([]string, error) {
 	man, err := c.currentManifest()
