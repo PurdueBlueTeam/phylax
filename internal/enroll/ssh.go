@@ -3,6 +3,7 @@ package enroll
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -164,6 +165,23 @@ func (p *SSHPusher) Push(ctx context.Context, e *Enroller, t Target) error {
 	if err != nil || code != 0 {
 		return fail(ClassInstall, "binary upload: "+strings.TrimSpace(out+errOut))
 	}
+	// Verify the bytes that reached the host before anything executes there.
+	wantSum := sha256.Sum256(p.Binary)
+	out, errOut, code, err = runSSH(ctx, client, "sha256sum '"+dir+"/"+names.Binary+"'", nil)
+	if ctx.Err() != nil {
+		return fail(ClassTimeout, "remote hash")
+	}
+	got := ""
+	if f := strings.Fields(out); len(f) > 0 {
+		got = f[0]
+	}
+	if err != nil || code != 0 {
+		return fail(ClassHashMismatch, "cannot hash the uploaded binary: "+strings.TrimSpace(errOut))
+	}
+	if want := hex.EncodeToString(wantSum[:]); !strings.EqualFold(got, want) {
+		return fail(ClassHashMismatch, fmt.Sprintf("local %s, remote %s", want, got))
+	}
+
 	bootCmd := fmt.Sprintf("base64 -d > '%[1]s/boot.json.tmp' && chmod 600 '%[1]s/boot.json.tmp' && mv '%[1]s/boot.json.tmp' '%[1]s/boot.json'", state)
 	out, errOut, code, err = runSSH(ctx, client, bootCmd, boot)
 	if ctx.Err() != nil {

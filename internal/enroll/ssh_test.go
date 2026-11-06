@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -39,14 +40,16 @@ type fakeSSH struct {
 	dfOut    string
 	sentinel string
 	hang     bool // never answer the sentinel
+	corrupt  bool // flip a byte of the uploaded binary
 	install  int  // exit status of the install command
 	installE string
 	enforce  string
 	onInstal func()
 
-	logins int
-	fails  int
-	cmds   []sshCmd
+	logins   int
+	fails    int
+	cmds     []sshCmd
+	uploaded []byte
 }
 
 func (s *fakeSSH) config() *ssh.ServerConfig {
@@ -136,11 +139,19 @@ func (s *fakeSSH) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 
 func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
 	var stdin []byte
+	var decoded []byte
 	if strings.Contains(cmd, "base64 -d") {
 		stdin, _ = io.ReadAll(ch)
+		decoded, _ = base64.StdEncoding.DecodeString(strings.ReplaceAll(string(stdin), "\n", ""))
 	}
 	s.mu.Lock()
 	s.cmds = append(s.cmds, sshCmd{cmd: cmd, stdin: stdin})
+	if strings.Contains(cmd, "base64 -d") && !strings.Contains(cmd, "boot.json") && !strings.Contains(cmd, "name.key") {
+		if s.corrupt && len(decoded) > 0 {
+			decoded[0] ^= 0xff
+		}
+		s.uploaded = decoded
+	}
 	switch {
 	case cmd == "echo PHYLAXOK" && s.hang:
 		s.mu.Unlock()
@@ -154,6 +165,13 @@ func (s *fakeSSH) exec(ch ssh.Channel, cmd string) {
 		return
 	case cmd == "hostname -s":
 		out := s.hostname + "\n"
+		s.mu.Unlock()
+		io.WriteString(ch, out)
+		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+		return
+	case strings.HasPrefix(cmd, "sha256sum "):
+		sum := sha256.Sum256(s.uploaded)
+		out := hex.EncodeToString(sum[:]) + "  " + strings.TrimSpace(strings.TrimPrefix(cmd, "sha256sum ")) + "\n"
 		s.mu.Unlock()
 		io.WriteString(ch, out)
 		ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
@@ -289,6 +307,30 @@ func mustDecode(t *testing.T, b []byte) []byte {
 		t.Fatalf("not base64: %v", err)
 	}
 	return out
+}
+
+func TestSSHPushHashMismatchExecutesNothing(t *testing.T) {
+	f := newEnroller(t)
+	srv := fakeSSHDefaults()
+	srv.corrupt = true
+	addr := startFakeSSH(t, srv)
+	hk, err := OpenHostKeys(filepath.Join(f.dir, "known_hosts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &SSHPusher{Binary: []byte("#!/bin/sh\necho the real agent\n"), Controller: "10.0.0.5:7443",
+		NameSecret: []byte("0123456789abcdef"), HostKeys: hk, Timeout: 5 * time.Second}
+	tgt := Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
+	err = p.Push(context.Background(), f.e, tgt)
+	var pe *PushError
+	if !errors.As(err, &pe) || pe.Class != ClassHashMismatch {
+		t.Fatalf("err = %v, want class %s", err, ClassHashMismatch)
+	}
+	for _, c := range srv.commands() {
+		if strings.Contains(c.cmd, "agent install") {
+			t.Fatalf("a corrupted binary was installed: %q", c.cmd)
+		}
+	}
 }
 
 func TestSSHPushHostnameMismatchUploadsNothing(t *testing.T) {

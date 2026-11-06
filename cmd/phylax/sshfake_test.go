@@ -4,6 +4,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net"
 	"strings"
@@ -25,8 +28,9 @@ type sshFake struct {
 	pass     string
 	hostname string
 
-	mu   sync.Mutex
-	cmds []sshFakeCmd
+	mu       sync.Mutex
+	cmds     []sshFakeCmd
+	uploaded []byte
 }
 
 func startSSHFake(t *testing.T, f *sshFake) string {
@@ -92,14 +96,24 @@ func (f *sshFake) session(ch ssh.Channel, reqs <-chan *ssh.Request) {
 		ssh.Unmarshal(r.Payload, &p)
 		r.Reply(true, nil)
 		var stdin []byte
+		var decoded []byte
 		if strings.Contains(p.Command, "base64 -d") {
 			stdin, _ = io.ReadAll(ch)
+			decoded, _ = base64.StdEncoding.DecodeString(strings.ReplaceAll(string(stdin), "\n", ""))
 		}
 		f.mu.Lock()
 		f.cmds = append(f.cmds, sshFakeCmd{cmd: p.Command, stdin: stdin})
+		if strings.Contains(p.Command, "base64 -d") && !strings.Contains(p.Command, "boot.json") && !strings.Contains(p.Command, "name.key") {
+			f.uploaded = decoded
+		}
 		f.mu.Unlock()
 		switch {
 		case strings.Contains(p.Command, "base64 -d"):
+		case strings.HasPrefix(p.Command, "sha256sum "):
+			f.mu.Lock()
+			sum := sha256.Sum256(f.uploaded)
+			f.mu.Unlock()
+			io.WriteString(ch, hex.EncodeToString(sum[:])+"  "+strings.TrimSpace(strings.TrimPrefix(p.Command, "sha256sum "))+"\n")
 		case p.Command == "echo PHYLAXOK":
 			io.WriteString(ch, "PHYLAXOK\n")
 		case p.Command == "hostname -s":
