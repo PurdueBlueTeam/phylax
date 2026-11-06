@@ -216,4 +216,12 @@ CREATE INDEX alerts_source ON alerts(agent, seq);
 ALTER TABLE events ADD COLUMN schema INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE events ADD COLUMN tag TEXT NOT NULL DEFAULT '';
 `,
+	// 6: module table bookkeeping (W1 Task 8): how many of a module's own
+	// migrations have been applied.
+	`
+CREATE TABLE module_migrations (
+  module  TEXT PRIMARY KEY,
+  applied INTEGER NOT NULL
+);
+`,
 }

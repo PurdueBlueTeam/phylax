@@ -6,6 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,6 +29,9 @@ type Query struct {
 }
 
 const eventCols = `agent, seq, time_ns, kind, schema, prio, tag, fields, prev, hash`
+
+// fieldKeyRe is the shape of a Fields key; it becomes a JSON path.
+var fieldKeyRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 func scanEvent(r scanner) (event.Event, error) {
 	var e event.Event
@@ -70,6 +76,20 @@ func (s *Store) Events(ctx context.Context, q Query) ([]event.Event, error) {
 	if q.AfterSeq > 0 {
 		where = append(where, "seq>?")
 		args = append(args, q.AfterSeq)
+	}
+	if len(q.Fields) > 0 {
+		keys := make([]string, 0, len(q.Fields))
+		for k := range q.Fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if !fieldKeyRe.MatchString(k) {
+				return nil, fmt.Errorf("store: bad field name %q", k)
+			}
+			where = append(where, `CAST(json_extract(fields, '$.'||?) AS TEXT) = ?`)
+			args = append(args, k, q.Fields[k])
+		}
 	}
 	limit := q.Limit
 	if limit <= 0 {

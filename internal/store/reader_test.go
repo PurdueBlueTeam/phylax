@@ -9,7 +9,6 @@ import (
 )
 
 func TestQueryFieldEquality(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 8")
 	st, _ := open(t)
 	ctx := context.Background()
 	enroll(t, st, "h1")
@@ -40,7 +39,6 @@ func TestQueryFieldEquality(t *testing.T) {
 }
 
 func TestQueryFieldKeyValidated(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 8")
 	st, _ := open(t)
 	if _, err := st.Events(context.Background(), Query{Fields: map[string]string{"a') OR 1=1 --": "x"}}); err == nil {
 		t.Fatal("bad key accepted")
@@ -48,7 +46,6 @@ func TestQueryFieldKeyValidated(t *testing.T) {
 }
 
 func TestModuleDBMigrateOwnPrefix(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 8")
 	st, _ := open(t)
 	ctx := context.Background()
 	db := st.ModuleDB("deps")
@@ -64,7 +61,6 @@ func TestModuleDBMigrateOwnPrefix(t *testing.T) {
 }
 
 func TestModuleDBExecOwnTables(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 8")
 	st, _ := open(t)
 	ctx := context.Background()
 	db := st.ModuleDB("deps")
