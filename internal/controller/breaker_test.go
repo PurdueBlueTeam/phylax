@@ -53,7 +53,7 @@ func TestBreakerWindow(t *testing.T) {
 	if _, err := c.st.MetaGet(ctx, autoHaltedKey("ctltest", "t1", "h1")); !errors.Is(err, store.ErrNoMeta) {
 		t.Fatalf("the breaker halted outside its window: %v", err)
 	}
-	if c.autoHalted(ctx, "ctltest", "t1", "h1") {
-		t.Fatal("autoHalted reports a halt outside the window")
+	if halted, err := c.autoHalted(ctx, "ctltest", "t1", "h1"); err != nil || halted {
+		t.Fatalf("autoHalted = %v, %v; want false, nil", halted, err)
 	}
 }

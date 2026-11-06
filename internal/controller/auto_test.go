@@ -60,6 +60,17 @@ func TestRunAutoLintAndProbe(t *testing.T) {
 	}
 }
 
+func TestRunAutoFailsClosedOnStoreError(t *testing.T) {
+	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
+	setHeartbeat(c, "h1", false, time.Now())
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+	_, err := c.RunAuto(dead, "ctltest", "t1", map[string]string{"host": "h1"})
+	if err == nil || errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "auto breaker") {
+		t.Fatalf("a breaker store error must fail the call, got %v", err)
+	}
+}
+
 func TestRunAutoStarts(t *testing.T) {
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	c.opt.Probe = func(context.Context, string) error { return nil }

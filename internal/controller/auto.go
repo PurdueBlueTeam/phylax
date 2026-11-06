@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -80,7 +81,11 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 		}
 	}
 	for _, h := range hosts {
-		if c.autoHalted(ctx, mod, template, h) {
+		halted, err := c.autoHalted(ctx, mod, template, h)
+		if err != nil {
+			return "", fmt.Errorf("controller: auto breaker: %w", err)
+		}
+		if halted {
 			return fail("template halted on " + h)
 		}
 	}
@@ -293,10 +298,17 @@ func (rt *planRT) failGateLocked(id, reason string) {
 const autoBreakerWindow = 10 * time.Minute
 
 // autoHalted reports whether the circuit breaker has halted (module, template,
-// host). The marker survives a restart.
-func (c *Controller) autoHalted(ctx context.Context, mod, template, host string) bool {
+// host). The marker survives a restart. Only a missing key means "not halted";
+// any other store error is returned so RunAuto fails closed.
+func (c *Controller) autoHalted(ctx context.Context, mod, template, host string) (bool, error) {
 	v, err := c.st.MetaGet(ctx, autoHaltedKey(mod, template, host))
-	return err == nil && v != ""
+	if errors.Is(err, store.ErrNoMeta) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return v != "", nil
 }
 
 // noteAutoRollback feeds the auto circuit breaker. Two automatic rollbacks of
@@ -304,7 +316,12 @@ func (c *Controller) autoHalted(ctx context.Context, mod, template, host string)
 // plan.auto_halted at critical priority.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
 	ctx := context.Background()
-	if c.autoHalted(ctx, mod, template, host) {
+	halted, err := c.autoHalted(ctx, mod, template, host)
+	if err != nil {
+		c.log.Error("auto breaker: read halt marker", "module", mod, "template", template, "host", host, "err", err)
+		return
+	}
+	if halted {
 		return
 	}
 	key := autoRollbacksKey(mod, template, host)
