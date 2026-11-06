@@ -21,6 +21,7 @@ type Ctx struct {
 	Query    store.Reader
 	Class    plan.ApprovalClass
 	Actions  *actions.Registry
+	Plan     *plan.Plan // the plan being linted, set by Run
 }
 
 // Rule is one lint rule.
@@ -67,6 +68,7 @@ func Rules() []Rule {
 
 // Run checks every node of p.
 func Run(p plan.Plan, c Ctx) []Finding {
+	c.Plan = &p
 	var out []Finding
 	for _, r := range Rules() {
 		for _, n := range p.Nodes {

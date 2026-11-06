@@ -126,7 +126,7 @@ func newAutoController(t *testing.T, block string) *Controller {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"ctltest/t1.yml":  "id: t1\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.hash, target: '${host}', params: {path: /etc/hosts}}\n",
-		"ctltest/t2.yml":  "id: t2\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: file.write, target: '${host}', params: {path: /tmp/phylax-t2, content: x}}\n",
+		"ctltest/t2.yml":  "id: t2\nmodule: ctltest\nnodes:\n  - {id: a, action: file.write, target: '${host}', risk: service, params: {path: /tmp/phylax-t2, content: x}}\n",
 		"ctltest/bad.yml": "id: bad\nmodule: ctltest\non_failure: stop_dependents\nnodes:\n  - {id: a, action: host.exec, target: '${host}', params: {argv: [/bin/true]}}\n",
 	} {
 		p := filepath.Join(dir, name)

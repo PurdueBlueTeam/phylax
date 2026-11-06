@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/PurdueBlueTeam/phylax/internal/manifest"
 	"github.com/PurdueBlueTeam/phylax/internal/module"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/store"
@@ -65,13 +66,34 @@ func (c *Controller) Propose(ctx context.Context, p module.Proposal) (int64, err
 	})
 }
 
-// moduleTemplate loads and expands one module template for params.
+// moduleTemplate loads and expands one module template for params. A plan
+// whose nodes touch a manifest-scored service defaults to rollback_plan.
 func (c *Controller) moduleTemplate(mod, template string, params map[string]string) (plan.Plan, error) {
 	p, err := LoadModuleTemplateFor(c.cfg.PlansPath, mod, template, c.hostsMatching)
 	if err != nil {
 		return p, err
 	}
-	return plan.ExpandTemplate(p, params)
+	p, err = plan.ExpandTemplate(p, params)
+	if err != nil {
+		return p, err
+	}
+	if p.OnFailure == "" {
+		if man, err := c.currentManifest(); err == nil && man != nil && c.planTouchesScored(man, p) {
+			p.OnFailure = plan.RollbackPlan
+		}
+	}
+	return p, nil
+}
+
+// planTouchesScored reports whether any node's Touches hits a manifest-scored
+// service on its target host.
+func (c *Controller) planTouchesScored(m *manifest.Manifest, p plan.Plan) bool {
+	for _, n := range p.Nodes {
+		if len(c.scoredTouch(m, n)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // OpenProposals lists open proposals, oldest first.
