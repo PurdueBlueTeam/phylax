@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,14 +147,6 @@ func newAutoController(t *testing.T, block string, extra ...map[string]string) *
 	}
 	c.cfg.PlansPath = dir
 	return c
-}
-
-// stepClock makes c.now advance a second per call so concurrent plans get
-// distinct ids without sleeping.
-func stepClock(c *Controller) {
-	base := time.Now()
-	var n atomic.Int64
-	c.now = func() time.Time { return base.Add(time.Duration(n.Add(1)) * time.Second) }
 }
 
 func setHeartbeat(c *Controller, host string, safeMode bool, at time.Time) {

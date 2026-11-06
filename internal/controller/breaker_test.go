@@ -45,29 +45,6 @@ func TestBreakerHaltsAfterTwoRollbacks(t *testing.T) {
 	}
 }
 
-func TestBeforeProbeRedFeedsTheBreaker(t *testing.T) {
-	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t2]\n")
-	c.opt.Probe = func(context.Context, string) error { return errors.New("red") }
-	c.probeRetry = 10 * time.Millisecond
-	stepClock(c)
-	setHeartbeat(c, "h1", false, time.Now().Add(time.Hour))
-	for i := 0; i < 2; i++ {
-		id, err := c.RunAuto(ctx, "ctltest", "t2", map[string]string{"host": "h1"})
-		if err != nil {
-			t.Fatalf("run %d: %v", i, err)
-		}
-		wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if _, err := c.Wait(wctx, id); err != nil {
-			cancel()
-			t.Fatal(err)
-		}
-		cancel()
-	}
-	if _, err := c.RunAuto(ctx, "ctltest", "t2", map[string]string{"host": "h1"}); !errors.Is(err, module.ErrProposed) || !strings.Contains(err.Error(), "halted") {
-		t.Fatalf("third run: %v", err)
-	}
-}
-
 func TestBreakerWindow(t *testing.T) {
 	c := newAutoController(t, "enabled: true\nact_enabled: true\nauto: [t1]\n")
 	now := time.Now()

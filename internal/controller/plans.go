@@ -120,7 +120,6 @@ type planRT struct {
 	probeSrc    *plan.Plan
 	gates       map[string]*gateRT
 	busyRetries map[string]int
-	autoNoted   bool // the breaker has counted this plan's automatic rollback
 }
 
 // probePlan is the probe grouping of one plan and its per-group progress.
@@ -1261,9 +1260,6 @@ func (rt *planRT) maybeFinishLocked() {
 		}
 		rt.state = PlanSucceeded
 	}
-	if rt.p.Class == plan.ClassAuto {
-		rt.c.clearAutoRunning(rt.p.Module, rt.p.Template, rt.p.Hosts())
-	}
 	_ = rt.persistLocked(context.Background())
 	close(rt.done)
 }
@@ -1463,7 +1459,6 @@ func (rt *planRT) failProbeGroupLocked(idx int, phase, service string, err error
 			// Nothing was applied: there is no rollback to run.
 			rt.draining = false
 		}
-		rt.noteAutoRollbackLocked()
 		_ = rt.persistLocked(context.Background())
 		_ = err
 		return
@@ -1538,10 +1533,9 @@ func (c *Controller) inflightSteps(host string) int {
 // noteAutoRollbackLocked feeds the auto circuit breaker for every host of an
 // auto plan that rolled itself back.
 func (rt *planRT) noteAutoRollbackLocked() {
-	if rt.autoNoted || rt.p.Class != plan.ClassAuto || rt.p.Module == "" || rt.p.Template == "" {
+	if rt.p.Class != plan.ClassAuto || rt.p.Module == "" || rt.p.Template == "" {
 		return
 	}
-	rt.autoNoted = true
 	now := rt.c.now()
 	for _, h := range rt.p.Hosts() {
 		rt.c.noteAutoRollback(rt.p.Module, rt.p.Template, h, now)

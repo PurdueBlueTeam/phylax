@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -85,31 +84,14 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 			return fail("probe cannot run: node " + n.ID + " touches a scored service")
 		}
 	}
-	lock := c.autoLock(mod, template)
-	lock.Lock()
 	for _, h := range hosts {
 		halted, err := c.autoHalted(ctx, mod, template, h)
 		if err != nil {
-			lock.Unlock()
 			return "", fmt.Errorf("controller: auto breaker: %w", err)
 		}
 		if halted {
-			lock.Unlock()
 			return fail("template halted on " + h)
 		}
-	}
-	c.autoMu.Lock()
-	runningOn := ""
-	for _, h := range hosts {
-		if c.autoRunning[autoRunningKey(mod, template, h)] {
-			runningOn = h
-			break
-		}
-	}
-	c.autoMu.Unlock()
-	if runningOn != "" {
-		lock.Unlock()
-		return fail("template already running on " + runningOn)
 	}
 	p.OnFailure = plan.RollbackPlan
 	approver := "auto:" + mod + "/" + template
@@ -121,56 +103,15 @@ func (c *Controller) RunAuto(ctx context.Context, mod, template string, params m
 	p.Approver = approver
 	p.ID = PlanIDFor(p, template, "", now)
 	if err := c.CreatePlan(ctx, p, approver); err != nil {
-		lock.Unlock()
 		return "", err
 	}
-	c.autoMu.Lock()
-	for _, h := range hosts {
-		c.autoRunning[autoRunningKey(mod, template, h)] = true
-	}
-	c.autoMu.Unlock()
-	lock.Unlock()
-	clear := func() { c.clearAutoRunning(mod, template, hosts) }
 	if err := c.approveNow(ctx, p.ID, approver); err != nil {
-		clear()
 		return "", err
 	}
 	if err := c.Apply(ctx, p.ID); err != nil {
-		clear()
 		return "", err
 	}
 	return p.ID, nil
-}
-
-// autoLock returns the per-template lock that makes the breaker check and
-// plan creation one step.
-func (c *Controller) autoLock(mod, template string) *sync.Mutex {
-	key := mod + "/" + template
-	c.autoMu.Lock()
-	defer c.autoMu.Unlock()
-	if c.autoLocks == nil {
-		c.autoLocks = map[string]*sync.Mutex{}
-	}
-	l := c.autoLocks[key]
-	if l == nil {
-		l = &sync.Mutex{}
-		c.autoLocks[key] = l
-	}
-	return l
-}
-
-func autoRunningKey(mod, template, host string) string {
-	return mod + "/" + template + "/" + host
-}
-
-// clearAutoRunning releases the in-flight marker when a plan finishes or a
-// start fails.
-func (c *Controller) clearAutoRunning(mod, template string, hosts []string) {
-	c.autoMu.Lock()
-	defer c.autoMu.Unlock()
-	for _, h := range hosts {
-		delete(c.autoRunning, autoRunningKey(mod, template, h))
-	}
 }
 
 // scoredTouch resolves the node's action and returns the manifest-scored
@@ -378,9 +319,6 @@ func (c *Controller) autoHalted(ctx context.Context, mod, template, host string)
 // the same (module, template, host) within ten minutes halt it and emit
 // plan.auto_halted at critical priority.
 func (c *Controller) noteAutoRollback(mod, template, host string, at time.Time) {
-	lock := c.autoLock(mod, template)
-	lock.Lock()
-	defer lock.Unlock()
 	ctx := context.Background()
 	halted, err := c.autoHalted(ctx, mod, template, host)
 	if err != nil {
@@ -431,9 +369,6 @@ func (c *Controller) ReenableAuto(ctx context.Context, mod, template, host, by s
 	if err := requireOperator(by); err != nil {
 		return err
 	}
-	lock := c.autoLock(mod, template)
-	lock.Lock()
-	defer lock.Unlock()
 	if err := c.st.MetaDelete(ctx, autoHaltedKey(mod, template, host)); err != nil {
 		return err
 	}

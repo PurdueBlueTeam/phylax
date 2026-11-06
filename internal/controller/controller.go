@@ -148,16 +148,9 @@ type Controller struct {
 	mods    map[string]*moduleRunState
 	runMu   sync.Mutex
 	running map[string]bool
-
-	// autoMu guards autoLocks and autoRunning: the breaker check and plan
-	// creation are atomic per template, and one auto plan per template/host
-	// runs at a time.
-	autoMu      sync.Mutex
-	autoLocks   map[string]*sync.Mutex
-	autoRunning map[string]bool
-	uiMu        sync.Mutex
-	ui          *ui.Server
-	manMu       sync.Mutex // serialises overrides.yml writes and manifest reloads
+	uiMu    sync.Mutex
+	ui      *ui.Server
+	manMu   sync.Mutex // serialises overrides.yml writes and manifest reloads
 }
 
 // New creates the data dir, identity (first run), store and token file.
@@ -215,7 +208,6 @@ func New(ctx context.Context, cfg Config, opt Options) (*Controller, error) {
 		agents: map[string]*agentState{}, reg: opt.Registry, planKey: pk,
 		plans: map[string]*planRT{}, pend: map[stepKey]*pending{},
 		bus: newEventBus(), mods: map[string]*moduleRunState{}, running: map[string]bool{},
-		autoLocks: map[string]*sync.Mutex{}, autoRunning: map[string]bool{},
 		probeRetry: 5 * time.Second}
 	enr, err := enroll.New(enroll.Options{
 		DataDir: cfg.DataDir, MaxLiveTokens: cfg.MaxLiveTokens, Store: st, Identity: id,
