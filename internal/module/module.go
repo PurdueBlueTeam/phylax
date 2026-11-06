@@ -4,6 +4,10 @@
 package module
 
 import (
+	"fmt"
+	"regexp"
+	"strings"
+
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 )
 
@@ -43,8 +47,84 @@ type Manifest struct {
 	Evidence  []string     `json:"evidence,omitempty"`
 }
 
+var nameRE = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
+
+// commonKinds are the kinds every producer translates to; a module may emit
+// these without a namespace prefix.
+var commonKinds = map[string]bool{
+	event.KindProcessStart: true,
+	event.KindProcessExit:  true,
+	event.KindFileChange:   true,
+	event.KindConn:         true,
+	event.KindListener:     true,
+	event.KindAuthEvent:    true,
+	event.KindDNSQuery:     true,
+	event.KindTelemetryGap: true,
+}
+
+// coreModules may emit the agent.* core kinds.
+var coreModules = map[string]bool{"health": true, "exec": true}
+
 // Validate checks the manifest's shape and naming rules.
-func (m Manifest) Validate() error { panic("unimplemented: W1 Task 7") }
+func (m Manifest) Validate() error {
+	if !nameRE.MatchString(m.Name) {
+		return fmt.Errorf("manifest: name %q must match %s", m.Name, nameRE)
+	}
+	if len(m.Sides) == 0 {
+		return fmt.Errorf("manifest %s: sides is empty", m.Name)
+	}
+	seenSide := map[Side]bool{}
+	for _, s := range m.Sides {
+		if s != SideAgent && s != SideController {
+			return fmt.Errorf("manifest %s: side %q", m.Name, s)
+		}
+		if seenSide[s] {
+			return fmt.Errorf("manifest %s: duplicate side %q", m.Name, s)
+		}
+		seenSide[s] = true
+	}
+	for _, os := range m.OS {
+		if os != "linux" && os != "windows" {
+			return fmt.Errorf("manifest %s: os %q", m.Name, os)
+		}
+	}
+	switch m.Privilege {
+	case "root", "user", "none":
+	default:
+		return fmt.Errorf("manifest %s: privilege %q", m.Name, m.Privilege)
+	}
+	if m.Privilege == "none" && !(len(m.Sides) == 1 && m.Sides[0] == SideController) {
+		return fmt.Errorf("manifest %s: privilege none needs sides exactly [controller]", m.Name)
+	}
+	for _, e := range m.Emits {
+		if err := m.validateEmit(e.Kind); err != nil {
+			return err
+		}
+	}
+	for _, c := range m.Consumes {
+		if c == "" || strings.Contains(c, "*") {
+			return fmt.Errorf("manifest %s: consumes %q", m.Name, c)
+		}
+	}
+	b := m.Budget
+	if b.CPUMillisPerSec < 0 || b.HeldMB < 0 || b.EventsPerSec < 0 || b.Burst < 0 || b.BytesOutPerMin < 0 || b.DiskMB < 0 {
+		return fmt.Errorf("manifest %s: budget values must be >= 0", m.Name)
+	}
+	return nil
+}
+
+func (m Manifest) validateEmit(kind string) error {
+	if kind == "" {
+		return fmt.Errorf("manifest %s: empty emit kind", m.Name)
+	}
+	if commonKinds[kind] || strings.HasPrefix(kind, m.Name+".") {
+		return nil
+	}
+	if coreModules[m.Name] && (strings.HasPrefix(kind, "agent.") || kind == event.KindTelemetryGap) {
+		return nil
+	}
+	return fmt.Errorf("manifest %s: emit kind %q", m.Name, kind)
+}
 
 // Common is the generic part of every module's config block.
 type Common struct {

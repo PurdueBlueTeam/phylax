@@ -14,7 +14,6 @@ func good() Manifest {
 }
 
 func TestManifestValidate(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 7")
 	if err := good().Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +48,6 @@ func (regMod) Start(ctx context.Context, _ Host) error { <-ctx.Done(); return ni
 func (regMod) Health() Health                          { return Health{State: StateOK} }
 
 func TestRegistry(t *testing.T) {
-	t.Skip("unimplemented: W1 Task 7")
 	m := good()
 	m.Name = "regtest"
 	m.Emits = []event.Type{{Kind: "regtest.x", Schema: 1}}
