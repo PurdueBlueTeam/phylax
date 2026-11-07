@@ -190,42 +190,49 @@ func TestSnapshotRefusesExistingDataDir(t *testing.T) {
 	}
 }
 
-func TestSnapshotRejectsPathTraversal(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "evil.age")
-	mk := func(name string) {
-		var plain bytes.Buffer
-		tw := tar.NewWriter(&plain)
-		body := []byte("evil")
+// writeEncryptedSnapshot writes an age-encrypted tar snapshot with the given
+// entries, for the restore rejection tests.
+func writeEncryptedSnapshot(t *testing.T, path string, entries map[string][]byte) {
+	t.Helper()
+	var plain bytes.Buffer
+	tw := tar.NewWriter(&plain)
+	for name, body := range entries {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tw.Write(body); err != nil {
 			t.Fatal(err)
 		}
-		if err := tw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		r, err := age.NewScryptRecipient("pw")
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.SetWorkFactor(10)
-		var out bytes.Buffer
-		w, err := age.Encrypt(&out, r)
-		if err != nil {
-			t.Fatal(err)
-		}
-		w.Write(plain.Bytes())
-		if err := w.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
-			t.Fatal(err)
-		}
 	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := age.NewScryptRecipient("pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetWorkFactor(10)
+	var out bytes.Buffer
+	w, err := age.Encrypt(&out, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(plain.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSnapshotRejectsPathTraversal(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "evil.age")
 	for _, name := range []string{"../x", "/etc/x", "sub/x"} {
-		mk(name)
+		writeEncryptedSnapshot(t, path, map[string][]byte{name: []byte("evil")})
 		dataDir := filepath.Join(t.TempDir(), "data")
 		err := RestoreSnapshot(ctx, path, []byte("pw"), dataDir, "restore", false)
 		if err == nil || !strings.Contains(err.Error(), "entry") {
@@ -237,6 +244,35 @@ func TestSnapshotRejectsPathTraversal(t *testing.T) {
 		if _, err := os.Stat("/etc/x"); err == nil {
 			t.Fatalf("%q wrote /etc/x", name)
 		}
+	}
+}
+
+func TestSnapshotRejectsUnexpectedEntry(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "extra.age")
+	writeEncryptedSnapshot(t, path, map[string][]byte{
+		"identity.pem": []byte("key"),
+		"extra.sh":     []byte("rm -rf /"),
+	})
+	dataDir := filepath.Join(t.TempDir(), "data")
+	err := RestoreSnapshot(ctx, path, []byte("pw"), dataDir, "restore", false)
+	if err == nil || !strings.Contains(err.Error(), "entry") || !strings.Contains(err.Error(), "extra.sh") {
+		t.Fatalf("unexpected entry: err = %v", err)
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("a rejected snapshot wrote into %s: %v", dataDir, err)
+	}
+
+	// An allowed name with a corrupt database is refused before any file is
+	// written either.
+	bad := filepath.Join(t.TempDir(), "bad-db.age")
+	writeEncryptedSnapshot(t, bad, map[string][]byte{"phylax.db": []byte("not a database")})
+	dataDir2 := filepath.Join(t.TempDir(), "data")
+	if err := RestoreSnapshot(ctx, bad, []byte("pw"), dataDir2, "restore", false); err == nil {
+		t.Fatal("a corrupt snapshot database was accepted")
+	}
+	if _, err := os.Stat(dataDir2); !os.IsNotExist(err) {
+		t.Fatalf("a rejected snapshot database wrote into %s: %v", dataDir2, err)
 	}
 }
 

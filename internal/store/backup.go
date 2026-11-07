@@ -128,6 +128,10 @@ func Restore(ctx context.Context, snapshot, dbPath, reason string) (*Store, erro
 	return s, nil
 }
 
+// ValidateSnapshot reports whether path is a readable phylax snapshot of a
+// schema this build understands. It does not modify the file.
+func ValidateSnapshot(ctx context.Context, path string) error { return checkSnapshot(ctx, path) }
+
 func checkSnapshot(ctx context.Context, path string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err

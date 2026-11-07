@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"filippo.io/age"
@@ -25,6 +24,9 @@ const (
 	snapshotsKept = 8
 	// snapshotPrefix names every snapshot file.
 	snapshotPrefix = "phylax-snapshot-"
+	// snapshotVaultName is the vault file's name inside a snapshot, whatever
+	// its path on the old controller was.
+	snapshotVaultName = "vault.age"
 	// snapshotDebounce is the shortest gap between two event-triggered
 	// snapshots; a tick is not debounced.
 	snapshotDebounce = 30 * time.Second
@@ -54,7 +56,7 @@ func (c *Controller) snapshotSourceFiles() []snapshotEntry {
 		{"known_hosts.json", filepath.Join(c.cfg.DataDir, "known_hosts.json")},
 	}
 	if c.cfg.VaultPath != "" {
-		files = append(files, snapshotEntry{filepath.Base(c.cfg.VaultPath), c.cfg.VaultPath})
+		files = append(files, snapshotEntry{snapshotVaultName, c.cfg.VaultPath})
 	}
 	out := files[:0]
 	for _, f := range files {
@@ -297,8 +299,10 @@ func (c *Controller) snapshotSoon() {
 }
 
 // RestoreSnapshot decrypts file with pass, refuses a data dir that already has
-// phylax.db unless force, unpacks the files and installs the database through
-// store.Restore (which starts a new epoch).
+// phylax.db unless force, unpacks the fixed files and installs the database
+// through store.Restore (which starts a new epoch). The snapshot is not bound
+// to the old controller: with the operator passphrase it restores onto
+// replacement hardware.
 func RestoreSnapshot(ctx context.Context, file string, pass []byte, dataDir, reason string, force bool) error {
 	dbPath := filepath.Join(dataDir, "phylax.db")
 	if !force {
@@ -316,6 +320,23 @@ func RestoreSnapshot(ctx context.Context, file string, pass []byte, dataDir, rea
 	if !ok {
 		return errors.New("controller: snapshot has no phylax.db")
 	}
+	// Validate the database before anything lands in the data dir.
+	tmp, err := os.CreateTemp("", "phylax-restore-*.db")
+	if err != nil {
+		return fmt.Errorf("controller: restore: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(db); err != nil {
+		tmp.Close()
+		return fmt.Errorf("controller: restore: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("controller: restore: %w", err)
+	}
+	if err := store.ValidateSnapshot(ctx, tmpName); err != nil {
+		return fmt.Errorf("controller: restore: %w", err)
+	}
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("controller: restore: %w", err)
 	}
@@ -327,12 +348,7 @@ func RestoreSnapshot(ctx context.Context, file string, pass []byte, dataDir, rea
 			return err
 		}
 	}
-	tmp := dbPath + ".snapshot.tmp"
-	if err := os.WriteFile(tmp, db, 0o600); err != nil {
-		return fmt.Errorf("controller: restore: %w", err)
-	}
-	defer os.Remove(tmp)
-	s, err := store.Restore(ctx, tmp, dbPath, reason)
+	s, err := store.Restore(ctx, tmpName, dbPath, reason)
 	if err != nil {
 		return err
 	}
@@ -379,7 +395,7 @@ func readSnapshot(file string, pass []byte) (map[string][]byte, error) {
 			return nil, fmt.Errorf("controller: snapshot entry %q is not a regular file", h.Name)
 		}
 		if !safeSnapshotName(h.Name) {
-			return nil, fmt.Errorf("controller: snapshot entry %q is not a base name", h.Name)
+			return nil, fmt.Errorf("controller: snapshot entry %q is not a file this snapshot holds", h.Name)
 		}
 		if _, dup := entries[h.Name]; dup {
 			return nil, fmt.Errorf("controller: snapshot entry %q appears twice", h.Name)
@@ -397,11 +413,27 @@ func readSnapshot(file string, pass []byte) (map[string][]byte, error) {
 		entries[h.Name] = b
 		total += int64(len(b))
 	}
+	// Drain the age stream: this authenticates its final chunk, so a truncated
+	// snapshot fails, and anything after the tar end is trailing data.
+	if n, err := io.Copy(io.Discard, r); err != nil {
+		return nil, fmt.Errorf("controller: snapshot stream: %w", err)
+	} else if n > 0 {
+		return nil, fmt.Errorf("controller: snapshot has %d trailing bytes", n)
+	}
 	return entries, nil
 }
 
-// safeSnapshotName reports whether name is a plain base name.
-func safeSnapshotName(name string) bool {
-	return name != "" && name != "." && name != ".." &&
-		!strings.ContainsAny(name, `/\`) && !filepath.IsAbs(name)
+// snapshotNames are the only entries a snapshot may hold. WriteSnapshot writes
+// exactly these (skipping files that do not exist).
+var snapshotNames = map[string]bool{
+	"phylax.db":        true,
+	"identity.pem":     true,
+	"plan.key":         true,
+	"tokens.json":      true,
+	"revoked.json":     true,
+	"known_hosts.json": true,
+	snapshotVaultName:  true,
 }
+
+// safeSnapshotName reports whether name is one of the fixed snapshot entries.
+func safeSnapshotName(name string) bool { return snapshotNames[name] }
