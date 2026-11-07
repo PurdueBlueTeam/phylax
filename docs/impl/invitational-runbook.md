@@ -29,6 +29,9 @@ vi /tmp/obs/topology.yml          # set the team number and any packet differenc
 ./bin/phylax manifest lint --dir /tmp/obs   # expect 0 errors
 ```
 
+The observe manifest has no `capture` role: the kit's own `c1-capture` records
+the pcaps, and the agent's capture module would not fit under its `MemoryMax`.
+
 Decoys stay on by default (they are LAN only and run in observe mode); add
 `--no-decoys` to the generator only if David says so.
 
