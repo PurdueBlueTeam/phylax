@@ -506,6 +506,48 @@ func TestRestoreResendBackfillsAcrossBatches(t *testing.T) {
 	}
 }
 
+// A resend can start below the restore point when the store already holds the
+// event before it. Its first prev hash is checked against that stored event;
+// a stale link is refused and the honest run still backfills.
+func TestRestoreResendStartsAfterStoredEvent(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	enroll(t, s, "a")
+	c := &chain{agent: "a"}
+	evs := c.many(20, "k")
+	if _, err := s.Ingest(ctx, "a", evs); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(t.TempDir(), "snap.db")
+	if err := s.Backup(ctx, snap, BackupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	r, err := Restore(ctx, snap, filepath.Join(t.TempDir(), "r.db"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	// Simulate a store that kept the events below the run but not the run.
+	if _, err := r.w.ExecContext(ctx, `DELETE FROM events WHERE agent='a' AND seq>=10`); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := evs[9]
+	bad.PrevHash = "00"
+	_, err = r.Ingest(ctx, "a", []event.Event{bad})
+	wantReason(t, err, ErrPrevMismatch)
+
+	ack, err := r.Ingest(ctx, "a", evs[9:])
+	if err != nil || ack.Backfilled != 11 || ack.Seq != 20 {
+		t.Fatalf("%+v %v", ack, err)
+	}
+	if n, err := r.Count(ctx, "a"); err != nil || n != 20 {
+		t.Fatalf("stored %d events (%v), want 20", n, err)
+	}
+}
+
 func TestResumeAfterRestoreRecordsGap(t *testing.T) {
 	ctx := context.Background()
 	s, _ := open(t)

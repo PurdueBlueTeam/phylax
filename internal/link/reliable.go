@@ -19,6 +19,10 @@ type EventSource interface {
 	Events(after uint64, max int) ([]event.Event, error)
 }
 
+// DefaultWindow is the Uplink in-flight window when Window is unset: the most
+// events sent but not yet acked (5000).
+const DefaultWindow uint64 = 5000
+
 // Uplink streams events from a source over a session with a bounded
 // in-flight window. It starts from the peer's first ack, so after a reconnect
 // everything not acknowledged is sent again and nothing acknowledged is.
@@ -41,7 +45,7 @@ func (u *Uplink) Run(ctx context.Context) error {
 		u.BatchMax = 500
 	}
 	if u.Window == 0 {
-		u.Window = 5000
+		u.Window = DefaultWindow
 	}
 	if u.Poll <= 0 {
 		u.Poll = 250 * time.Millisecond

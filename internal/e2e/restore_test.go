@@ -109,6 +109,16 @@ func snapshotStateOnly(t *testing.T, h *harness) string {
 	return snap
 }
 
+// snapshotFull writes a full snapshot of the live store, including its events.
+func snapshotFull(t *testing.T, h *harness) string {
+	t.Helper()
+	snap := filepath.Join(t.TempDir(), "snap.db")
+	if err := h.c.Store().Backup(context.Background(), snap, store.BackupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
 // T23 CI half: a restored controller asks for the whole spool, verifies the
 // run through the snapshot's recorded sequence and hash, backfills it and then
 // accepts the events that were lost with the old controller.
@@ -236,6 +246,124 @@ func TestRestoreResendBackfillsMoreThanOneBatch(t *testing.T) {
 	waitStored(t, h, "h1", 2601)
 	if after, _ := h.c.AgentStatus("h1"); after.Connects != n.Connects {
 		t.Fatalf("h1 reconnected after the resend (%d -> %d hellos)", n.Connects, after.Connects)
+	}
+}
+
+// A state-only snapshot holds no events, so the whole 6000-event spool is
+// resent. The controller cannot ack below its restore point until the run
+// reaches it; the agent lifts the first resend over the link's window so the
+// session completes and every event is backfilled once.
+func TestRestoreResendWindowStateOnly(t *testing.T) {
+	h := newHarness(t)
+	trig := make(chan int, 6100)
+	h.addHostMods("h1", agent.ModuleSpec{Module: numberedModule{trig: trig}})
+	ctx := context.Background()
+
+	for n := 1; n <= 6000; n++ {
+		trig <- n
+	}
+	waitStored(t, h, "h1", 6000)
+	snap := snapshotStateOnly(t, h)
+	ag, err := h.c.Store().Agent(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSeq := ag.LastSeq
+
+	h.restoreFromSnapshot(snap)
+	eventually(t, "the 6000-event resend to be backfilled", 90*time.Second, func() bool {
+		return storedOfKind(t, h, "h1", "test.n12") == 6000
+	})
+
+	evs, err := h.c.Store().Events(ctx, store.Query{Agent: "h1", Kind: "test.n12", Limit: store.MaxQueryLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	below := 0
+	for _, e := range evs {
+		if e.Seq <= restoredSeq {
+			below++
+		}
+	}
+	if len(evs) != 6000 || below != 6000 {
+		t.Fatalf("%d numbered events (%d below %d); want all 6000 once", len(evs), below, restoredSeq)
+	}
+	if g, err := h.c.Store().Gaps(ctx, "h1"); err != nil || len(g) != 0 {
+		t.Fatalf("gaps after a complete resend: %+v %v", g, err)
+	}
+	for _, a := range h.c.Alerts() {
+		if a.Host == "h1" && a.Kind == "store.chain_error" {
+			t.Fatalf("resend alert: %+v", a)
+		}
+	}
+
+	// The session that carried the resend stays up.
+	n, ok := h.c.AgentStatus("h1")
+	if !ok || !n.Connected {
+		t.Fatal("h1 is not connected after the resend")
+	}
+	trig <- 6001
+	waitStored(t, h, "h1", 6001)
+	if after, _ := h.c.AgentStatus("h1"); after.Connects != n.Connects {
+		t.Fatalf("h1 reconnected after the resend (%d -> %d hellos)", n.Connects, after.Connects)
+	}
+}
+
+// A full snapshot holds the events below the restore point, so the controller
+// asks only for the last 1000 below it. The run verifies the hash at the point,
+// does not duplicate anything below it, and then stores the events that were
+// lost with the old controller.
+func TestRestoreResendWindowFullSnapshot(t *testing.T) {
+	h := newHarness(t)
+	trig := make(chan int, 6200)
+	h.addHostMods("h1", agent.ModuleSpec{Module: numberedModule{trig: trig}})
+	ctx := context.Background()
+
+	for n := 1; n <= 6000; n++ {
+		trig <- n
+	}
+	waitStored(t, h, "h1", 6000)
+	snap := snapshotFull(t, h)
+	ag, err := h.c.Store().Agent(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSeq := ag.LastSeq
+	for n := 6001; n <= 6100; n++ {
+		trig <- n
+	}
+	waitStored(t, h, "h1", 6100)
+
+	h.restoreFromSnapshot(snap)
+	eventually(t, "the short resend to verify the point and extend to 6100", 60*time.Second, func() bool {
+		return storedOfKind(t, h, "h1", "test.n12") == 6100
+	})
+
+	evs, err := h.c.Store().Events(ctx, store.Query{Agent: "h1", Kind: "test.n12", Limit: store.MaxQueryLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	below := 0
+	prev := uint64(0)
+	for _, e := range evs {
+		if e.Seq <= prev {
+			t.Fatalf("event seq %d follows %d: duplicate or out of order", e.Seq, prev)
+		}
+		prev = e.Seq
+		if e.Seq <= restoredSeq {
+			below++
+		}
+	}
+	if len(evs) != 6100 || below != 6000 {
+		t.Fatalf("%d numbered events (%d below %d); want 6100 with 6000 below, no duplicates", len(evs), below, restoredSeq)
+	}
+	if g, err := h.c.Store().Gaps(ctx, "h1"); err != nil || len(g) != 0 {
+		t.Fatalf("gaps after a complete resend: %+v %v", g, err)
+	}
+	for _, a := range h.c.Alerts() {
+		if a.Host == "h1" && a.Kind == "store.chain_error" {
+			t.Fatalf("resend alert: %+v", a)
+		}
 	}
 }
 

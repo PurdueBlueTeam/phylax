@@ -542,8 +542,19 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	}
 	a.flushResults(ctx, sess)
 
+	// A first ack of 0 asks for the whole spool after a restore. The controller
+	// cannot ack anything below its restore point until the resend reaches it,
+	// so the normal in-flight window would stall a spool larger than it. The
+	// spool head bounds this first resend instead.
+	window := uint64(0)
+	if firstAck == 0 {
+		if head, _ := a.sp.Head(); head > link.DefaultWindow {
+			window = head + 1
+		}
+	}
+
 	go a.ackPump(ctx, sess)
-	up := &link.Uplink{Session: sess, Source: spoolSource{a.sp}, Notify: a.notify}
+	up := &link.Uplink{Session: sess, Source: spoolSource{a.sp}, Notify: a.notify, Window: window}
 	upErr := make(chan error, 1)
 	go func() { upErr <- up.Run(ctx) }()
 

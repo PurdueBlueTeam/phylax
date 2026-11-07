@@ -212,6 +212,12 @@ func (a *agentConn) handle(ctx context.Context, m link.Message) error {
 // event for a second address to be a stolen key rather than a reconnect.
 const keyReuseFresh = 10 * time.Second
 
+// restoreResendWindow is how far below a restore point a store that kept the
+// events asks an agent to resend. The events below it are already stored; the
+// run only has to reach the recorded hash. It is well under link.Uplink's
+// in-flight window so the resend never waits for an ack it cannot get.
+const restoreResendWindow uint64 = 1000
+
 func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	c := a.c
 	if h.Proto != link.ProtoVersion {
@@ -296,6 +302,16 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 		// Ask for everything the spool still holds: a restored controller has
 		// no events, and the run through the recorded point is verified.
 		firstAck = 0
+		// A full snapshot already holds the history below the restore point.
+		// Ask only for a short run ending at the point, starting after a
+		// stored event. A state-only snapshot holds no events, so the whole
+		// spool is still needed.
+		if ag.RestoredSeq > restoreResendWindow {
+			start := ag.RestoredSeq - restoreResendWindow
+			if evs, err := c.st.Events(ctx, store.Query{Agent: h.Host, AfterSeq: start - 1, Limit: 1}); err == nil && len(evs) > 0 && evs[0].Seq == start {
+				firstAck = start
+			}
+		}
 	}
 	if err := a.sess.Send(ctx, link.PrioCritical, &link.Ack{Seq: firstAck}); err != nil {
 		return err

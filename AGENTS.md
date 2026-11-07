@@ -104,3 +104,9 @@ and its findings are design requirements.
   sets `hbEvery` to 0 before `run`, which is how a test keeps one heartbeat's
   `RTTUs`/`Health` in the sample (a later heartbeat overwrites them with the
   measured round trip).
+- After a restore the controller acks nothing below the restore point until the
+  resend reaches it. A state-only snapshot asks for the whole spool (`Ack{0}`)
+  and the agent lifts the link's in-flight window to its spool head so a large
+  resend does not stall; a full snapshot asks only the last 1000 below the
+  point (`restoreResendWindow`) and `store.Ingest` checks the first missing
+  event's prev hash against the stored predecessor.

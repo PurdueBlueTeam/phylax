@@ -163,6 +163,26 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (ou
 					chainErr = cerr(ErrOutOfOrder, "seq lies inside a recorded gap")
 					break
 				}
+				// A run can start below the restore point after a full
+				// snapshot kept only the events before it. When the
+				// predecessor is stored, the run's first link must match it;
+				// without one (state-only snapshot, trimmed spool) the run
+				// starts here.
+				if ev.Kind != KindGap && (last == nil || last.Seq+1 != ev.Seq) {
+					var prev string
+					perr := tx.QueryRowContext(ctx, `SELECT hash FROM events WHERE agent=? AND seq=?`, agent, ev.Seq-1).Scan(&prev)
+					switch {
+					case perr == nil:
+						if prev != ev.PrevHash {
+							chainErr = cerr(ErrPrevMismatch, "does not follow the stored event before the run")
+						}
+					case !errors.Is(perr, sql.ErrNoRows):
+						return start, perr
+					}
+					if chainErr != nil {
+						break
+					}
+				}
 				// Below or at the restore point and not stored (state-only
 				// snapshot). Nothing is stored until the run of events
 				// reaches the restore point and its hash equals the one the
