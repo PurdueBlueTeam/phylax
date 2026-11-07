@@ -172,9 +172,10 @@ Inv-Run -Name datasizes -Script {
             Write-Output ($p + ': absent')
             continue
         }
-        $sum = (Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue |
-            Measure-Object -Property Length -Sum).Sum
-        if (-not $sum) { $sum = 0 }
+        $sum = 0
+        foreach ($f in Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue) {
+            $sum += $f.Length
+        }
         Write-Output ('{0}: {1} bytes' -f $p, $sum)
     }
 }

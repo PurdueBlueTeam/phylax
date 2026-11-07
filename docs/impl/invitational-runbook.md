@@ -183,13 +183,17 @@ sh /var/tmp/phylax-kit/invitational/c2-sampler.sh start
 curl -s 172.20.240.5:8000/e|sh -s 172.20.240.5:8000 ubuntu-email agent
 ```
 
-Windows. The first three lines are the kit fetch (the Windows twin of the
+Windows. The first four lines are the policy line and the kit fetch (the Windows twin of the
 `curl .../e` line); the last five are C1, C2, the sampler and the agent. If the
 console cannot type these lines, copy `invitational/` from the injected media
 to `C:\ProgramData\phylax-kit\invitational` and continue with the
 `powershell` lines only.
 
+Windows 11 refuses unsigned scripts (policy Undefined means Restricted); the first line
+below lets this console session's `powershell` calls run them and changes no host setting.
+
 ```sh
+set PSExecutionPolicyPreference=Bypass
 md C:\ProgramData\phylax-kit
 curl.exe -s -o C:\ProgramData\phylax-kit\kit.tgz http://172.20.240.5:8000/kit.tgz
 tar.exe -xzf C:\ProgramData\phylax-kit\kit.tgz -C C:\ProgramData\phylax-kit
