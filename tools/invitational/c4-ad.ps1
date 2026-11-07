@@ -97,8 +97,7 @@ Inv-Run -Name duplicates -Script {
 
 Inv-Run -Name krbtgt -Script {
     Get-ADUser -Identity krbtgt -Properties PasswordLastSet |
-        Format-List SamAccountName, PasswordLastSet |
-        Out-File -LiteralPath (Join-Path $script:InvOut 'krbtgt.txt') -Encoding utf8
+        Format-List SamAccountName, PasswordLastSet
 }
 
 Inv-Run -Name domain -Script {
@@ -116,7 +115,7 @@ Inv-Run -Name domain -Script {
     $lines += (Get-ADOptionalFeature -Filter * |
         Select-Object Name, FeatureScope, EnabledScopes |
         Format-List | Out-String)
-    $lines | Out-File -LiteralPath (Join-Path $script:InvOut 'domain.txt') -Encoding utf8
+    $lines
 }
 
 Inv-Run -Name pwpolicy -Script {
@@ -125,7 +124,7 @@ Inv-Run -Name pwpolicy -Script {
     $lines += (Get-ADDefaultDomainPasswordPolicy | Format-List * | Out-String)
     $lines += '=== Get-ADFineGrainedPasswordPolicy ==='
     $lines += (Get-ADFineGrainedPasswordPolicy -Filter * | Format-List * | Out-String)
-    $lines | Out-File -LiteralPath (Join-Path $script:InvOut 'pwpolicy.txt') -Encoding utf8
+    $lines
 }
 
 Inv-Run -Name gpo -Script {
@@ -149,6 +148,7 @@ Inv-Run -Name hardening -Script {
         @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'; Value = 'RequireSecuritySignature' },
         @{ Path = 'HKLM\SYSTEM\CurrentControlSet\Control\Lsa'; Value = 'RestrictAnonymous' }
     )
+    $ErrorActionPreference = 'Continue' # a missing value is stderr from reg.exe, not a failure
     foreach ($c in $checks) {
         Write-Output ('=== ' + $c.Value)
         & reg query $c.Path /v $c.Value 2>&1

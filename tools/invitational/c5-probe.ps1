@@ -69,7 +69,7 @@ function Inv-WriteFile {
 }
 
 function Inv-AppendLine {
-    param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
+    param([Parameter(Mandatory = $true)][string]$Name, [AllowEmptyString()][string]$Value = '')
     Add-Content -LiteralPath (Join-Path $script:InvOut $Name) -Value $Value -Encoding ASCII
 }
 
