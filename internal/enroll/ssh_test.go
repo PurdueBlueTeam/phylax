@@ -193,7 +193,7 @@ func (s *fakeSSH) commands() []string {
 
 func fakeSSHDefaults() *fakeSSH {
 	return &fakeSSH{
-		user: "root", pass: "pw", hostname: "h1", sentinel: "PHYLAXOK\n",
+		user: "root", pass: testPassword, hostname: "h1", sentinel: "PHYLAXOK\n",
 		dfOut: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100000 1000 99000 2% /\n",
 	}
 }
@@ -217,8 +217,13 @@ func tokenFromOneLiner(t *testing.T, line string) string {
 	return line[i+len("/l/") : j]
 }
 
+// testPassword cannot appear in a command line: the one-liner carries only a
+// base32 token, a base64 pin, hex hashes and derived directory names, none of
+// which use '@' or '!'.
+const testPassword = "p@ss!w0rd"
+
 func pushTarget(addr string) Target {
-	return Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString("pw"), Hostname: "h1"}
+	return Target{Host: "h1", Addr: addr, User: "root", Pass: vault.NewSecretString(testPassword), Hostname: "h1"}
 }
 
 func TestSSHPushRunsOneLiner(t *testing.T) {
@@ -255,7 +260,7 @@ func TestSSHPushRunsOneLiner(t *testing.T) {
 				t.Errorf("command %q contains %q, which the push no longer does", c, gone)
 			}
 		}
-		if strings.Contains(c, "pw") {
+		if strings.Contains(c, testPassword) {
 			t.Errorf("a command line carries the password: %q", c)
 		}
 	}
