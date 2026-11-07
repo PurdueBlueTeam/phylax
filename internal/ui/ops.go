@@ -98,8 +98,9 @@ type OpsDashboard struct {
 	Health      []string
 	// Locked and LockedSince are the restart-safety state: plan signing is
 	// locked until the operator passphrase is entered (R8).
-	Locked      bool
-	LockedSince time.Time
+	Locked        bool
+	LockedSince   time.Time
+	LockedStopped []string // what does not run while locked, from the controller
 }
 
 // AgentSummary counts agents and lists them for the dashboard.

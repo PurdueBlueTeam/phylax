@@ -259,6 +259,7 @@ func (o *WebOps) Overview(ctx context.Context) (ui.OpsDashboard, error) {
 	}
 	d.Health = o.health(d.Agents)
 	d.Locked, d.LockedSince = c.Locked()
+	d.LockedStopped = append([]string(nil), lockedStopped...)
 	return d, nil
 }
 

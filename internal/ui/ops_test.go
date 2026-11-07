@@ -17,6 +17,7 @@ type fakeOps struct {
 	modules     []ModuleRow
 	locked      bool
 	lockedSince time.Time
+	stopped     []string
 }
 
 func (f *fakeOps) rec(s string) error {
@@ -33,7 +34,8 @@ func (f *fakeOps) called() string {
 
 func (f *fakeOps) Overview(context.Context) (OpsDashboard, error) {
 	return OpsDashboard{Agents: AgentSummary{Total: 1, Connected: 1, Rows: []AgentRow{{Host: "h<1>", State: "connected", Config: "applied"}}},
-		OpenAlerts: 2, AlertsBySev: []SevCount{{"high", 2}}, Locked: f.locked, LockedSince: f.lockedSince}, nil
+		OpenAlerts: 2, AlertsBySev: []SevCount{{"high", 2}}, Locked: f.locked, LockedSince: f.lockedSince,
+		LockedStopped: f.stopped}, nil
 }
 func (f *fakeOps) Modules(context.Context) []ModuleRow { return f.modules }
 func (f *fakeOps) AgentDetail(_ context.Context, h string) (AgentDetail, error) {

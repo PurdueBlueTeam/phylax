@@ -602,7 +602,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, name
 	}
 	if s.cfg.Ops != nil && Principal(r.Context()) != "" {
 		if od, err := s.cfg.Ops.Overview(r.Context()); err == nil && od.Locked {
-			pd.Locked, pd.LockedSince, pd.Stopped = true, od.LockedSince, lockedStopped
+			pd.Locked, pd.LockedSince, pd.Stopped = true, od.LockedSince, od.LockedStopped
 		}
 	}
 	pd.User = Principal(r.Context())
