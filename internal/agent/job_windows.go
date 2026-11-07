@@ -37,7 +37,10 @@ func ApplyJobLimits(l JobLimits) error {
 		return err
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+	// BREAKAWAY_OK lets the detached swap helper of agent.replace_binary and
+	// agent.rename leave the job: a service stop must never take the helper
+	// that restarts the agent down with it.
+	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_PROCESS_MEMORY | windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK
 	info.ProcessMemoryLimit = uintptr(l.MemoryBytes)
 	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
