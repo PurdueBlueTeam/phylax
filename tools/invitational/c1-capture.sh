@@ -50,6 +50,8 @@ _start() {
         printf 'c1: cannot create %s\n' "$PCAP_DIR" >&2
         return 1
     }
+    # tcpdump drops to its own user (Fedora's crashes with -Z root), so the dir must be writable.
+    chmod 0777 "$PCAP_DIR" # inv:ro: our own pcap dir under INV_ROOT
 
     live=$(_live_pids | head -n 1)
     if [ -n "$live" ]; then
@@ -99,6 +101,11 @@ _start() {
     other_pid=$!
 
     printf '%s\n%s\n' "$scored_pid" "$other_pid" > "$PIDS"
+    sleep 1
+    if ! kill -0 "$scored_pid" 2>/dev/null || ! kill -0 "$other_pid" 2>/dev/null; then # inv:ro: checks only our own tcpdump pids
+        printf 'c1: tcpdump exited at once, see %s/tcpdump-*.log\n' "$PCAP_DIR" >&2
+        return 1
+    fi
     printf 'c1: started scored pid %s and other pid %s in %s\n' \
         "$scored_pid" "$other_pid" "$PCAP_DIR"
 }

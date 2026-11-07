@@ -95,6 +95,11 @@ else
     tar -czf "$archive" -C "$INV_OUT" files.txt
 fi
 code=$?
+# tar exits 1 when a live log grew while it was read: the archive is still good.
+if [ $code -eq 1 ]; then
+    printf 'c3: some files changed while archiving (tar exit 1), archive kept\n' >&2
+    code=0
+fi
 if [ $code -ne 0 ]; then
     printf 'c3: archive failed (tar exit %s): %s\n' "$code" "$archive" >&2
     exit $code
