@@ -106,3 +106,23 @@ func drain(ch <-chan string) {
 		}
 	}
 }
+
+// TestWaitBeatsWhileOffline pins that a controller outage is not a stalled
+// agent: the reconnect wait keeps the heartbeat source beating, so systemd does
+// not restart a healthy agent that is merely offline.
+func TestWaitBeatsWhileOffline(t *testing.T) {
+	const hb = 50 * time.Millisecond
+	a := &Agent{cfg: Config{HeartbeatInterval: hb}, log: quietLog()}
+	a.pulse = NewPulse(time.Now, "heartbeat")
+	done := make(chan bool, 1)
+	go func() { done <- a.wait(context.Background(), 8*hb) }()
+	for i := 0; i < 8; i++ {
+		time.Sleep(hb)
+		if s := a.pulse.Stalled(3 * hb); len(s) != 0 {
+			t.Fatalf("the reconnect wait stalls %v", s)
+		}
+	}
+	if ok := <-done; !ok {
+		t.Fatal("wait ended early")
+	}
+}

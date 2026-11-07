@@ -413,12 +413,28 @@ func (a *Agent) connectLoop(ctx context.Context) {
 		}
 		d := bo.Next()
 		a.log.Warn("link down", "err", err, "retry_in", d)
-		t := time.NewTimer(d)
+		if !a.wait(ctx, d) {
+			return
+		}
+	}
+}
+
+// wait sleeps for d and keeps the pulse's heartbeat source beating while the
+// agent is offline: a controller outage or a long reconnect backoff is not a
+// wedged agent, and systemd's watchdog must not restart it for one.
+func (a *Agent) wait(ctx context.Context, d time.Duration) bool {
+	deadline := time.NewTimer(d)
+	defer deadline.Stop()
+	t := time.NewTicker(a.cfg.HeartbeatInterval)
+	defer t.Stop()
+	for {
 		select {
 		case <-t.C:
+			a.beat("heartbeat")
+		case <-deadline.C:
+			return true
 		case <-ctx.Done():
-			t.Stop()
-			return
+			return false
 		}
 	}
 }

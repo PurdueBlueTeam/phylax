@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
@@ -141,13 +142,18 @@ func (a *Agent) loadPersistedConfig() {
 	a.adopt(cfg)
 }
 
-// configLoop reconciles modules with the latest accepted config.
+// configLoop reconciles modules with the latest accepted config, and ticks the
+// watchdog's config source even when no config arrives.
 func (a *Agent) configLoop(ctx context.Context) {
+	t := time.NewTicker(a.cfg.HeartbeatInterval)
+	defer t.Stop()
 	for {
-		a.beat("config")
 		select {
 		case <-ctx.Done():
 			return
+		case <-t.C:
+			a.beat("config")
+			continue
 		case <-a.cfgKick:
 		}
 		a.mu.Lock()
