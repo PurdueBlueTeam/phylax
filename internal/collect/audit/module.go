@@ -332,8 +332,14 @@ type reasm struct{ m *Module }
 
 func (r reasm) ReassemblyComplete(msgs []*auparse.AuditMessage) { r.m.handle(msgs) }
 func (r reasm) EventsLost(count int) {
+	exact := true
+	if count <= 0 || count >= 1<<31 {
+		// shortcut: the library reports a repeated or out-of-order sequence number as a
+		// wrapped uint32 (4294967295); count it as one lost record, inexact, until the cause is known.
+		count, exact = 1, false
+	}
 	r.m.seqLost.Add(uint64(count))
-	r.m.gaps.add("sequence_gap", uint64(count), time.Now(), true)
+	r.m.gaps.add("sequence_gap", uint64(count), time.Now(), exact)
 }
 
 func (m *Module) parseLoop(ctx context.Context, q <-chan queued) error {

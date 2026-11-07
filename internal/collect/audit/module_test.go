@@ -575,3 +575,13 @@ func TestStartRunsAgainstControlClient(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestWrappedSequenceGapCountsAsOneInexact(t *testing.T) {
+	m, c := testModule(t, nil)
+	reasm{m}.EventsLost(1<<32 - 1)
+	m.flushGaps(true)
+	gaps := c.kind(KindGap)
+	if len(gaps) != 1 || gaps[0].Fields["count"] != uint64(1) || gaps[0].Fields["count_exact"] != false {
+		t.Fatalf("gaps: %+v", gaps)
+	}
+}
