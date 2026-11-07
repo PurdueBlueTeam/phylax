@@ -17,6 +17,17 @@ const lockedEvery = 5 * time.Minute
 // event, the banner and the Overview tile.
 var lockedStopped = []string{"auto plans", "facts", "deadman_confirm", "safe_mode toggles", "snapshots"}
 
+// ErrLocked is returned while plan signing is locked after a restart.
+var ErrLocked = errors.New("controller: plan signing is locked; enter the operator passphrase to unlock")
+
+// requireUnlocked refuses a signing path while the controller is locked.
+func (c *Controller) requireUnlocked() error {
+	if locked, _ := c.Locked(); locked {
+		return ErrLocked
+	}
+	return nil
+}
+
 // lockState is the one flag behind the banner, the alarm, the snapshot writer
 // and the dead-man confirm check.
 type lockState struct {

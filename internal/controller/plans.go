@@ -177,6 +177,9 @@ func (c *Controller) PlanPublicKey() ed25519.PublicKey {
 }
 
 func (c *Controller) signer(ctx context.Context) (*plan.Signer, error) {
+	if err := c.requireUnlocked(); err != nil {
+		return nil, err
+	}
 	if err := c.signingWaitErr(); err != nil {
 		return nil, err
 	}
@@ -379,6 +382,9 @@ func (c *Controller) DryRun(ctx context.Context, planID string) (plan.DryRun, er
 // ApprovePlan is the one-click approval. It needs a dry run with no rejected,
 // blocked or missing node. Nodes that need their own approval stay pending.
 func (c *Controller) ApprovePlan(ctx context.Context, planID, by string) error {
+	if err := c.requireUnlocked(); err != nil {
+		return err
+	}
 	rt, err := c.plan(planID)
 	if err != nil {
 		return err

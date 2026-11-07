@@ -100,6 +100,9 @@ func (c *Controller) HasConfigInputs() bool {
 // AgentConfigFor returns the signed config for host (nil, nil when there are
 // no inputs or the manifest does not know the host).
 func (c *Controller) AgentConfigFor(ctx context.Context, host string) (*link.Config, error) {
+	if err := c.requireUnlocked(); err != nil {
+		return nil, err
+	}
 	c.cfgs.mu.Lock()
 	defer c.cfgs.mu.Unlock()
 	if c.cfgs.in == nil {

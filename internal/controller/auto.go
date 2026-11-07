@@ -24,6 +24,9 @@ const autoHeartbeatMax = 15 * time.Second
 // holds. The first condition that fails records a click proposal and returns
 // module.ErrProposed; an unknown state never becomes an apply.
 func (c *Controller) RunAuto(ctx context.Context, mod, template string, params map[string]string) (string, error) {
+	if err := c.requireUnlocked(); err != nil {
+		return "", err
+	}
 	fail := func(reason string) (string, error) {
 		return c.proposeFallback(ctx, mod, template, params, reason)
 	}

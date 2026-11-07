@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/event"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 	"github.com/PurdueBlueTeam/phylax/internal/plan"
@@ -181,15 +182,25 @@ func newLockedPlanCtl(t *testing.T, opt Options) *ctl {
 }
 
 func TestDeadmanStillFiresWhileLocked(t *testing.T) {
-	var confirms atomic.Int32
-	x := newLockedPlanCtl(t, Options{OnControlSent: func(_ string, c *link.Control) {
-		if c.Kind == plan.ControlDeadmanConfirm {
-			confirms.Add(1)
-		}
-	}})
-	if locked, _ := x.c.Locked(); !locked {
-		t.Fatal("controller started unlocked")
-	}
+	// A plan is in flight when the controller becomes locked: its after-probe
+	// is released only after the lock, so the confirm is refused and the
+	// agent's timer rolls the change back.
+	var confirms, probes atomic.Int32
+	afterStarted, releaseAfter := make(chan struct{}, 1), make(chan struct{})
+	x := newPlanCtl(t, nil, nil, Options{
+		Probe: func(context.Context, string) error {
+			if probes.Add(1) == 2 {
+				afterStarted <- struct{}{}
+				<-releaseAfter
+			}
+			return nil
+		},
+		OnControlSent: func(_ string, c *link.Control) {
+			if c.Kind == plan.ControlDeadmanConfirm {
+				confirms.Add(1)
+			}
+		},
+	})
 	_, root := newPlanAgent(t, x, "h1")
 	file := writeAgentFile(t, root, "/tmp/phylax-locked-deadman", "original")
 	p := plan.Plan{ID: "locked-deadman", OnFailure: plan.StopDependents, Class: plan.ClassClick, Nodes: []plan.Node{
@@ -205,6 +216,13 @@ func TestDeadmanStillFiresWhileLocked(t *testing.T) {
 	if err := x.c.Apply(ctx, p.ID); err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-afterStarted:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the after-probe never ran")
+	}
+	x.c.setLocked(true)
+	close(releaseAfter)
 	waitFor(t, 15*time.Second, "the agent's dead-man timer to roll the change back", func() bool {
 		b, err := readFileString(file)
 		return err == nil && b == "original"
@@ -212,4 +230,64 @@ func TestDeadmanStillFiresWhileLocked(t *testing.T) {
 	if n := confirms.Load(); n != 0 {
 		t.Fatalf("%d deadman confirms sent while locked, want 0", n)
 	}
+}
+func TestLockedRefusesSigningButAllowsSafeMode(t *testing.T) {
+	ctx := context.Background()
+	t.Run("runauto", func(t *testing.T) {
+		c := newAutoController(t, "enabled: true\nact_enabled: true\nautonomy: {t1: auto}\n")
+		c.setLocked(true)
+		setHeartbeat(c, "h1", false, time.Now())
+		if _, err := c.RunAuto(ctx, "ctltest", "t1", map[string]string{"host": "h1"}); !errors.Is(err, ErrLocked) {
+			t.Fatalf("RunAuto while locked: %v, want ErrLocked", err)
+		}
+	})
+	t.Run("approve", func(t *testing.T) {
+		reg := actions.Core()
+		reg.Register(ctlAction{new(atomic.Int32)})
+		c := newTestControllerWithRegistry(t, reg, nil)
+		p := plan.Plan{ID: "locked-approve", OnFailure: plan.StopDependents, Nodes: []plan.Node{
+			{ID: "n1", Action: "ctltest.local", Target: "ctl", Params: map[string]any{}},
+		}}
+		if err := c.CreatePlan(ctx, p, "driver"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.DryRun(ctx, p.ID); err != nil {
+			t.Fatal(err)
+		}
+		c.setLocked(true)
+		if err := c.ApprovePlan(ctx, p.ID, "driver"); !errors.Is(err, ErrLocked) {
+			t.Fatalf("ApprovePlan while locked: %v, want ErrLocked", err)
+		}
+	})
+	t.Run("agent config", func(t *testing.T) {
+		m := realManifest(t)
+		c := newTestControllerWithManifest(t, nil)
+		if err := c.SetConfigInputs(ctx, ConfigInputs{Manifest: m, Rules: realRules(t)}); err != nil {
+			t.Fatal(err)
+		}
+		c.setLocked(true)
+		var host string
+		for h := range m.Hosts {
+			host = h
+			break
+		}
+		if _, err := c.AgentConfigFor(ctx, host); !errors.Is(err, ErrLocked) {
+			t.Fatalf("AgentConfigFor while locked: %v, want ErrLocked", err)
+		}
+	})
+	t.Run("safe mode", func(t *testing.T) {
+		var sent atomic.Bool
+		x := newLockedPlanCtl(t, Options{OnControlSent: func(_ string, c *link.Control) {
+			if c.Kind == plan.ControlSafeMode {
+				sent.Store(true)
+			}
+		}})
+		newPlanAgent(t, x, "h1")
+		if err := x.c.SendControl(ctx, "h1", plan.ControlSafeMode, true, nil); err != nil {
+			t.Fatalf("safe mode while locked: %v", err)
+		}
+		if !sent.Load() {
+			t.Fatal("safe mode control was not signed and sent")
+		}
+	})
 }
