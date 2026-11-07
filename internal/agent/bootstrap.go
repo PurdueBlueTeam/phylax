@@ -124,6 +124,13 @@ func (l Layout) Results() string { return filepath.Join(l.Root, "results.json") 
 
 // SafeModeFile is the marker file whose presence means safe mode is on.
 func (l Layout) SafeModeFile() string { return filepath.Join(l.Root, "safe_mode") }
+
+// Options is the live-tunable options file written by the agent.config action.
+func (l Layout) Options() string { return filepath.Join(l.Root, "options.json") }
+
+// Started records that this process reached its first controller ack; the swap
+// helper (agent.replace_binary, agent.rename) waits for a newer one.
+func (l Layout) Started() string { return filepath.Join(l.Root, "started.json") }
 func (l Layout) DeadmanDir() string {
 	return filepath.Join(l.Root, "deadman")
 }

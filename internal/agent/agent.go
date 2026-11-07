@@ -55,6 +55,9 @@ type Config struct {
 	DialTimeout time.Duration
 	// Exec enables execution of signed plan steps (nil = steps are rejected).
 	Exec *ExecConfig
+	// ServiceName is the service or unit name this agent runs under
+	// (agent.rename reinstalls it under new names).
+	ServiceName string
 	// Factories are module factories used in addition to (and overriding by
 	// name) the process-wide registry (RegisterFactory).
 	Factories []Factory
@@ -80,6 +83,10 @@ type Agent struct {
 	cfgVer     *plan.ConfigVerifier  // likewise: a config is never accepted unsigned
 	planKey    ed25519.PublicKey
 	binHash    string // sha256 of this binary, "" when unreadable
+	// memLimit is the memory limit options.json last asked for (link loop only).
+	memLimit int64
+	// optErr records a rejected options.json so it is logged once (link loop only).
+	optErr string
 
 	// config handling (see config.go)
 	cfgKick chan struct{}
@@ -320,6 +327,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.cfg.MemoryLimit > 0 {
 		debug.SetMemoryLimit(a.cfg.MemoryLimit)
 	}
+	a.applyOptions()
 	so := a.cfg.Spool
 	so.Agent = a.bundle.Host
 	var err error
@@ -543,6 +551,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 		select {
 		case <-hb.C:
 			a.heartbeat(sess)
+			a.applyOptions()
 		case err := <-upErr:
 			return true, err
 		case <-sess.Done():

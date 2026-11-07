@@ -96,6 +96,9 @@ func (a *Agent) initExec() error {
 	}
 	env.Safe = sm
 	env.Children = a.tags
+	env.AgentRoot = a.cfg.Layout.Root
+	env.ServiceName = a.cfg.ServiceName
+	env.PlanKey = key
 	a.safeMode.Store(sm.On())
 	n := c.MaxConcurrent
 	if n <= 0 {

@@ -2,6 +2,7 @@ package actions
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -47,7 +48,18 @@ type Env struct {
 	Probe func(ctx context.Context, service string) error
 	// QuarantineDir is where file.quarantine moves files (a real path, not under Root).
 	QuarantineDir string
-	Clock         func() time.Time
+	// AgentRoot is the agent's state directory (bootstrap.json, options.json,
+	// the swap plan); empty on a controller-side run.
+	AgentRoot string
+	// ServiceName is the agent's service or unit name, for agent.rename.
+	ServiceName string
+	// PlanKey verifies agent.replace_binary's binary signature: the plan key
+	// the agent already holds.
+	PlanKey ed25519.PublicKey
+	// StartSwap starts the detached swap helper for a SwapPlan JSON file (nil =
+	// this host cannot swap; tests inject a recorder).
+	StartSwap func(planPath string) error
+	Clock     func() time.Time
 	// Children is told the pid and start time of every process an action
 	// spawns, so the agent tags events from the step's own process tree and
 	// from no other process on the host (design: what may be tagged, R6).

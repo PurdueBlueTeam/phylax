@@ -92,6 +92,7 @@ func agentRun(ctx context.Context, args []string) error {
 		Layout: l, Version: version, Logger: log,
 		Backstop:    osBackstop(l),
 		MemoryLimit: *memMB << 20,
+		ServiceName: *svcName,
 	})
 	if err != nil {
 		return err

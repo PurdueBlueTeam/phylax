@@ -1,4 +1,4 @@
-package bootstrapfile
+package bootstrapfile_test
 
 import (
 	"bytes"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/bootstrapfile"
 	"github.com/PurdueBlueTeam/phylax/internal/link"
 )
 
@@ -46,7 +47,7 @@ func TestRewriteKeepsEverythingElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Rewrite(path, []string{"10.1.1.1:7443", "10.1.1.2:7443"}, ""); err != nil {
+	if err := bootstrapfile.Rewrite(path, []string{"10.1.1.1:7443", "10.1.1.2:7443"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	raw := mustRead(t, path)
@@ -72,7 +73,7 @@ func TestRewriteKeepsEverythingElse(t *testing.T) {
 
 	// An explicit pin replaces the old one and nothing else.
 	pin := link.Pin{7}.String()
-	if err := Rewrite(path, []string{"10.1.1.3:7443"}, pin); err != nil {
+	if err := bootstrapfile.Rewrite(path, []string{"10.1.1.3:7443"}, pin); err != nil {
 		t.Fatal(err)
 	}
 	after, err = agent.ParseBundle(mustRead(t, path))
@@ -99,7 +100,7 @@ func TestRewriteRejectsBadInput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path, before := saveRaw(t, dir)
-			if err := Rewrite(path, tc.controllers, tc.pin); err == nil {
+			if err := bootstrapfile.Rewrite(path, tc.controllers, tc.pin); err == nil {
 				t.Fatal("Rewrite accepted bad input")
 			}
 			if got := mustRead(t, path); !bytes.Equal(got, before) {
