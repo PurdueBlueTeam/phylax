@@ -87,6 +87,8 @@ type Agent struct {
 	memLimit int64
 	// optErr records a rejected options.json so it is logged once (link loop only).
 	optErr string
+	// startedOnce records the first ack of this process once (started.json).
+	startedOnce sync.Once
 
 	// config handling (see config.go)
 	cfgKick chan struct{}
@@ -531,6 +533,7 @@ func (a *Agent) session(ctx context.Context) (established bool, err error) {
 	a.linkStat.Connects++
 	a.linkStat.LastConnect = time.Now()
 	a.mu.Unlock()
+	a.writeStarted()
 	// The first ack of a session may be lower than the agent's: a restored
 	// controller holds fewer events and asks for them again. The later acks
 	// stay monotonic (ackPump uses Ack).

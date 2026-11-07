@@ -6,7 +6,6 @@
 package svcinstall
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -50,14 +49,6 @@ func validName(n string) bool {
 		}
 	}
 	return true
-}
-
-// Installer installs and removes the service on the current platform.
-type Installer interface {
-	// Install registers the service, enables it at boot with restart-always
-	// semantics and starts it.
-	Install(ctx context.Context, s Spec) error
-	Uninstall(ctx context.Context, name string) error
 }
 
 // Names are the per-event randomised identifiers.

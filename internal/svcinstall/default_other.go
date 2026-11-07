@@ -15,6 +15,12 @@ func (unsupported) Install(context.Context, Spec) error {
 func (unsupported) Uninstall(context.Context, string) error {
 	return errors.New("svcinstall: unsupported platform")
 }
+func (unsupported) Stop(context.Context, string) error {
+	return errors.New("svcinstall: unsupported platform")
+}
+func (unsupported) Restart(context.Context, string) error {
+	return errors.New("svcinstall: unsupported platform")
+}
 
 // New returns an installer that reports the platform as unsupported.
 func New() Installer { return unsupported{} }

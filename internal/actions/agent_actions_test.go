@@ -191,7 +191,7 @@ func TestAgentConfigAction(t *testing.T) {
 }
 
 func TestAgentFamilyRegistered(t *testing.T) {
-	for _, name := range []string{"agent.set_controller", "agent.safe_mode", "agent.config"} {
+	for _, name := range []string{"agent.set_controller", "agent.safe_mode", "agent.config", "agent.replace_binary", "agent.rename"} {
 		if _, err := Core().Get(name); err != nil {
 			t.Error(err)
 		}

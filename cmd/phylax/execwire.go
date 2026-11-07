@@ -54,6 +54,9 @@ func agentEnv(l agent.Layout) (*actions.Env, error) {
 	if tl, err := actions.OpenTagLog(filepath.Join(l.Root, "tags.jsonl")); err == nil {
 		env.Tags = tl
 	}
+	// The agent.* actions replace the binary or rename the service through the
+	// detached swap helper.
+	env.StartSwap = startSwapHelper
 	return env, nil
 }
 

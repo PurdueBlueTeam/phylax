@@ -106,3 +106,24 @@ func TestDeriveNamesStableAndSecretDependent(t *testing.T) {
 		t.Fatal("names not distinct")
 	}
 }
+
+func TestSystemdStopAndRestart(t *testing.T) {
+	var calls []string
+	s := &Systemd{UnitDir: t.TempDir(), Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}}
+	if err := s.Stop(context.Background(), "svc-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Restart(context.Background(), "svc-x"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"systemctl stop svc-x.service", "systemctl restart svc-x.service"}
+	if strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls %v", calls)
+	}
+	if err := s.Restart(context.Background(), "../etc/passwd"); err == nil {
+		t.Fatal("path traversal accepted")
+	}
+}

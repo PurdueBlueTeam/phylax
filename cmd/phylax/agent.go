@@ -30,6 +30,7 @@ const agentUsage = `usage: phylax agent <subcommand> [flags]
   rollback <id>       fire a dead-man rollback (target of the OS timer)
   install             copy binary + bootstrap and register the service (privileged)
   uninstall           remove the service
+  swap                internal: perform a swap plan (started by agent.* actions)
   unit                print the systemd unit install would write
 `
 
@@ -54,6 +55,8 @@ func runAgent(ctx context.Context, args []string) error {
 		return agentInstall(ctx, args[0] == "unit", args[1:])
 	case "uninstall":
 		return agentUninstall(ctx, args[1:])
+	case "swap":
+		return agentSwap(ctx, args[1:])
 	}
 	fmt.Fprint(os.Stderr, agentUsage)
 	return fmt.Errorf("unknown subcommand %q", args[0])

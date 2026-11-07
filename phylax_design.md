@@ -1084,7 +1084,7 @@ An unsigned binary that captures packets, runs fake services and keeps a decoy c
 | Install | First contact copies the binary and a bootstrap config to a randomised path, installs a systemd unit or Windows service with automatic restart, then enrolls (review D106, `internal/svcinstall`). |
 | Steady state | Supervised by systemd or the service manager. Config and rules hot-reload from signed config messages. |
 | Killed or disabled | The controller sees the heartbeat stop and raises an alert (review D534). If the host is unreachable by other means, restore from the console one-liner. |
-| Binary replacement | One action, `agent.replace_binary`: verify the signed binary, swap, restart, roll back if no heartbeat returns within 30 s. |
+| Binary replacement | One action, `agent.replace_binary`: verify the signed binary, swap, restart, roll back if no heartbeat returns within 30 s. The swap helper restarts the service and reverts after 30 s without a controller ack. |
 | Uninstall | One action, for cleanup after the competition (review D107). |
 
 **The `agent.*` actions** (the Agent row of the action table): `agent.replace_binary` (above); `agent.set_controller` (the signed form of `phylax set-controller`); `agent.config{memory_limit_mb}` writes `options.json` and applies it live; `agent.rename{secret}` reinstalls the service under the names `svcinstall.DeriveNames(secret)` through the swap helper that `agent.replace_binary` uses; `agent.safe_mode{on: true}` turns safe mode on only. Turning it off stays a signed `control: safe_mode` from the UI, because the executor refuses every action while safe mode is on.
