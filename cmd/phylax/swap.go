@@ -49,6 +49,10 @@ func runSwap(ctx context.Context, p svcinstall.SwapPlan, inst svcinstall.Install
 			return fmt.Errorf("agent swap: restart %s: %w", p.Service, err)
 		}
 		if err := waitStarted(p.StateDir, start, p.WaitSec); err != nil {
+			// The new agent is running (it just never reached the controller):
+			// stop it before the binary moves under its feet, then start the old
+			// one.
+			_ = inst.Stop(ctx, p.Service)
 			restoreBinary(p)
 			_ = inst.Restart(ctx, p.Service)
 			return fmt.Errorf("agent swap: reverted: %w", err)

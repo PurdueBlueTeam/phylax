@@ -123,8 +123,10 @@ func TestSwapReplaceBinaryRollsBackWithoutHeartbeat(t *testing.T) {
 	if raw, err := os.ReadFile(old); err != nil || string(raw) != "A" {
 		t.Fatalf("binary is %q (%v), want the old one back", raw, err)
 	}
-	if got := countOf(inst.calls, "restart svc"); got != 2 {
-		t.Fatalf("restarts %d, want 2 (start, revert): %v", got, inst.calls)
+	// The revert stops the bad agent before it restores the binary, then starts
+	// the old one: stop, start, stop, start.
+	if want := "stop svc|restart svc|stop svc|restart svc"; strings.Join(inst.calls, "|") != want {
+		t.Fatalf("calls %v, want %s", inst.calls, want)
 	}
 }
 
