@@ -34,7 +34,7 @@ func TestSystemdUnitGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "agent.service.golden", u)
-	for _, must := range []string{"Restart=always", "RestartSec=1", "StartLimitIntervalSec=0", "WatchdogSec=30", "Type=notify", "OOMScoreAdjust=-900"} {
+	for _, must := range []string{"Restart=always", "RestartSec=1", "StartLimitIntervalSec=0", "WatchdogSec=30", "Type=notify", "OOMScoreAdjust=-900", "KillMode=process"} {
 		if !strings.Contains(u, must) {
 			t.Errorf("missing %s", must)
 		}

@@ -27,6 +27,10 @@ WatchdogSec={{.Watchdog}}
 {{end}}ExecStart={{.ExecStart}}
 Restart=always
 RestartSec=1
+# KillMode=process: a stop must not kill the detached swap helper that
+# agent.replace_binary and agent.rename leave behind to restart the agent;
+# a control-group kill would leave the host without a running agent.
+KillMode=process
 OOMScoreAdjust=-900
 {{if .MemoryMax}}MemoryMax={{.MemoryMax}}
 {{end}}{{if .CPUQuota}}CPUQuota={{.CPUQuota}}
@@ -42,7 +46,9 @@ WantedBy=multi-user.target
 `))
 
 // SystemdUnit renders the unit file for s. Restart=always, RestartSec=1 and
-// StartLimitIntervalSec=0 make systemd restart a killed agent forever; the
+// StartLimitIntervalSec=0 make systemd restart a killed agent forever;
+// KillMode=process stops only the agent itself, so the detached swap helper of
+// agent.replace_binary and agent.rename survives the stop it performs. The
 // remaining options are ones a root agent does not need.
 func SystemdUnit(s Spec) (string, error) {
 	if err := s.validate(); err != nil {

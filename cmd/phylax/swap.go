@@ -184,7 +184,12 @@ func startSwapHelper(planPath string) error {
 	cmd := exec.Command(exe, "agent", "swap", "-plan", planPath)
 	cmd.SysProcAttr = detachAttr()
 	if err := cmd.Start(); err != nil {
-		return err
+		// A Job Object that does not allow breakaway refuses the first attempt;
+		// the detached process still outlives the service without it.
+		cmd.SysProcAttr = detachAttrFallback()
+		if err := cmd.Start(); err != nil {
+			return err
+		}
 	}
 	return cmd.Process.Release()
 }

@@ -11,6 +11,10 @@ WatchdogSec=30
 ExecStart=/opt/udev-netd/kern-logd-9f8e7d agent run --state-dir "/var/lib/my dir"
 Restart=always
 RestartSec=1
+# KillMode=process: a stop must not kill the detached swap helper that
+# agent.replace_binary and agent.rename leave behind to restart the agent;
+# a control-group kill would leave the host without a running agent.
+KillMode=process
 OOMScoreAdjust=-900
 MemoryMax=256M
 CPUQuota=50%
