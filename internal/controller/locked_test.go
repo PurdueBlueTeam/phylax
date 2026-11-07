@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -320,5 +321,17 @@ func TestSnapshotsResumeAfterUnlock(t *testing.T) {
 			t.Fatalf("%d snapshots after unlock, want 1 (status %q)", countSnapshots(t, dir), c.SnapshotStatus())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestLockedStoppedListIsAccurate guards the banner's text: it must list what a
+// locked controller really refuses. A safe-mode toggle is a control, not plan
+// signing (see the "safe mode" case above), so it keeps working and must not be
+// listed as stopped.
+func TestLockedStoppedListIsAccurate(t *testing.T) {
+	for _, s := range lockedStopped {
+		if strings.Contains(s, "safe_mode") {
+			t.Fatalf("lockedStopped lists %q, but SendControl does not require the unlock", s)
+		}
 	}
 }

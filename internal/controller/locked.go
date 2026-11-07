@@ -14,8 +14,9 @@ import (
 const lockedEvery = 5 * time.Minute
 
 // lockedStopped is what a locked controller does not do. One list feeds the
-// event, the banner and the Overview tile.
-var lockedStopped = []string{"auto plans", "facts", "deadman_confirm", "safe_mode toggles", "snapshots"}
+// event, the banner and the Overview tile. A safe-mode toggle is not plan
+// signing (sendControl does not require the unlock), so it is not listed.
+var lockedStopped = []string{"auto plans", "facts", "deadman_confirm", "snapshots"}
 
 // ErrLocked is returned while plan signing is locked after a restart.
 var ErrLocked = errors.New("controller: plan signing is locked; enter the operator passphrase to unlock")
