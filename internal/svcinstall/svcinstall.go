@@ -82,3 +82,20 @@ func DeriveNames(secret []byte) Names {
 	}
 	return Names{Service: d("service"), Binary: d("binary"), Dir: d("dir")}
 }
+
+// stallChecks is how many consecutive stalled watchdog checks the Windows
+// service handler tolerates before it exits non-zero, so SCM's restart-forever
+// recovery replaces a wedged agent (the Windows half of the watchdog).
+const stallChecks = 3
+
+// stallCounter is the service handler's stall decision: exit after
+// stallChecks consecutive stalled checks; a healthy check resets the count.
+func stallCounter(stalled []string, n int) (exit bool, n2 int) {
+	if len(stalled) == 0 {
+		return false, 0
+	}
+	if n+1 >= stallChecks {
+		return true, 0
+	}
+	return false, n + 1
+}

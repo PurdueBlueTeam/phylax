@@ -76,23 +76,28 @@ func agentRun(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	run := func(ctx context.Context) error {
-		ex, err := agentExec(l)
-		if err != nil {
-			return err
-		}
-		a, err := agent.New(agent.Config{
-			Exec:   ex,
-			Layout: l, Version: version, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
-			Backstop:    osBackstop(l),
-			MemoryLimit: *memMB << 20,
-		})
-		if err != nil {
-			return err
-		}
-		return a.Run(ctx)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// The Windows Job Object is the process hard cap. The capture module's held
+	// budget is not known before the controller's config arrives, so the
+	// default base figure is used here.
+	if err := agent.ApplyJobLimits(agent.DefaultJobLimits(0)); err != nil {
+		log.Warn("job limits not applied", "err", err)
 	}
-	if isSvc, err := svcinstall.RunService(*svcName, run); isSvc || err != nil {
+	ex, err := agentExec(l)
+	if err != nil {
+		return err
+	}
+	a, err := agent.New(agent.Config{
+		Exec:   ex,
+		Layout: l, Version: version, Logger: log,
+		Backstop:    osBackstop(l),
+		MemoryLimit: *memMB << 20,
+	})
+	if err != nil {
+		return err
+	}
+	run := func(ctx context.Context) error { return a.Run(ctx) }
+	if isSvc, err := svcinstall.RunService(*svcName, run, a.Stalled); isSvc || err != nil {
 		return err
 	}
 	return run(ctx)

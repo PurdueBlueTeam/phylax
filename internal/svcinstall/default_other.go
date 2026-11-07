@@ -20,4 +20,6 @@ func (unsupported) Uninstall(context.Context, string) error {
 func New() Installer { return unsupported{} }
 
 // RunService reports that the process is not a Windows service.
-func RunService(string, func(context.Context) error) (bool, error) { return false, nil }
+func RunService(string, func(context.Context) error, func() []string) (bool, error) {
+	return false, nil
+}

@@ -47,10 +47,20 @@ func (winInstaller) Install(_ context.Context, sp Spec) error {
 	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
 		return fmt.Errorf("recovery on non-crash failures: %w", err)
 	}
+	// The protected DACL goes on last, while the handle we hold still has every
+	// right; from here a plain administrator can only `sc sdset` it back.
+	if err := applyServiceSDDL(sp.Name); err != nil {
+		return fmt.Errorf("service DACL: %w", err)
+	}
 	return s.Start()
 }
 
 func (winInstaller) Uninstall(_ context.Context, name string) error {
+	// Restore the default DACL first: deleting a protected service needs the
+	// break-glass, as does `sc delete` from a console.
+	if err := resetServiceDACL(name); err != nil {
+		return fmt.Errorf("reset service DACL: %w", err)
+	}
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
@@ -67,6 +77,9 @@ func (winInstaller) Uninstall(_ context.Context, name string) error {
 
 type winHandler struct {
 	run func(context.Context) error
+	// stalled reports the agent's stall sources (agent.Agent.Stalled); empty
+	// means it is making progress. nil disables the check.
+	stalled func() []string
 }
 
 func (h winHandler) Execute(_ []string, req <-chan svc.ChangeRequest, st chan<- svc.Status) (bool, uint32) {
@@ -76,8 +89,29 @@ func (h winHandler) Execute(_ []string, req <-chan svc.ChangeRequest, st chan<- 
 	done := make(chan error, 1)
 	go func() { done <- h.run(ctx) }()
 	st <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
+	check := time.NewTicker(10 * time.Second)
+	defer check.Stop()
+	var stalls int
 	for {
 		select {
+		case <-check.C:
+			var stalled []string
+			if h.stalled != nil {
+				stalled = h.stalled()
+			}
+			if exit, n := stallCounter(stalled, stalls); exit {
+				// A wedged agent cannot be stopped by SCM: exit non-zero and
+				// let the restart-forever recovery start a fresh process.
+				st <- svc.Status{State: svc.StopPending}
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(20 * time.Second):
+				}
+				return false, 1
+			} else {
+				stalls = n
+			}
 		case c := <-req:
 			switch c.Cmd {
 			case svc.Interrogate:
@@ -104,10 +138,10 @@ func (h winHandler) Execute(_ []string, req <-chan svc.ChangeRequest, st chan<- 
 // RunService runs run under the service control manager if the process was
 // started as a Windows service, and reports true. Otherwise it returns false
 // immediately and the caller runs in the foreground.
-func RunService(name string, run func(context.Context) error) (bool, error) {
+func RunService(name string, run func(context.Context) error, stalled func() []string) (bool, error) {
 	is, err := svc.IsWindowsService()
 	if err != nil || !is {
 		return false, err
 	}
-	return true, svc.Run(strings.TrimSpace(name), winHandler{run: run})
+	return true, svc.Run(strings.TrimSpace(name), winHandler{run: run, stalled: stalled})
 }
