@@ -83,6 +83,32 @@ func (a *agentSessionFrom) close() {
 	a.sess.Close()
 }
 
+// sendHeartbeat makes the session look live to the stolen-key check.
+func sendHeartbeat(t *testing.T, a *agentSessionFrom) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.sess.Send(ctx, link.PrioCritical, &link.Heartbeat{Seq: 0, HostClock: time.Now(), SpoolDepth: 0, Congestion: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitLastData waits until the controller recorded data from host's session.
+func waitLastData(t *testing.T, c *Controller, host string) {
+	t.Helper()
+	waitFor(t, 30*time.Second, "data from "+host, func() bool {
+		c.mu.Lock()
+		s, ok := c.agents[host]
+		c.mu.Unlock()
+		if !ok {
+			return false
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return !s.lastData.IsZero()
+	})
+}
+
 // waitSessionAddr waits until host's live session came from ip ("" means no
 // live session).
 func waitSessionAddr(t *testing.T, c *Controller, host, ip string) {
@@ -124,6 +150,8 @@ func TestSameKeyFromTwoPlacesAlerts(t *testing.T) {
 	}
 	first := dialAgentFrom(t, x, id, "127.0.0.1", "h1", tok)
 	waitSessionAddr(t, x.c, "h1", "127.0.0.1")
+	sendHeartbeat(t, first)
+	waitLastData(t, x.c, "h1")
 
 	second := dialAgentFrom(t, x, id, "127.0.0.2", "h1", "")
 	waitSessionAddr(t, x.c, "h1", "127.0.0.2")
@@ -168,6 +196,8 @@ func TestKeyReuseAlertRateLimited(t *testing.T) {
 	}
 	cur := dialAgentFrom(t, x, id, "127.0.0.1", "h1", tok)
 	waitSessionAddr(t, x.c, "h1", "127.0.0.1")
+	sendHeartbeat(t, cur)
+	waitLastData(t, x.c, "h1")
 	for i := 0; i < 5; i++ {
 		ip := "127.0.0.2"
 		if i%2 == 1 {
@@ -181,4 +211,34 @@ func TestKeyReuseAlertRateLimited(t *testing.T) {
 		t.Fatalf("%d key_reuse alerts while flapping, want 1", n)
 	}
 	cur.close()
+}
+
+func TestKeyReuseIgnoresAnIdleSession(t *testing.T) {
+	loopbackTwo(t)
+	var alerts alertLog
+	x := newStolenKeyCtl(t, &alerts)
+	tok, err := x.c.Enroller().MintToken("h1", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := link.GenerateIdentity("h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := dialAgentFrom(t, x, id, "127.0.0.1", "h1", tok)
+	waitSessionAddr(t, x.c, "h1", "127.0.0.1")
+	// No heartbeat or event from the old session: this hello is a reconnect
+	// (DHCP or a NAT change), not a stolen key.
+	second := dialAgentFrom(t, x, id, "127.0.0.2", "h1", "")
+	waitSessionAddr(t, x.c, "h1", "127.0.0.2")
+	time.Sleep(50 * time.Millisecond)
+	if n := len(alerts.reuse()); n != 0 {
+		t.Fatalf("%d key_reuse alerts for an idle old session, want 0", n)
+	}
+	select {
+	case <-first.sess.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("the old session was not closed")
+	}
+	second.close()
 }

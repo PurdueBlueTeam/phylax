@@ -58,9 +58,11 @@ type agentState struct {
 	buf     map[uint64]event.Event // out-of-order events waiting for their predecessors
 	gapFrom map[uint64]uint64      // gap record "from" -> its Seq (the record covers from..Seq-1)
 	sess    *agentConn
-	// sessAddr is the remote IP of the live session; lastReuseAlert is when
-	// the stolen-key alert for this host last rang (agent.go).
+	// sessAddr is the remote IP of the live session; lastData is the last
+	// heartbeat or event it sent; lastReuseAlert is when the stolen-key alert
+	// for this host last rang (agent.go).
 	sessAddr       string
+	lastData       time.Time
 	lastReuseAlert time.Time
 	lastSeen       time.Time
 	silent         bool
@@ -206,6 +208,10 @@ func (a *agentConn) handle(ctx context.Context, m link.Message) error {
 	}
 }
 
+// keyReuseFresh is how recently the old session must have sent a heartbeat or
+// event for a second address to be a stolen key rather than a reconnect.
+const keyReuseFresh = 10 * time.Second
+
 func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	c := a.c
 	if h.Proto != link.ProtoVersion {
@@ -239,7 +245,8 @@ func (a *agentConn) hello(ctx context.Context, h *link.Hello) error {
 	st.mu.Lock()
 	reuse := ""
 	if old := st.sess; old != nil {
-		if st.sessAddr != "" && addr != st.sessAddr && (st.lastReuseAlert.IsZero() || now.Sub(st.lastReuseAlert) >= time.Minute) {
+		recent := !st.lastData.IsZero() && now.Sub(st.lastData) <= keyReuseFresh
+		if recent && st.sessAddr != "" && addr != st.sessAddr && (st.lastReuseAlert.IsZero() || now.Sub(st.lastReuseAlert) >= time.Minute) {
 			st.lastReuseAlert = now
 			reuse = fmt.Sprintf("second live session from %s, first from %s", addr, st.sessAddr)
 		}
@@ -317,6 +324,7 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	st := a.stp.Load()
 	now := a.c.now()
 	st.mu.Lock()
+	st.lastData = now
 	st.hb.ClockSkew = hb.HostClock.Sub(now)
 	st.hb.SkewAt = now
 	st.hb.SpoolDepth, st.hb.Congestion, st.hb.Modules = hb.SpoolDepth, hb.Congestion, hb.Modules
@@ -337,6 +345,7 @@ func (a *agentConn) events(ctx context.Context, m *link.Events) error {
 	if st.sess != a {
 		return errors.New("superseded by a newer session")
 	}
+	st.lastData = c.now()
 	evs := m.Events
 	if st.verify {
 		// A resend after a restore starts at the oldest event the spool still
