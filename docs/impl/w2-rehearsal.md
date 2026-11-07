@@ -150,3 +150,64 @@ decoy listeners on Linux. Hosts stay enrolled, safe mode on.
 - Windows hosts: agent reinstalled once after the winevt fix.
 - Test box: `/srv/phylax`, tmux sessions `serve` and `web`, `/var/lib/phylax`, helper scripts in `/root`. The
   operator UI admin password is in `/var/tmp/phylax-serve.log` there.
+
+## Push and bench (short run), 2026-11-06 late
+
+Built from `v4` at `4f7e608`, plus one fix (`9945ddf`). Controller restarted with `-vault` (lab vault, packet
+default credentials, one secret per OS because the Linux and Windows users differ) and `-release-dir`.
+Pushes were run from the operator UI (`POST /enroll/{host}/push`); `phylax enroll push` refuses while `serve`
+runs. Hosts that were not enrolled: the agents on fedora-webmail and ftp were uninstalled first; web (26015)
+was found stopped on prox2 and left alone.
+
+### Push enrollment
+
+- **Fix first (`9945ddf`): UI push could never work from `serve -vault`.** `serve` opened the vault but never
+  put it in `controller.Options`, so every UI push failed with "conflict: the vault is not open". Now passed
+  through. No test: `serve` is not unit-testable here (it runs until cancelled); verified live.
+- **Linux (fedora-webmail, SSH, user from the vault): FAIL, two findings.**
+  1. `hostname_mismatch: host reports "goomonsu", manifest says "fedora-webmail"`: the replica's guest
+     hostnames differ from the manifest names (lab artifact; the real event's hostnames must equal the
+     manifest keys). I renamed the host in the lab manifest to `goomonsu` and pushed again.
+  2. `selinux_denial: mkdir: cannot create directory '/opt/cron-pkgd-c1546f': Permission denied; install dir
+     removed`. The cause is not SELinux: the packet's default user (`sysadmin`) is not root, and the SSH push
+     runs the one-liner with no `sudo`. The class and its advice ("allow the install path under SELinux") are
+     misleading for a non-root login. Needs a decision: push as root (is root SSH login allowed in the
+     packet?) or make the push `sudo` the one-liner. Not fixed. The host was then enrolled with the console
+     one-liner (as root, after clearing the old agent state; connected, `enrolled_now=true`).
+- **Windows (ftp, WinRM 5985, NTLM): FAIL, as expected.** `auth_refused: probe: winrm authentication refused`
+  with correct packet credentials (the same credentials work with pywinrm, which encrypts). On the wire the
+  server answers the NTLM type-3 with `401 WWW-Authenticate: Negotiate, Kerberos`. Same result on ad and
+  win11-wkst. `winrm get winrm/config/service` on ftp: `AllowUnencrypted = false`. Phylax's client sends NTLM
+  without message sealing (documented shortcut in `internal/checks/probe/winrmshell.go`). The WinRM settings
+  were not touched. The UI message also misleads ("check the vault's default credentials and the SSH
+  password policy"). ftp was then enrolled through the console `e.ps1` line.
+- Net: neither push path works with the stock packet hosts. The console one-liner works on both.
+
+### Comms bench
+
+`bench.jsonl` runs by default. Window 04:44 to 04:55 UTC (about 10 minutes, 7 to 8 agents after the controller
+restart), `phylax bench report -check`. Output is appended below.
+
+Result (650 s, 66 samples, 8 agents, includes my two re-enrollments):
+
+| Measure | Value |
+| --- | --- |
+| Agent RTT | p50 1.8 ms, p95 3.8 ms, p99 88 ms, max 1.2 s |
+| Event throughput (all agents) | critical 0.2, high 3.5, normal 3.3, bulk 2.2 events/s (about 15 KB/s) |
+| Reconnects | `connects` 2 (ftp reinstall, goomonsu enrollment); no unplanned reconnects |
+| Gaps | 0 records, 0 events; `down ms` all 0 |
+| Spool depth / lag | max 164 / max 3 events; no shed, no non-ok samples |
+| Controller | CPU p50 2.1%, max 2.9%; RSS max 559 MB; store 116 to 131 MB |
+| Queries | events p99 27 ms, health p99 5 ms, overview p99 50 ms |
+
+`-check` FAILED on one item: "partition_marks: none a partition_start mark" (no partition was run, so this
+only means the partition test was not done). The latency columns show `+Inf` for p95 and p99 in every class:
+every host's clock is months off the controller's (`skew abs max` about 2.3e10 ms), so event-to-controller
+latency is meaningless here until the guest clocks are set; this is the same clock problem as in Step 1 and
+it will make the real latency criterion unreadable on any host whose clock is wrong. Not a transport
+problem: RTT and gaps are clean.
+
+Lab state: controller restarted three times (vault wiring, manifest rename, bundle regeneration), serve now
+runs with `-vault /srv/phylax/lab.vault -release-dir /srv/phylax/rel`; lab manifest has `fedora-webmail`
+renamed to `goomonsu` (the guest's real hostname) and the old fedora-webmail enrollment is orphaned; web is
+off. ftp and goomonsu are enrolled (console line), the rest as before.
