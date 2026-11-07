@@ -15,8 +15,10 @@ import (
 
 	"github.com/PurdueBlueTeam/phylax/internal/actions"
 	"github.com/PurdueBlueTeam/phylax/internal/agent"
+	"github.com/PurdueBlueTeam/phylax/internal/agent/mods"
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
+	"github.com/PurdueBlueTeam/phylax/internal/plan"
 	"github.com/PurdueBlueTeam/phylax/internal/svcinstall"
 )
 
@@ -81,8 +83,8 @@ func agentRun(ctx context.Context, args []string) error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	// The Windows Job Object is the process hard cap. The capture module's held
-	// budget is not known before the controller's config arrives, so the
-	// default base figure is used here.
+	// budget is not known before the controller's config arrives, so the base
+	// figure is applied here; Agent.adopt raises it from the captured config.
 	if err := agent.ApplyJobLimits(agent.DefaultJobLimits(0)); err != nil {
 		log.Warn("job limits not applied", "err", err)
 	}
@@ -96,6 +98,7 @@ func agentRun(ctx context.Context, args []string) error {
 		Backstop:    osBackstop(l),
 		MemoryLimit: *memMB << 20,
 		ServiceName: *svcName,
+		HeldMB:      func(c *plan.AgentConfig) int64 { return mods.CaptureHeldMB(c, l.Root) },
 	})
 	if err != nil {
 		return err

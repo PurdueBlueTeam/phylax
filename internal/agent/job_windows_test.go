@@ -11,9 +11,14 @@ import (
 // TestApplyJobLimitsSetsMemoryLimit puts a child process in a Job Object with
 // a 64 MiB memory cap; the child then commits 200 MB, which the OS refuses and
 // the Go runtime turns into a fatal error. The parent (outside that job)
-// survives.
+// survives. The child first applies a larger cap and then lowers it, so the
+// update path on an existing Job Object is exercised too.
 func TestApplyJobLimitsSetsMemoryLimit(t *testing.T) {
 	if os.Getenv("PHYLAX_JOB_CHILD") == "1" {
+		if err := ApplyJobLimits(JobLimits{MemoryBytes: 512 << 20}); err != nil {
+			os.Stderr.WriteString("apply base: " + err.Error() + "\n")
+			os.Exit(3)
+		}
 		if err := ApplyJobLimits(JobLimits{MemoryBytes: 64 << 20}); err != nil {
 			os.Stderr.WriteString("apply: " + err.Error() + "\n")
 			os.Exit(3)

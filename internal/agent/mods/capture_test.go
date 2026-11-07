@@ -66,3 +66,31 @@ func TestCaptureBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCaptureHeldMB(t *testing.T) {
+	dir := t.TempDir()
+	if got := CaptureHeldMB(&plan.AgentConfig{Roles: []string{"decoys"}}, dir); got != 0 {
+		t.Errorf("without the capture role: %d MB, want 0", got)
+	}
+	if got := CaptureHeldMB(&plan.AgentConfig{Roles: []string{"capture"}}, dir); got != 512 {
+		t.Errorf("capture defaults: %d MB, want 512", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CaptureFile), []byte(`{"ring_mb":16,"hold_mb":8}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CaptureHeldMB(&plan.AgentConfig{Roles: []string{"capture"}}, dir); got != 24 {
+		t.Errorf("configured ring and hold: %d MB, want 24", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CaptureFile), []byte(`{"ring_mb":16}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CaptureHeldMB(&plan.AgentConfig{Roles: []string{"capture"}}, dir); got != 16+256 {
+		t.Errorf("configured ring, default hold: %d MB, want %d", got, 16+256)
+	}
+	if err := os.WriteFile(filepath.Join(dir, CaptureFile), []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := CaptureHeldMB(&plan.AgentConfig{Roles: []string{"capture"}}, dir); got != 512 {
+		t.Errorf("a broken capture file keeps the defaults: %d MB, want 512", got)
+	}
+}

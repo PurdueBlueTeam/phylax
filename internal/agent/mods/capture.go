@@ -48,6 +48,27 @@ type captureFile struct {
 	ScoredPortsAdd []uint16 `json:"scored_ports,omitempty"`
 }
 
+// CaptureHeldMB is the capture module's ring and freeze-hold budget in MiB
+// for cfg: zero without the capture role (the module does not run), otherwise
+// the local capture file's values, defaulting like the ring does. The agent
+// adds it to the process memory cap.
+func CaptureHeldMB(cfg *plan.AgentConfig, stateDir string) int64 {
+	if cfg == nil || !hasCaptureRole(cfg) {
+		return 0
+	}
+	ring, hold := int64(capture.DefaultRingBytes>>20), int64(capture.DefaultHoldBytes>>20)
+	lc := captureFile{}
+	if b, err := os.ReadFile(filepath.Join(stateDir, CaptureFile)); err == nil && json.Unmarshal(b, &lc) == nil {
+		if lc.RingMB > 0 {
+			ring = int64(lc.RingMB)
+		}
+		if lc.HoldMB > 0 {
+			hold = int64(lc.HoldMB)
+		}
+	}
+	return ring + hold
+}
+
 // captureModule adapts capture.Module (which cannot import internal/agent's
 // named Emit type without a cycle of concerns) to agent.Module.
 type captureModule struct{ *capture.Module }

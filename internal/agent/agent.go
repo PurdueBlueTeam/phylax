@@ -49,8 +49,13 @@ type Config struct {
 	Supervisor SupervisorOptions
 	// Spool overrides spool options (Agent is set from the bootstrap host).
 	Spool spool.Options
-	// MemoryLimit, if > 0, is passed to debug.SetMemoryLimit.
+	// MemoryLimit, if > 0, is the soft Go memory limit before a config's held
+	// budget is known (debug.SetMemoryLimit).
 	MemoryLimit int64
+	// HeldMB, if set, returns the memory the signed config's modules hold on
+	// top of the base (capture's ring and freeze hold). adopt re-applies the
+	// Job Object cap and debug.SetMemoryLimit when it changes.
+	HeldMB func(*plan.AgentConfig) int64
 	// DialTimeout bounds connect plus handshake (default 10 s).
 	DialTimeout time.Duration
 	// Exec enables execution of signed plan steps (nil = steps are rejected).
@@ -94,6 +99,8 @@ type Agent struct {
 	cfgKick chan struct{}
 	desired *plan.AgentConfig // guarded by mu
 	cfgStat ConfigStatus      // guarded by mu
+	heldMB  int64             // guarded by mu; the last applied held budget
+	heldSet bool              // guarded by mu
 	managed map[string]string // module -> settings fingerprint; configLoop only
 	kept    sync.Map
 	sink    Emit // harness event sink when there is no spool

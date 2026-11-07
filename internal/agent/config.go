@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
@@ -102,14 +103,52 @@ func (a *Agent) adopt(cfg *plan.AgentConfig) {
 	if dg, err := cfg.Digest(); err == nil {
 		a.cfgVer.MarkApplied(cfg.Epoch, cfg.Version, dg)
 	}
+	heldMB, heldChanged := a.configHeldMB(cfg)
 	a.mu.Lock()
 	a.desired = cfg
 	a.cfgStat.State, a.cfgStat.Epoch, a.cfgStat.Version = ConfigPending, cfg.Epoch, cfg.Version
 	a.mu.Unlock()
+	if heldChanged {
+		a.applyMemoryLimits(heldMB)
+	}
 	select {
 	case a.cfgKick <- struct{}{}:
 	default:
 	}
+}
+
+// configHeldMB is the module-held budget the config requires, and whether it
+// changed since the last config. Without a HeldMB source there is nothing to
+// recompute.
+func (a *Agent) configHeldMB(cfg *plan.AgentConfig) (int64, bool) {
+	if a.cfg.HeldMB == nil {
+		return 0, false
+	}
+	heldMB := a.cfg.HeldMB(cfg)
+	if heldMB < 0 {
+		heldMB = 0
+	}
+	a.mu.Lock()
+	changed := !a.heldSet || a.heldMB != heldMB
+	a.heldMB, a.heldSet = heldMB, true
+	a.mu.Unlock()
+	return heldMB, changed
+}
+
+// applyMemoryLimits raises or lowers the process hard cap and the soft Go
+// limit together, so the capture ring and freeze hold fit inside both. The
+// hard cap always includes the base plus headroom; the soft limit keeps the
+// operator's --memory-limit-mb base when one is set.
+func (a *Agent) applyMemoryLimits(heldMB int64) {
+	limits := DefaultJobLimits(heldMB)
+	if err := ApplyJobLimits(limits); err != nil {
+		a.log.Warn("job limits not applied", "err", err)
+	}
+	if a.cfg.MemoryLimit > 0 {
+		soft := a.cfg.MemoryLimit + heldMB<<20
+		debug.SetMemoryLimit(soft)
+	}
+	a.log.Info("memory limit", "held_mb", heldMB, "job_mb", int64(limits.MemoryBytes)>>20)
 }
 
 // loadPersistedConfig applies the last good config from disk, so a restart

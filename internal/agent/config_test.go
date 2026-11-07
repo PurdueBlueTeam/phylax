@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -391,5 +392,30 @@ func TestSupervisorDynamic(t *testing.T) {
 	<-done
 	if err := s.Add(ModuleSpec{Module: funcModule{"late", nil}}); err == nil {
 		t.Fatal("add after shutdown must fail")
+	}
+}
+
+func TestAdoptRecomputesMemoryLimits(t *testing.T) {
+	old := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(old) })
+	a := &Agent{
+		cfg: Config{MemoryLimit: 80 << 20, HeldMB: func(c *plan.AgentConfig) int64 {
+			if c.HasRole("capture") {
+				return 512
+			}
+			return 0
+		}},
+		log: quietLog(), cfgKick: make(chan struct{}, 1), cfgVer: &plan.ConfigVerifier{},
+	}
+	a.adopt(&plan.AgentConfig{Host: "h", Epoch: 1, Version: 1, Roles: []string{"capture"}})
+	if got, want := debug.SetMemoryLimit(-1), int64((80+512)<<20); got != want {
+		t.Fatalf("capture config memory limit = %d, want %d", got, want)
+	}
+	if got, want := DefaultJobLimits(a.heldMB).MemoryBytes, uint64((80+512+64)<<20); got != want {
+		t.Fatalf("capture config job cap = %d, want %d", got, want)
+	}
+	a.adopt(&plan.AgentConfig{Host: "h", Epoch: 1, Version: 2, Roles: []string{"decoys"}})
+	if got, want := debug.SetMemoryLimit(-1), int64(80<<20); got != want {
+		t.Fatalf("capture-off memory limit = %d, want %d", got, want)
 	}
 }
