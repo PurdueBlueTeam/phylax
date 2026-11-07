@@ -113,19 +113,24 @@ func runServe(ctx context.Context, args []string) error {
 		opt.HostKnown = func(h string) bool { _, ok := m.Hosts[h]; return ok }
 		opt.Guard = func(h string) actions.ScoringGuard { return actions.GuardFromManifest(m, h) }
 	}
+	var v *vault.Vault
+	if *vaultPath != "" {
+		if m == nil {
+			return fmt.Errorf("-vault needs a manifest (manifest_path)")
+		}
+		var err error
+		if v, err = openVault(*vaultPath, pass); err != nil {
+			return err
+		}
+		// The controller reads host credentials (UI enroll push) and honeytokens from it.
+		opt.Vault = v
+	}
 	c, err := controller.New(ctx, cfg, opt)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	if *vaultPath != "" {
-		if m == nil {
-			return fmt.Errorf("-vault needs a manifest (manifest_path)")
-		}
-		v, err := openVault(*vaultPath, pass)
-		if err != nil {
-			return err
-		}
+	if v != nil {
 		if _, err := c.EnableDeviceExec(controller.DeviceExecOptions{
 			DirectoryOptions: controller.DirectoryOptions{Manifest: func() *manifest.Manifest { return m }, Vault: v}}); err != nil {
 			return err
