@@ -279,14 +279,16 @@ func agentInstall(ctx context.Context, dry bool, args []string) error {
 	if f.boot == "" {
 		return errors.New("--bootstrap is required")
 	}
+	// The install directory comes first and is 0755: the state dir under it is
+	// 0700, and the decoys child (uid nobody) must be able to exec the binary.
+	if err := os.MkdirAll(f.dir, 0o755); err != nil {
+		return err
+	}
 	if err := adoptBootstrap(agent.Layout{Root: f.stateDir}, f.boot); err != nil {
 		return err
 	}
 	exe, err := os.Executable()
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(f.dir, 0o755); err != nil {
 		return err
 	}
 	if err := copyExe(exe, bin); err != nil {
