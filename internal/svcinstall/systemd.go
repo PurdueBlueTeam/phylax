@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/atomicfile"
 	"github.com/PurdueBlueTeam/phylax/internal/deadman"
@@ -84,6 +85,20 @@ func systemdQuote(a string) string {
 type Systemd struct {
 	UnitDir string         // default /etc/systemd/system
 	Run     deadman.Runner // default deadman.ExecRunner
+	// Timeout bounds one systemctl call (default 30 s, the same bound the
+	// Windows installer waits for the SCM). A hung systemctl must not hang the
+	// swap helper that may be talking to a dying service manager.
+	Timeout time.Duration
+}
+
+// maxCall is the default bound on one systemctl call.
+const maxCall = 30 * time.Second
+
+func (s *Systemd) timeout() time.Duration {
+	if s.Timeout <= 0 {
+		return maxCall
+	}
+	return s.Timeout
 }
 
 func (s *Systemd) dir() string {
@@ -98,6 +113,8 @@ func (s *Systemd) run(ctx context.Context, args ...string) error {
 	if r == nil {
 		r = deadman.ExecRunner
 	}
+	ctx, cancel := context.WithTimeout(ctx, s.timeout())
+	defer cancel()
 	_, err := r(ctx, "systemctl", args...)
 	return err
 }

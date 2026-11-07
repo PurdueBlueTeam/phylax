@@ -162,3 +162,43 @@ func TestSwapRenameRevertsWithoutHeartbeat(t *testing.T) {
 		t.Fatalf("calls %v", inst.calls)
 	}
 }
+
+// blockingInstaller waits for its context: without a deadline on the helper's
+// calls it never returns.
+type blockingInstaller struct{}
+
+func (blockingInstaller) Install(ctx context.Context, _ svcinstall.Spec) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (blockingInstaller) Uninstall(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (blockingInstaller) Stop(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (blockingInstaller) Restart(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestSwapHelperHasOneDeadline(t *testing.T) {
+	old := swapSlack
+	swapSlack = 50 * time.Millisecond
+	t.Cleanup(func() { swapSlack = old })
+	dir := t.TempDir()
+	p := svcinstall.SwapPlan{Kind: "replace_binary", Service: "svc", OldBinary: filepath.Join(dir, "a"),
+		NewBinary: filepath.Join(dir, "b"), StateDir: dir, WaitSec: 1}
+	done := make(chan error, 1)
+	go func() { done <- runSwap(context.Background(), p, blockingInstaller{}) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a swap that never started succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the swap helper has no overall deadline")
+	}
+}

@@ -2,11 +2,13 @@ package svcinstall
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -125,5 +127,27 @@ func TestSystemdStopAndRestart(t *testing.T) {
 	}
 	if err := s.Restart(context.Background(), "../etc/passwd"); err == nil {
 		t.Fatal("path traversal accepted")
+	}
+}
+
+func TestSystemdCallsAreBounded(t *testing.T) {
+	s := &Systemd{UnitDir: t.TempDir(), Timeout: 20 * time.Millisecond,
+		Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}}
+	ctx := context.Background()
+	start := time.Now()
+	if err := s.Restart(ctx, "svc-x"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Restart: %v", err)
+	}
+	if err := s.Stop(ctx, "svc-x"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := s.Install(ctx, Spec{Name: "svc-x", Binary: "/bin/x"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Install: %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("three bounded calls took %s", d)
 	}
 }

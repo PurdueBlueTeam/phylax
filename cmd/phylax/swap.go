@@ -20,6 +20,11 @@ import (
 // maxSwapPlanBytes bounds a swap plan file (one plan, a few hundred bytes).
 const maxSwapPlanBytes = 64 << 10
 
+// swapSlack is the helper's budget on top of WaitSec for the stop, the
+// install/restart and the swap itself (each service call is bounded, this is
+// the whole plan). A variable so a test can shrink it.
+var swapSlack = 2 * time.Minute
+
 // runSwap performs one swap plan: stop the agent, swap the binary
 // (replace_binary) or install the renamed service (rename), start it, and wait
 // for the agent's first controller ack. Without an ack within WaitSec it puts
@@ -32,6 +37,11 @@ func runSwap(ctx context.Context, p svcinstall.SwapPlan, inst svcinstall.Install
 	if p.Service == "" || p.StateDir == "" {
 		return errors.New("agent swap: the plan needs a service and a state directory")
 	}
+	// One deadline for the whole plan: a hung service manager ends the helper
+	// with an error instead of leaving it running forever. The revert below runs
+	// on its own budget, so it still gets to undo a failed swap.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.WaitSec)*time.Second+swapSlack)
+	defer cancel()
 	// The agent must be gone before the binary is replaced (Windows keeps a
 	// running image locked) and before a second agent opens the same spool.
 	if err := inst.Stop(ctx, p.Service); err != nil {
@@ -52,9 +62,11 @@ func runSwap(ctx context.Context, p svcinstall.SwapPlan, inst svcinstall.Install
 			// The new agent is running (it just never reached the controller):
 			// stop it before the binary moves under its feet, then start the old
 			// one.
-			_ = inst.Stop(ctx, p.Service)
+			rctx, rcancel := revertCtx(ctx)
+			_ = inst.Stop(rctx, p.Service)
 			restoreBinary(p)
-			_ = inst.Restart(ctx, p.Service)
+			_ = inst.Restart(rctx, p.Service)
+			rcancel()
 			return fmt.Errorf("agent swap: reverted: %w", err)
 		}
 		_ = os.Remove(p.OldBinary + ".old")
@@ -66,13 +78,21 @@ func runSwap(ctx context.Context, p svcinstall.SwapPlan, inst svcinstall.Install
 			return fmt.Errorf("agent swap: install %s: %w", p.NewService, err)
 		}
 		if err := waitStarted(p.StateDir, start, p.WaitSec); err != nil {
-			_ = inst.Uninstall(ctx, p.NewService)
-			_ = inst.Restart(ctx, p.Service)
+			rctx, rcancel := revertCtx(ctx)
+			_ = inst.Uninstall(rctx, p.NewService)
+			_ = inst.Restart(rctx, p.Service)
+			rcancel()
 			return fmt.Errorf("agent swap: reverted: %w", err)
 		}
 		return inst.Uninstall(ctx, p.Service)
 	}
 	return fmt.Errorf("agent swap: unknown kind %q", p.Kind)
+}
+
+// revertCtx is the revert's own budget: the plan's deadline may already have
+// fired when a swap fails to come up.
+func revertCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), 2*swapSlack)
 }
 
 // replaceBinary renames the running binary aside and moves the new one into
