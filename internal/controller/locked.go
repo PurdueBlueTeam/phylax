@@ -76,6 +76,7 @@ func (c *Controller) Unlock(pass []byte) error {
 	if u, ok := v.(interface{ Locked() bool }); ok && u.Locked() {
 		return errors.New("controller: vault is still locked")
 	}
+	c.setSnapshotPass(pass)
 	c.setLocked(false)
 	return nil
 }

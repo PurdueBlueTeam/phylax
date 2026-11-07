@@ -291,3 +291,34 @@ func TestLockedRefusesSigningButAllowsSafeMode(t *testing.T) {
 		}
 	})
 }
+
+func TestSnapshotsResumeAfterUnlock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := newLockedController(t)
+	dir := t.TempDir()
+	c.cfg.SnapshotDirs = []string{dir}
+	c.cfg.SnapshotInterval = Duration(15 * time.Minute)
+	fc := newFakeClock(time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC))
+	c.clk, c.now = fc, fc.Now
+	// serve starts with no PHYLAX_VAULT_PASSPHRASE: its closure returns nil
+	// forever, so the passphrase must come from the unlock.
+	go c.RunSnapshots(ctx, func() []byte { return nil })
+	fc.waitOps(t, 1)
+	fc.Advance(15 * time.Minute)
+	waitStatus(t, c, "skipped: locked")
+	if n := countSnapshots(t, dir); n != 0 {
+		t.Fatalf("%d snapshots before unlock", n)
+	}
+	if err := c.Unlock([]byte("pw")); err != nil {
+		t.Fatal(err)
+	}
+	fc.Advance(15 * time.Minute)
+	deadline := time.Now().Add(3 * time.Second)
+	for countSnapshots(t, dir) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d snapshots after unlock, want 1 (status %q)", countSnapshots(t, dir), c.SnapshotStatus())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

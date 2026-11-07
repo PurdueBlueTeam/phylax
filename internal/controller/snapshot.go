@@ -235,8 +235,8 @@ func drainSnapSoon(ch chan struct{}) {
 
 // writeSnapshots writes to every configured directory and records the result.
 func (c *Controller) writeSnapshots(ctx context.Context, pass func() []byte) {
-	var p []byte
-	if pass != nil {
+	p := c.snapshotPass()
+	if len(p) == 0 && pass != nil {
 		p = pass()
 	}
 	locked, _ := c.Locked()
@@ -260,6 +260,23 @@ func (c *Controller) setSnapshotStatus(s string) {
 	c.snapMu.Lock()
 	c.snapStatus = s
 	c.snapMu.Unlock()
+}
+
+// setSnapshotPass keeps the operator passphrase an unlock entered, so the
+// snapshot writer resumes without a new command-line passphrase.
+func (c *Controller) setSnapshotPass(pass []byte) {
+	c.snapMu.Lock()
+	for i := range c.snapPass {
+		c.snapPass[i] = 0
+	}
+	c.snapPass = append([]byte(nil), pass...)
+	c.snapMu.Unlock()
+}
+
+func (c *Controller) snapshotPass() []byte {
+	c.snapMu.Lock()
+	defer c.snapMu.Unlock()
+	return append([]byte(nil), c.snapPass...)
 }
 
 // SnapshotStatus is the last snapshot writer result, for example "skipped:

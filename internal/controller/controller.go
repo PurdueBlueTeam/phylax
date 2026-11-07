@@ -156,6 +156,7 @@ type Controller struct {
 	snapMu     sync.Mutex
 	snapStatus string
 	snapSoonC  chan struct{}
+	snapPass   []byte // operator passphrase entered by Unlock, used for snapshots
 
 	// lock is the restart-safety flag (locked.go).
 	lock lockState
