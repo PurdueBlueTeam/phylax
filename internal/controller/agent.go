@@ -332,6 +332,11 @@ func (a *agentConn) heartbeat(hb *link.Heartbeat) error {
 	st.hb.SafeMode, st.hb.Drops = hb.SafeMode, hb.Drops
 	st.hb.HeadSeq, st.hb.RTT = hb.Seq, time.Duration(hb.RTTUs)*time.Microsecond
 	acked := st.acked
+	if st.verify {
+		// Nothing at or below the restore point is stored until the resend
+		// reaches it, so do not acknowledge past the first ack (0) yet.
+		acked = 0
+	}
 	st.mu.Unlock()
 	a.sess.TrySend(link.PrioCritical, &link.Ack{Seq: acked, HB: hb.ID}) // keepalive and RTT echo; a full queue means a newer ack is coming
 	a.c.noteConfigStatus(st, hb)
@@ -360,6 +365,9 @@ func (a *agentConn) events(ctx context.Context, m *link.Events) error {
 		if i > 0 {
 			if err := a.verifyResend(ctx, evs[:i]); err != nil {
 				return err
+			}
+			if evs[i-1].Seq == st.acked {
+				st.verify = false // the run reached the restore point and its hash
 			}
 			evs = evs[i:]
 		}
@@ -403,25 +411,23 @@ func (a *agentConn) events(ctx context.Context, m *link.Events) error {
 }
 
 // verifyResend passes a resend's events at or below the restore point to the
-// store, in order, in one Ingest call. The store stores nothing until the run
-// reaches the snapshot's sequence with its hash; ErrRestoreMismatch then ends
-// the session like any other chain error.
-//
-// shortcut: a spool that still holds more than store.MaxBatch events below the
-// restore point cannot be backfilled in one call; upgrade by keeping the run
-// across batches if spools ever retain that much acknowledged data.
+// store, in order, in MaxBatch-sized calls. The store carries the pending run
+// across calls and stores it only when it reaches the snapshot's sequence with
+// its hash; ErrRestoreMismatch then ends the session like any other chain
+// error.
 func (a *agentConn) verifyResend(ctx context.Context, evs []event.Event) error {
 	c, st := a.c, a.stp.Load()
-	if len(evs) > store.MaxBatch {
-		evs = evs[:store.MaxBatch]
-	}
-	if _, err := c.st.Ingest(ctx, st.host, evs); err != nil {
-		st.buf = map[uint64]event.Event{}
-		st.gapFrom = map[uint64]uint64{}
-		if errors.Is(err, event.ErrChain) {
-			c.alert(st.host, "store.chain_error", err.Error())
+	for len(evs) > 0 {
+		n := min(len(evs), store.MaxBatch)
+		if _, err := c.st.Ingest(ctx, st.host, evs[:n]); err != nil {
+			st.buf = map[uint64]event.Event{}
+			st.gapFrom = map[uint64]uint64{}
+			if errors.Is(err, event.ErrChain) {
+				c.alert(st.host, "store.chain_error", err.Error())
+			}
+			return fmt.Errorf("ingest: %w", err)
 		}
-		return fmt.Errorf("ingest: %w", err)
+		evs = evs[n:]
 	}
 	return nil
 }

@@ -458,6 +458,54 @@ func TestRestoreStateOnlyResendMustPassThroughRecordedPoint(t *testing.T) {
 	}
 }
 
+func TestRestoreResendBackfillsAcrossBatches(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	enroll(t, s, "a")
+	c := &chain{agent: "a"}
+	evs := c.many(2500, "k")
+	for off := 0; off < len(evs); off += MaxBatch {
+		end := min(off+MaxBatch, len(evs))
+		if _, err := s.Ingest(ctx, "a", evs[off:end]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snap := filepath.Join(t.TempDir(), "snap.db")
+	if err := s.Backup(ctx, snap, BackupOptions{StateOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	r, err := Restore(ctx, snap, filepath.Join(t.TempDir(), "r.db"), "disk died")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	// The resend spans several calls below the restore point: nothing is
+	// stored until the last one reaches it, then the whole run is backfilled.
+	for off := 0; off < len(evs); off += 700 {
+		end := min(off+700, len(evs))
+		ack, err := r.Ingest(ctx, "a", evs[off:end])
+		if err != nil {
+			t.Fatalf("batch at %d: %v", off, err)
+		}
+		if end < len(evs) {
+			if n, _ := r.Count(ctx, "a"); n != 0 {
+				t.Fatalf("stored %d events before the restore point", n)
+			}
+		} else if ack.Backfilled != len(evs) || ack.Seq != uint64(len(evs)) {
+			t.Fatalf("ack %+v; want all %d backfilled", ack, len(evs))
+		}
+	}
+	if n, err := r.Count(ctx, "a"); err != nil || n != int64(len(evs)) {
+		t.Fatalf("stored %d events (%v), want %d", n, err, len(evs))
+	}
+	if g, err := r.Gaps(ctx, "a"); err != nil || len(g) != 0 {
+		t.Fatalf("gaps after a complete resend: %+v %v", g, err)
+	}
+}
+
 func TestResumeAfterRestoreRecordsGap(t *testing.T) {
 	ctx := context.Background()
 	s, _ := open(t)

@@ -15,10 +15,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/PurdueBlueTeam/phylax/internal/bench"
+	"github.com/PurdueBlueTeam/phylax/internal/event"
 
 	_ "modernc.org/sqlite" // pure-Go driver
 )
@@ -45,6 +47,12 @@ type Store struct {
 	r     *sql.DB // read pool
 	hook  atomic.Pointer[IngestHook]
 	quota atomic.Pointer[Quota]
+	// restoreMu guards restorePending, the run of events below an agent's
+	// restore point seen in earlier Ingest calls of the same resend. A resend
+	// can span many batches; the run is stored only when it reaches the
+	// restore point.
+	restoreMu      sync.Mutex
+	restorePending map[string][]event.Event
 	// commit is the duration of every successful Ingest transaction commit
 	// (the bench reads it; see CommitHist).
 	commit bench.AtomicHist

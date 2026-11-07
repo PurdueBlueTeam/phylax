@@ -63,9 +63,14 @@ type Ack struct {
 // are committed, and the returned Ack reflects them together with the error.
 // A resend of events already stored is idempotent; one that differs from what
 // was acknowledged is ErrRewrite. Other (non-chain) errors roll everything back.
-func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ack, error) {
+func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (out Ack, retErr error) {
 	if len(evs) > MaxBatch {
 		return Ack{}, fmt.Errorf("%w: %d > %d", ErrBatchTooBig, len(evs), MaxBatch)
+	}
+	s.restoreMu.Lock()
+	defer s.restoreMu.Unlock()
+	if s.restorePending == nil {
+		s.restorePending = map[string][]event.Event{}
 	}
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
@@ -90,9 +95,25 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 	defer ins.Close()
 
 	var chainErr error
-	var pending []*event.Event // unstored events below the restore point, not yet tied to it
-	var last *event.Event      // previous event in this batch, for link checks
-	var newly []event.Event    // events this transaction stored, for the ingest hook
+	// Continue the run left by an earlier batch of the same resend; anything
+	// else starts a new run. The run is kept in the store because a resend
+	// can exceed MaxBatch and is stored only when it reaches the restore point.
+	pending := append([]event.Event(nil), s.restorePending[agent]...)
+	if len(pending) > 0 && (len(evs) == 0 || evs[0].Seq != pending[len(pending)-1].Seq+1) {
+		pending = pending[:0]
+	}
+	defer func() {
+		if retErr != nil || len(pending) == 0 {
+			delete(s.restorePending, agent)
+			return
+		}
+		s.restorePending[agent] = append([]event.Event(nil), pending...)
+	}()
+	var last *event.Event // previous event in this run, for link checks
+	if len(pending) > 0 {
+		last = &pending[len(pending)-1]
+	}
+	var newly []event.Event // events this transaction stored, for the ingest hook
 	q := s.quota.Load()
 	pct := 0.0
 	if q != nil {
@@ -158,13 +179,14 @@ func (s *Store) Ingest(ctx context.Context, agent string, evs []event.Event) (Ac
 				if len(pending) > 0 && pending[len(pending)-1].Seq+1 != ev.Seq {
 					pending = pending[:0]
 				}
-				pending = append(pending, ev)
+				pending = append(pending, *ev)
 				if ev.Seq == a.RestoredSeq {
 					if ev.Hash != a.RestoredHash {
 						chainErr = cerr(ErrRestoreMismatch, "hash at restored seq differs from snapshot")
 						break
 					}
-					for _, p := range pending {
+					for i := range pending {
+						p := &pending[i]
 						if p.Kind == KindGap {
 							continue // shed ranges are recorded in gaps already
 						}

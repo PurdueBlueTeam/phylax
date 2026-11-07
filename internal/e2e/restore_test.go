@@ -92,7 +92,7 @@ func waitStored(t *testing.T, h *harness, host string, n int) {
 
 func storedOfKind(t *testing.T, h *harness, host, kind string) int {
 	t.Helper()
-	evs, err := h.c.Store().Events(context.Background(), store.Query{Agent: host, Kind: kind, Limit: 1000})
+	evs, err := h.c.Store().Events(context.Background(), store.Query{Agent: host, Kind: kind, Limit: store.MaxQueryLimit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +172,70 @@ func TestRestoreResendBackfillsAndExtends(t *testing.T) {
 	}
 	if seq <= restoredSeq {
 		t.Fatalf("chain ends at %d, at or before the restore point %d", seq, restoredSeq)
+	}
+}
+
+// A restore resend can hold far more events below the restore point than one
+// Ingest batch: every batch continues the run, all of it is backfilled, and the
+// session stays up.
+func TestRestoreResendBackfillsMoreThanOneBatch(t *testing.T) {
+	h := newHarness(t)
+	trig := make(chan int, 3000)
+	h.addHostMods("h1", agent.ModuleSpec{Module: numberedModule{trig: trig}})
+	ctx := context.Background()
+
+	for n := 1; n <= 2500; n++ {
+		trig <- n
+	}
+	waitStored(t, h, "h1", 2500)
+	snap := snapshotStateOnly(t, h)
+	ag, err := h.c.Store().Agent(ctx, "h1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSeq := ag.LastSeq
+	for n := 2501; n <= 2600; n++ {
+		trig <- n
+	}
+	waitStored(t, h, "h1", 2600)
+
+	h.restoreFromSnapshot(snap)
+	eventually(t, "the resend to backfill 2500 events and extend to 2600", 60*time.Second, func() bool {
+		return storedOfKind(t, h, "h1", "test.n12") == 2600
+	})
+
+	evs, err := h.c.Store().Events(ctx, store.Query{Agent: "h1", Kind: "test.n12", Limit: store.MaxQueryLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	below := 0
+	for _, e := range evs {
+		if e.Seq <= restoredSeq {
+			below++
+		}
+	}
+	if below != 2500 {
+		t.Fatalf("%d numbered events below the restore point %d; want 2500", below, restoredSeq)
+	}
+	if g, err := h.c.Store().Gaps(ctx, "h1"); err != nil || len(g) != 0 {
+		t.Fatalf("gaps after a complete resend: %+v %v", g, err)
+	}
+	for _, a := range h.c.Alerts() {
+		if a.Host == "h1" && a.Kind == "store.chain_error" {
+			t.Fatalf("resend alert: %+v", a)
+		}
+	}
+
+	// The session that carried the resend stays up: a new event is stored
+	// without another hello.
+	n, ok := h.c.AgentStatus("h1")
+	if !ok || !n.Connected {
+		t.Fatal("h1 is not connected after the resend")
+	}
+	trig <- 2601
+	waitStored(t, h, "h1", 2601)
+	if after, _ := h.c.AgentStatus("h1"); after.Connects != n.Connects {
+		t.Fatalf("h1 reconnected after the resend (%d -> %d hellos)", n.Connects, after.Connects)
 	}
 }
 
