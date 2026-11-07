@@ -345,10 +345,11 @@ done
 first=$(_rows "$INV_OUT/mirrors.txt" | head -n 1)
 if [ -z "$first" ]; then
     printf 'trace: no mirror to trace\n' > "$INV_OUT/trace.txt"
+elif command -v tracepath >/dev/null 2>&1; then
+    # tracepath first: the inetutils traceroute on Ubuntu has no -n.
+    inv_run trace tracepath -n -m 15 "$first"
 elif command -v traceroute >/dev/null 2>&1; then
     inv_run trace traceroute -n -w 2 -m 15 "$first"
-elif command -v tracepath >/dev/null 2>&1; then
-    inv_run trace tracepath -n "$first"
 else
     printf 'trace: neither traceroute nor tracepath\n' > "$INV_OUT/trace.txt"
 fi
