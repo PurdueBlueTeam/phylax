@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -94,8 +95,16 @@ func TestReplaceBinaryStartsDetachedHelper(t *testing.T) {
 	if !*called {
 		t.Fatal("the swap helper was not started")
 	}
-	if got.Kind != "replace_binary" || got.NewBinary != bin || got.WaitSec != 30 {
+	if got.Kind != "replace_binary" || got.WaitSec != 30 {
 		t.Fatalf("swap plan %+v", *got)
+	}
+	// The helper installs the verified copy in the state directory, not the
+	// operator-supplied path.
+	if filepath.Dir(got.NewBinary) != f.env.AgentRoot {
+		t.Fatalf("new binary %q is not in the state directory %q", got.NewBinary, f.env.AgentRoot)
+	}
+	if raw, err := os.ReadFile(got.NewBinary); err != nil || string(raw) != string(data) {
+		t.Fatalf("verified copy %q (%v)", raw, err)
 	}
 	if got.OldBinary == "" || got.StateDir != f.env.AgentRoot {
 		t.Fatalf("swap plan %+v", *got)
@@ -137,5 +146,79 @@ func TestRenameRejectsBadSecret(t *testing.T) {
 	}
 	if *called {
 		t.Fatal("the helper was started for a rejected plan")
+	}
+}
+
+func TestReplaceBinaryInstallsTheVerifiedCopy(t *testing.T) {
+	f, got, called := newSwapFixture(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.env.PlanKey = pub
+	src := filepath.Join(t.TempDir(), "phylax.new")
+	verified := []byte("NEW-BINARY")
+	if err := os.WriteFile(src, verified, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sha, sig := signBinary(t, priv, verified)
+	params := map[string]any{"path": src, "sha256": sha, "sig": sig}
+	a, err := Core().Get("agent.replace_binary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.Spec().Validate(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := a.Plan(ctx, f.env, p); err != nil {
+		t.Fatal(err)
+	}
+	// The file changes after Plan verified it: Apply hashes the bytes it copies,
+	// so the tampered file is refused and the helper never runs.
+	if err := os.WriteFile(src, []byte("TAMPERED"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Apply(ctx, f.env, p); err == nil {
+		t.Fatal("Apply accepted bytes that were never verified")
+	}
+	if *called {
+		t.Fatal("the helper was started for an unverified file")
+	}
+	// With the verified bytes back, the plan points at a copy in the agent's
+	// state directory, and the copy is what the helper moves into place.
+	if err := os.WriteFile(src, verified, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Apply(ctx, f.env, p); err != nil {
+		t.Fatal(err)
+	}
+	if !*called {
+		t.Fatal("the swap helper was not started")
+	}
+	if filepath.Dir(got.NewBinary) != f.env.AgentRoot {
+		t.Fatalf("new binary %q is not a copy in the state directory %q", got.NewBinary, f.env.AgentRoot)
+	}
+	if raw, err := os.ReadFile(got.NewBinary); err != nil || string(raw) != string(verified) {
+		t.Fatalf("copy %q (%v), want the verified bytes", raw, err)
+	}
+	if err := os.WriteFile(src, []byte("TAMPERED AGAIN"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(got.NewBinary); string(raw) != string(verified) {
+		t.Fatal("the bytes to install follow the source file")
+	}
+}
+
+func TestAgentSwapActionsLockTheAgent(t *testing.T) {
+	for _, name := range []string{"agent.replace_binary", "agent.rename"} {
+		a, err := Core().Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := a.Locks(Params{}); len(got) != 1 || got[0] != LockAgent {
+			t.Errorf("%s locks %v, want [%s]", name, got, LockAgent)
+		}
 	}
 }

@@ -15,6 +15,10 @@ const (
 	LockSSHD     = "sshd"
 	LockPackages = "packages"
 	LockAudit    = "audit"
+	// LockAgent is the agent binary and its service (agent.replace_binary,
+	// agent.rename): one swap at a time, so the verified copy cannot be
+	// overwritten under a running helper.
+	LockAgent = "agent"
 )
 
 // LockService is the lock name for one service/unit.

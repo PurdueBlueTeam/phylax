@@ -75,8 +75,9 @@ func binaryDigest(path string) ([sha256.Size]byte, error) {
 	return sum, nil
 }
 
-// verifyBinary checks the digest and the plan-key signature of the new binary.
-func verifyBinary(path string, key ed25519.PublicKey, shaHex, sigB64 string) error {
+// checkBinaryDigest compares sum with the plan's sha256 and verifies the
+// plan-key signature over it.
+func checkBinaryDigest(sum [sha256.Size]byte, key ed25519.PublicKey, shaHex, sigB64 string) error {
 	if len(key) != ed25519.PublicKeySize {
 		return errors.New("agent.replace_binary: no plan-signing key on this host")
 	}
@@ -84,12 +85,8 @@ func verifyBinary(path string, key ed25519.PublicKey, shaHex, sigB64 string) err
 	if err != nil || len(want) != sha256.Size {
 		return errors.New("agent.replace_binary: sha256 must be 64 hex characters")
 	}
-	sum, err := binaryDigest(path)
-	if err != nil {
-		return fmt.Errorf("agent.replace_binary: %w", err)
-	}
 	if string(want) != string(sum[:]) {
-		return fmt.Errorf("agent.replace_binary: %s does not match sha256", path)
+		return errors.New("agent.replace_binary: the binary does not match sha256")
 	}
 	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil || len(sig) != ed25519.SignatureSize {
@@ -99,6 +96,49 @@ func verifyBinary(path string, key ed25519.PublicKey, shaHex, sigB64 string) err
 		return errors.New("agent.replace_binary: signature does not verify with the plan key")
 	}
 	return nil
+}
+
+// verifyBinary hashes the binary at path and checks it against the plan.
+func verifyBinary(path string, key ed25519.PublicKey, shaHex, sigB64 string) error {
+	sum, err := binaryDigest(path)
+	if err != nil {
+		return fmt.Errorf("agent.replace_binary: %w", err)
+	}
+	return checkBinaryDigest(sum, key, shaHex, sigB64)
+}
+
+// copyBinaryHashed writes a copy of the binary at src to dst (0755, atomic)
+// and returns the sha256 of the bytes it wrote. Hashing as it copies is what
+// closes the window between Plan and the helper's move: the bytes verified are
+// the bytes that get installed, from a copy in the agent's 0700 state
+// directory that nothing else writes.
+func copyBinaryHashed(src, dst string) ([sha256.Size]byte, error) {
+	var sum [sha256.Size]byte
+	st, err := os.Stat(src)
+	if err != nil {
+		return sum, err
+	}
+	if !st.Mode().IsRegular() {
+		return sum, fmt.Errorf("%s is not a regular file", src)
+	}
+	if st.Size() > maxBinaryBytes {
+		return sum, fmt.Errorf("%s is larger than %d bytes", src, maxBinaryBytes)
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return sum, err
+	}
+	defer in.Close()
+	h := sha256.New()
+	err = atomicfile.Write(dst, 0o755, func(w io.Writer) error {
+		_, err := io.Copy(w, io.TeeReader(io.LimitReader(in, maxBinaryBytes+1), h))
+		return err
+	})
+	if err != nil {
+		return sum, err
+	}
+	copy(sum[:], h.Sum(nil))
+	return sum, nil
 }
 
 // startSwap writes the swap plan and hands it to the detached helper.
@@ -144,7 +184,7 @@ func (agentReplaceBinary) Spec() Spec {
 		}}
 }
 
-func (agentReplaceBinary) Locks(Params) []string  { return nil }
+func (agentReplaceBinary) Locks(Params) []string  { return []string{LockAgent} }
 func (agentReplaceBinary) Touches(Params) []Touch { return nil }
 
 func (agentReplaceBinary) Plan(_ context.Context, env *Env, p Params) (Plan, error) {
@@ -165,9 +205,18 @@ func (agentReplaceBinary) Capture(context.Context, *Env, Params) (Rollback, erro
 }
 
 func (agentReplaceBinary) Apply(_ context.Context, env *Env, p Params) (Output, error) {
-	// Re-verify: the file is what it was at Plan time, not something swapped in
-	// between.
-	if err := verifyBinary(p.Str("path"), env.PlanKey, p.Str("sha256"), p.Str("sig")); err != nil {
+	copyPath, err := agentPath(env, "swap-binary")
+	if err != nil {
+		return nil, err
+	}
+	// Copy and hash in one pass: the file at path may change between Plan and
+	// the helper's move, and only the verified copy is installed.
+	sum, err := copyBinaryHashed(p.Str("path"), copyPath)
+	if err != nil {
+		return nil, fmt.Errorf("agent.replace_binary: %w", err)
+	}
+	if err := checkBinaryDigest(sum, env.PlanKey, p.Str("sha256"), p.Str("sig")); err != nil {
+		_ = os.Remove(copyPath)
 		return nil, err
 	}
 	exe, err := runningBinary()
@@ -175,7 +224,7 @@ func (agentReplaceBinary) Apply(_ context.Context, env *Env, p Params) (Output, 
 		return nil, err
 	}
 	return nil, startSwap(env, svcinstall.SwapPlan{Kind: "replace_binary", Service: env.ServiceName,
-		OldBinary: exe, NewBinary: p.Str("path"), StateDir: env.AgentRoot, WaitSec: swapWaitSec})
+		OldBinary: exe, NewBinary: copyPath, StateDir: env.AgentRoot, WaitSec: swapWaitSec})
 }
 
 // Verify is the controller's own heartbeat check for the node: the agent cannot
@@ -197,7 +246,7 @@ func (agentRename) Spec() Spec {
 		}}
 }
 
-func (agentRename) Locks(Params) []string  { return nil }
+func (agentRename) Locks(Params) []string  { return []string{LockAgent} }
 func (agentRename) Touches(Params) []Touch { return nil }
 
 // renameSecret decodes the hex secret (at least 8 bytes).
