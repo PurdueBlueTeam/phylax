@@ -18,6 +18,7 @@ if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
 }
 Import-Module ActiveDirectory -ErrorAction Stop
 
+$script:InvRoot = 'C:\ProgramData\phylax-inv'
 Inv-Init -Cid c4 | Out-Null
 
 # Users: the fields answer the account and SPN questions without touching

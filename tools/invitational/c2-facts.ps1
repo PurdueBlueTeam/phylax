@@ -19,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
+$script:InvRoot = 'C:\ProgramData\phylax-inv'
 Inv-Init -Cid c2 | Out-Null
 
 # E2: build, patch level and boot image.
