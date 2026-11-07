@@ -361,7 +361,7 @@ func TestSecurityHeaders(t *testing.T) {
 		if strings.Contains(csp, "unsafe") {
 			t.Errorf("%s CSP unsafe: %s", p, csp)
 		}
-		if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Referrer-Policy") != "no-referrer" || h.Get("X-Frame-Options") != "DENY" {
+		if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Referrer-Policy") != "same-origin" || h.Get("X-Frame-Options") != "DENY" {
 			t.Errorf("%s headers: %v", p, h)
 		}
 	}
