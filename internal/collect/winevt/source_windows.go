@@ -95,7 +95,7 @@ func (s *subscription) Next(ctx context.Context) (Batch, error) {
 		switch {
 		case err == nil:
 			return s.drain(handles[:n])
-		case errors.Is(err, windows.ERROR_NO_MORE_ITEMS):
+		case errors.Is(err, windows.ERROR_NO_MORE_ITEMS), errors.Is(err, errInvalidOperation):
 			windows.ResetEvent(s.signal)
 			// Re-check once to close the race between EvtNext and ResetEvent.
 			if n2, err2 := evtNext(s.sub, handles[:]); err2 == nil {

@@ -46,6 +46,7 @@ const (
 	errEvtInvalidQuery      windows.Errno = 15001
 	errEvtQueryResultInvPos windows.Errno = 15012
 	errInvalidParameter     windows.Errno = windows.ERROR_INVALID_PARAMETER
+	errInvalidOperation     windows.Errno = 4317 // EvtNext on a future-events subscription with nothing queued yet
 )
 
 func (h evtHandle) close() {
