@@ -144,6 +144,7 @@ func (a *Agent) loadPersistedConfig() {
 // configLoop reconciles modules with the latest accepted config.
 func (a *Agent) configLoop(ctx context.Context) {
 	for {
+		a.beat("config")
 		select {
 		case <-ctx.Done():
 			return

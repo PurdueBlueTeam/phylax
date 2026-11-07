@@ -105,6 +105,8 @@ type Agent struct {
 
 	notify   chan struct{}
 	safeMode atomic.Bool
+	// pulse is the watchdog's liveness record (watchdog.go).
+	pulse *Pulse
 
 	// facts are the controller facts held in memory, keyed by id.
 	facts factStore
@@ -176,7 +178,7 @@ func New(cfg Config) (*Agent, error) {
 	a := &Agent{cfg: cfg, log: cfg.Logger, bundle: b, pin: pin, id: id, state: st,
 		notify: make(chan struct{}, 1), runCtx: context.Background(), binHash: binarySHA256(),
 		cfgKick: make(chan struct{}, 1), managed: map[string]string{"health": healthDefaultFP}, started: time.Now(),
-		tags: NewTagScope(cfg.Logger)}
+		tags: NewTagScope(cfg.Logger), pulse: NewPulse(time.Now, "heartbeat", "supervisor", "config")}
 	if fi, err := os.Stat(cfg.Layout.Bootstrap()); err == nil {
 		a.bundleSize, a.bundleMod = fi.Size(), fi.ModTime()
 	}
@@ -375,14 +377,15 @@ func (a *Agent) Run(ctx context.Context) error {
 	defer cancel()
 	a.runCtx = ctx
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); a.sup.Run(ctx) }()
 	go func() { defer wg.Done(); a.configLoop(ctx) }()
+	go func() { defer wg.Done(); a.beatSupervisor(ctx) }()
 	// Last good config first: with the controller away the modules still run.
 	a.loadPersistedConfig()
 	a.emit(core("agent.start", event.AgentStart{Version: a.cfg.Version, OS: runtime.GOOS, Arch: runtime.GOARCH, Roles: a.bundle.Roles}))
 	sdNotify("READY=1")
-	go a.watchdog(ctx)
+	go a.watchdog(ctx, sdNotify)
 
 	a.connectLoop(ctx)
 	cancel()
@@ -390,19 +393,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.execWG.Wait()
 	sdNotify("STOPPING=1")
 	return nil
-}
-
-func (a *Agent) watchdog(ctx context.Context) {
-	t := time.NewTicker(10 * time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			sdNotify("WATCHDOG=1")
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func (a *Agent) connectLoop(ctx context.Context) {
@@ -644,6 +634,7 @@ func (a *Agent) ackPump(ctx context.Context, s *link.Session) {
 }
 
 func (a *Agent) heartbeat(s *link.Session) {
+	a.beat("heartbeat")
 	st := a.sp.Stats()
 	cong := st.State
 	if cong == "" {

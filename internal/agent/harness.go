@@ -50,6 +50,7 @@ func NewHarness(o HarnessOptions) (*Harness, error) {
 		tags:          NewTagScope(log),
 		notify:        make(chan struct{}, 1),
 		cfgKick:       make(chan struct{}, 1),
+		pulse:         NewPulse(time.Now, "heartbeat", "supervisor", "config"),
 		factoriesOnly: true,
 	}
 	so := a.cfg.Supervisor
