@@ -20,7 +20,7 @@ func New() Installer { return winInstaller{} }
 
 // Install registers an auto-start LocalSystem service whose recovery actions
 // restart it forever, then starts it.
-func (winInstaller) Install(_ context.Context, sp Spec) error {
+func (winInstaller) Install(_ context.Context, sp Spec) (retErr error) {
 	if err := sp.validate(); err != nil {
 		return err
 	}
@@ -40,6 +40,13 @@ func (winInstaller) Install(_ context.Context, sp Spec) error {
 		return fmt.Errorf("create service: %w", err)
 	}
 	defer s.Close()
+	// A failed install must not leave a half-built service behind: the next
+	// attempt would stop at "service already exists".
+	defer func() {
+		if retErr != nil {
+			_ = s.Delete()
+		}
+	}()
 	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: time.Second}
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, 86400); err != nil {
 		return fmt.Errorf("recovery actions: %w", err)
